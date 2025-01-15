@@ -1,0 +1,70 @@
+{
+  "modules-left": [
+    "sway/workspaces",
+    "sway/mode",
+    "wlr/taskbar"
+  ],
+  "modules-center": [
+    "sway/window",
+  ],
+  "modules-right": [
+    "cpu",
+    "memory",
+    "battery",
+    "custom/weather",
+    "custom/date",
+    "custom/time",
+    "tray"
+  ],
+  "layer": "top",
+  "position": "top",
+  "height": 40,
+  "wlr/taskbar": {
+    // "format": "{icon} {title} {short_state}",
+    "format": "{icon}",
+    "tooltip-format": "{title} | {app_id}",
+    "on-click": "activate",
+    "on-click-middle": "close",
+    "on-click-right": "fullscreen",
+    "icon-size": 24
+  },
+  "cpu": {
+    "format": "{usage}%",
+    "interval": 2,
+  },
+  "temperature": {
+    "hwmon-path": "/sys/class/hwmon/hwmon6/temp1_input",
+    "interval": 2,
+  },
+  "memory": {
+    "format": "{percentage}%",
+    "interval": 2,
+  },
+  "battery": {
+    "states": {
+      "critical": 20,
+    },
+    "format": "{capacity}%",
+    "format-charging": "+{capacity}%",
+    "format-plugged": "={capacity}%",
+    "interval": 2,
+  },
+  "custom/weather": {
+    "format": "{}°",
+    "tooltip": true,
+    "interval": 3600,
+    "exec": "wttrbar",
+    "return-type": "json",
+  },
+  "custom/date": {
+    "exec": "~/.config/waybar/date.sh",
+    "interval": 3600,
+  },
+  "custom/time": {
+    "exec": "~/.config/waybar/time.sh",
+    "interval": 60,
+  },
+  "tray": {
+    "spacing": 3
+  }
+}
