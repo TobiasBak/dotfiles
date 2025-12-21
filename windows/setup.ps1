@@ -27,4 +27,7 @@ foreach ($scriptName in $scripts) {
     }
 }
 
-Write-Host "`nAll setup tasks completed successfully!" -ForegroundColor Green
+Write-Host "`nAll automated setup tasks completed successfully!" -ForegroundColor Green
+
+Write-Host "`nLaunching Chris Titus Tech Windows Utility for manual tweaks..." -ForegroundColor Cyan
+irm "https://christitus.com/win" | iex
