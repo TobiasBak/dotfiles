@@ -11,12 +11,23 @@ Item {
     property var workspaceData: []
     property int focusedWorkspaceIdx: 1
 
+    function updateFromWorkspaces(workspaces) {
+        if (!workspaces || !Array.isArray(workspaces)) return;
+        root.workspaceData = workspaces;
+        for (var i = 0; i < workspaces.length; i++) {
+            if (workspaces[i].is_focused) {
+                root.focusedWorkspaceIdx = workspaces[i].idx;
+                break;
+            }
+        }
+    }
+
     Timer {
         id: retryTimer
         interval: 2000
         onTriggered: {
-            initialFetch.running = true;
-            niriEvents.running = true;
+            if (!initialFetch.running) initialFetch.running = true;
+            if (!niriEvents.running) niriEvents.running = true;
         }
     }
 
@@ -32,18 +43,14 @@ Item {
                         var workspaces = JSON.parse(text);
                         root.updateFromWorkspaces(workspaces);
                     }
-                } catch (e) {}
+                } catch (e) {
+                    console.log("Error parsing workspaces: " + e);
+                }
             }
         }
-    }
-
-    function updateFromWorkspaces(workspaces) {
-        if (!workspaces) return;
-        root.workspaceData = workspaces;
-        for (var i = 0; i < workspaces.length; i++) {
-            if (workspaces[i].is_focused) {
-                root.focusedWorkspaceIdx = workspaces[i].idx;
-                break;
+        onExited: (exitCode) => {
+            if (exitCode !== 0) {
+                if (!retryTimer.running) retryTimer.start();
             }
         }
     }
@@ -56,6 +63,7 @@ Item {
         stdout: SplitParser {
             splitMarker: "\n"
             onRead: (data) => {
+                if (!data || data.trim() === "") return;
                 try {
                     var event = JSON.parse(data);
                     if (event.WorkspacesChanged) {
@@ -66,7 +74,7 @@ Item {
                 } catch (e) {}
             }
         }
-        onExited: {
+        onExited: (exitCode) => {
             running = false;
             if (!retryTimer.running) retryTimer.start();
         }
