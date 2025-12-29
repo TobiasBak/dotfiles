@@ -10,8 +10,7 @@ export ZSH="$HOME/.oh-my-zsh"
 # See https://github.com/ohmyzsh/ohmyzsh/wiki/Themes
 ZSH_THEME="robbyrussell"
 
-alias sduvpn='/opt/cisco/anyconnect/bin/vpnui'
-alias exammonitor='java -Xms64m -Xmx512m -cp /home/tobias/Applications/exam.jar dk.sdu.exammonitor.Exammonitorlauncher SDU'
+
 
 # Set list of themes to pick from when loading at random
 # Setting this variable when ZSH_THEME=random will cause zsh to load
@@ -105,3 +104,7 @@ source $ZSH/oh-my-zsh.sh
 # Example aliases
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
+
+# Custom Aliases
+alias gem='gemini --model gemini-3-flash-preview'
+
