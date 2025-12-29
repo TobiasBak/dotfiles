@@ -12,14 +12,14 @@ PACKAGES=(
     "zsh"
     "git"
     "github-cli"
+    "quickshell"
     "alacritty"
     "htop"
-    "neofetch"
-    "quickshell"
-    "niri" # Uncomment if niri is in your configured repos, otherwise install via AUR/Cargo separately
+    "niri" 
     "xwayland-satellite"
     "fuzzel"
     "chromium"
+    "base-devel" # Required for building AUR packages
 )
 
 # --- Functions ---
@@ -48,6 +48,7 @@ install_packages() {
     sudo pacman -Syu --needed --noconfirm "${PACKAGES[@]}"
     log_success "Packages installed."
 }
+
 
 install_oh_my_zsh() {
     if [ ! -d "$HOME/.oh-my-zsh" ]; then
@@ -122,6 +123,8 @@ set_shell() {
 
 check_dependencies
 install_packages
+install_aur_dependencies
+install_caelestia_shell
 install_oh_my_zsh
 setup_symlinks
 set_shell
