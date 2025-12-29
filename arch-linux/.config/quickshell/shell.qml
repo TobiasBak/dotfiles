@@ -38,19 +38,7 @@ ShellRoot {
                 }
                 spacing: 10
 
-                Rectangle {
-                    width: 30
-                    height: 24
-                    radius: 4
-                    color: "#7aa2f7"
-                    
-                    Text {
-                        anchors.centerIn: parent
-                        text: "N"
-                        color: "#1a1b26"
-                        font.bold: true
-                    }
-                }
+                Taskbar {}
             }
 
             // Absolute Center: Workspaces
