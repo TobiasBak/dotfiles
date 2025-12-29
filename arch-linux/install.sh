@@ -11,6 +11,7 @@ BACKUP_DIR="$HOME/dotfiles_backup_$(date +%Y%m%d_%H%M%S)"
 PACKAGES=(
     "zsh"
     "git"
+    "github-cli"
     "alacritty"
     "htop"
     "neofetch"
@@ -18,6 +19,7 @@ PACKAGES=(
     "niri" # Uncomment if niri is in your configured repos, otherwise install via AUR/Cargo separately
     "xwayland-satellite"
     "fuzzel"
+    "chromium"
 )
 
 # --- Functions ---
