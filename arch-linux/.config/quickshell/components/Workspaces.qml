@@ -11,6 +11,15 @@ Item {
     property var workspaceData: []
     property int focusedWorkspaceIdx: 1
 
+    Timer {
+        id: retryTimer
+        interval: 2000
+        onTriggered: {
+            initialFetch.running = true;
+            niriEvents.running = true;
+        }
+    }
+
     // Initial fetch
     Process {
         id: initialFetch
@@ -19,14 +28,17 @@ Item {
         stdout: StdioCollector {
             onStreamFinished: {
                 try {
-                    var workspaces = JSON.parse(text);
-                    root.updateFromWorkspaces(workspaces);
+                    if (text.trim() !== "") {
+                        var workspaces = JSON.parse(text);
+                        root.updateFromWorkspaces(workspaces);
+                    }
                 } catch (e) {}
             }
         }
     }
 
     function updateFromWorkspaces(workspaces) {
+        if (!workspaces) return;
         root.workspaceData = workspaces;
         for (var i = 0; i < workspaces.length; i++) {
             if (workspaces[i].is_focused) {
@@ -49,16 +61,15 @@ Item {
                     if (event.WorkspacesChanged) {
                         root.updateFromWorkspaces(event.WorkspacesChanged.workspaces);
                     } else if (event.WorkspaceActivated) {
-                        // When a workspace is activated, its ID is provided.
-                        // We need to map ID back to index or just re-fetch to be safe,
-                        // but usually idx is what we want.
-                        // To be snappiest, we can just trigger a re-fetch of workspaces.
                         initialFetch.running = true;
                     }
                 } catch (e) {}
             }
         }
-        onExited: running = true
+        onExited: {
+            running = false;
+            if (!retryTimer.running) retryTimer.start();
+        }
     }
 
     Process {

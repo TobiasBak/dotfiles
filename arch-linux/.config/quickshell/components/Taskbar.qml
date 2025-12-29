@@ -10,7 +10,20 @@ RowLayout {
 
     property var windows: []
 
-    // Initial fetch
+    function updateWindows(newWindows) {
+        if (!newWindows) return;
+        root.windows = newWindows;
+    }
+
+    Timer {
+        id: retryTimer
+        interval: 2000
+        onTriggered: {
+            initialFetch.running = true;
+            niriEvents.running = true;
+        }
+    }
+
     Process {
         id: initialFetch
         command: ["niri", "msg", "--json", "windows"]
@@ -18,7 +31,10 @@ RowLayout {
         stdout: StdioCollector {
             onStreamFinished: {
                 try {
-                    root.windows = JSON.parse(text);
+                    if (text.trim() !== "") {
+                        var parsed = JSON.parse(text);
+                        updateWindows(parsed);
+                    }
                 } catch (e) {}
             }
         }
@@ -35,12 +51,17 @@ RowLayout {
                 try {
                     var event = JSON.parse(data);
                     if (event.WindowsChanged) {
-                        root.windows = event.WindowsChanged.windows;
+                        updateWindows(event.WindowsChanged.windows);
                     }
-                } catch (e) {}
+                } catch (e) {
+                    // Ignore partial/invalid JSON
+                }
             }
         }
-        onExited: running = true
+        onExited: {
+            running = false;
+            if (!retryTimer.running) retryTimer.start();
+        }
     }
 
     Repeater {
@@ -60,6 +81,7 @@ RowLayout {
                 fillMode: Image.PreserveAspectFit
                 
                 function getIconSource(appId) {
+                    if (!appId) return "image://icon/application-x-executable";
                     var id = appId.toLowerCase();
                     
                     // Try exact app_id first
@@ -77,7 +99,8 @@ RowLayout {
                 
                 onStatusChanged: {
                     if (status === Image.Error) {
-                        var id = modelData.app_id.toLowerCase();
+                        var appId = modelData.app_id || "";
+                        var id = appId.toLowerCase();
                         if (id.includes("alacritty")) source = "image://icon/utilities-terminal";
                         else if (id.includes("code")) source = "image://icon/code";
                         else source = "image://icon/application-x-executable";
