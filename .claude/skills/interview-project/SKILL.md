@@ -34,11 +34,4 @@ description: Interview users in-depth about project requirements to create a com
 
 ## Question Guidelines
 
-Avoid obvious questions like "What does your app do?" Instead ask:
-- "What's the most complex user interaction you're envisioning?"
-- "What happens if the user loses connection mid-operation?"
-- "How will you handle conflicting updates from multiple users?"
-- "What's your strategy for migrating existing data?"
-- "Which failure modes are acceptable vs catastrophic?"
-- "What's the expected data volume in 6 months? 2 years?"
-- "How will you validate that feature X actually solves the user's problem?"
+Avoid asking obvious questions.
