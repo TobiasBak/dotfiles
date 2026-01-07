@@ -109,6 +109,12 @@ setup_symlinks() {
             link_config "$config_dir" "$HOME/.config/$dirname"
         fi
     done
+
+    # Claude Code skills
+    local skills_source="$DOTFILES_DIR/../.claude/skills"
+    local skills_target="$HOME/.claude/skills"
+    mkdir -p "$HOME/.claude"
+    link_config "$skills_source" "$skills_target"
 }
 
 set_shell() {
@@ -119,6 +125,26 @@ set_shell() {
     fi
 }
 
+install_cli_tools() {
+    # Install Claude Code
+    if ! command -v claude &> /dev/null; then
+        log_info "Installing Claude Code..."
+        curl -fsSL https://claude.ai/install.sh | bash
+        log_success "Claude Code installed."
+    else
+        log_info "Claude Code already installed."
+    fi
+
+    # Install OpenCode
+    if ! command -v opencode &> /dev/null; then
+        log_info "Installing OpenCode..."
+        curl -fsSL https://opencode.ai/install | bash
+        log_success "OpenCode installed."
+    else
+        log_info "OpenCode already installed."
+    fi
+}
+
 # --- Main Script ---
 
 check_dependencies
@@ -126,6 +152,7 @@ install_packages
 install_aur_dependencies
 install_caelestia_shell
 install_oh_my_zsh
+install_cli_tools
 setup_symlinks
 set_shell
 

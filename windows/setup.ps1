@@ -10,6 +10,11 @@ if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
     exit 1
 }
 
+# Set execution policy to Bypass for current user (persists across sessions)
+Write-Host "Setting PowerShell execution policy to Bypass for current user..." -ForegroundColor Yellow
+Set-ExecutionPolicy Bypass -Scope CurrentUser -Force
+Write-Host "Execution policy set." -ForegroundColor Green
+
 # Define scripts to run in order
 $scripts = @(
     "scripts\install-apps.ps1",

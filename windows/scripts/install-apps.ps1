@@ -32,20 +32,36 @@ foreach ($app in $apps) {
     }
 }
 
-# Install gemini-cli via npm if not already present
-Write-Host "Checking for gemini-cli..." -ForegroundColor Yellow
-$geminiInstalled = Get-Command gemini -ErrorAction SilentlyContinue
+# Install Claude Code
+Write-Host "Installing Claude Code..." -ForegroundColor Yellow
+$claudeInstalled = Get-Command claude -ErrorAction SilentlyContinue
 
-if ($null -eq $geminiInstalled) {
-    Write-Host "Installing gemini-cli globally via npm..." -ForegroundColor Yellow
-    npm install -g @google/gemini-cli
+if ($null -eq $claudeInstalled) {
+    Write-Host "Installing Claude Code..." -ForegroundColor Yellow
+    irm https://claude.ai/install.ps1 | iex
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "Successfully installed gemini-cli." -ForegroundColor Green
+        Write-Host "Successfully installed Claude Code." -ForegroundColor Green
     } else {
-        Write-Error "Failed to install gemini-cli. Please ensure Node.js is correctly installed and in your PATH."
+        Write-Warning "Claude Code installation may have failed. Please check manually."
     }
 } else {
-    Write-Host "gemini-cli is already installed." -ForegroundColor Cyan
+    Write-Host "Claude Code is already installed." -ForegroundColor Cyan
+}
+
+# Install OpenCode
+Write-Host "Installing OpenCode..." -ForegroundColor Yellow
+$opencodeInstalled = Get-Command opencode -ErrorAction SilentlyContinue
+
+if ($null -eq $opencodeInstalled) {
+    Write-Host "Installing OpenCode..." -ForegroundColor Yellow
+    irm https://opencode.ai/install.ps1 | iex
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Successfully installed OpenCode." -ForegroundColor Green
+    } else {
+        Write-Warning "OpenCode installation may have failed. Please check manually."
+    }
+} else {
+    Write-Host "OpenCode is already installed." -ForegroundColor Cyan
 }
 
 Write-Host "Application installation complete." -ForegroundColor Green

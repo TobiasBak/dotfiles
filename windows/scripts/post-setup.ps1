@@ -30,6 +30,26 @@ if (Test-Path $wtSettingsPath) {
     Write-Host "Windows Terminal settings not found. Skipping default profile configuration." -ForegroundColor Gray
 }
 
-# Add more post-setup tasks here as needed
+# 2. Symlink Claude Code skills
+$dotfilesSkillsPath = Join-Path $PSScriptRoot "..\..\..\.claude\skills"
+$dotfilesSkillsPath = (Resolve-Path $dotfilesSkillsPath).Path
+$userSkillsPath = "$env:USERPROFILE\.claude\skills"
+
+Write-Host "Setting up Claude Code skills symlink..." -ForegroundColor Yellow
+
+# Create .claude directory if it doesn't exist
+$claudeDir = "$env:USERPROFILE\.claude"
+if (-not (Test-Path $claudeDir)) {
+    New-Item -ItemType Directory -Path $claudeDir -Force | Out-Null
+}
+
+# Remove existing skills directory/symlink if it exists
+if (Test-Path $userSkillsPath) {
+    Remove-Item -Path $userSkillsPath -Recurse -Force
+}
+
+# Create symlink (requires admin)
+New-Item -ItemType SymbolicLink -Path $userSkillsPath -Target $dotfilesSkillsPath -Force | Out-Null
+Write-Host "Linked Claude Code skills: $dotfilesSkillsPath -> $userSkillsPath" -ForegroundColor Green
 
 Write-Host "Post-setup complete." -ForegroundColor Green

@@ -108,5 +108,5 @@ source $ZSH/oh-my-zsh.sh
 # alias ohmyzsh="mate ~/.oh-my-zsh"
 
 # Custom Aliases
-alias gem='gemini --model gemini-3-flash-preview'
+alias claude-dangerous='claude --dangerously-skip-permissions'
 
