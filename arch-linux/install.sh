@@ -15,9 +15,12 @@ PACKAGES=(
     "quickshell"
     "alacritty"
     "htop"
-    "niri" 
+    "niri"
     "xwayland-satellite"
+    "wl-clipboard"
     "fuzzel"
+    "mako"
+    "nvm"
     "chromium"
     "base-devel" # Required for building AUR packages
 )
@@ -127,7 +130,7 @@ set_shell() {
 
 install_cli_tools() {
     # Install Claude Code
-    if ! command -v claude &> /dev/null; then
+    if [ ! -f "$HOME/.local/bin/claude" ]; then
         log_info "Installing Claude Code..."
         curl -fsSL https://claude.ai/install.sh | bash
         log_success "Claude Code installed."
@@ -136,7 +139,7 @@ install_cli_tools() {
     fi
 
     # Install OpenCode
-    if ! command -v opencode &> /dev/null; then
+    if [ ! -f "$HOME/.local/bin/opencode" ]; then
         log_info "Installing OpenCode..."
         curl -fsSL https://opencode.ai/install | bash
         log_success "OpenCode installed."
@@ -145,14 +148,41 @@ install_cli_tools() {
     fi
 }
 
+configure_desktop_settings() {
+    log_info "Configuring desktop settings..."
+    # Set dark mode via freedesktop color-scheme (used by niri and GTK apps)
+    if command -v dconf &> /dev/null; then
+        dconf write /org/gnome/desktop/interface/color-scheme "'prefer-dark'"
+        log_success "Dark mode enabled."
+    else
+        log_warning "dconf not found, skipping dark mode setting."
+    fi
+}
+
+install_node() {
+    # Source nvm to make it available in this script
+    if [ -f /usr/share/nvm/init-nvm.sh ]; then
+        source /usr/share/nvm/init-nvm.sh
+        if ! nvm ls --no-colors | grep -q "lts"; then
+            log_info "Installing Node.js LTS via nvm..."
+            nvm install --lts
+            log_success "Node.js LTS installed."
+        else
+            log_info "Node.js LTS already installed."
+        fi
+    else
+        log_warning "nvm not found, skipping Node.js installation."
+    fi
+}
+
 # --- Main Script ---
 
 check_dependencies
 install_packages
-install_aur_dependencies
-install_caelestia_shell
 install_oh_my_zsh
 install_cli_tools
+install_node
+configure_desktop_settings
 setup_symlinks
 set_shell
 

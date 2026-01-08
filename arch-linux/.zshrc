@@ -1,5 +1,5 @@
 # If you come from bash you might have to change your $PATH.
-# export PATH=$HOME/bin:$HOME/.local/bin:/usr/local/bin:$PATH
+export PATH=$HOME/bin:$HOME/.local/bin:/usr/local/bin:$PATH
 
 # Path to your Oh My Zsh installation.
 export ZSH="$HOME/.oh-my-zsh"
@@ -13,6 +13,10 @@ ZSH_THEME="robbyrussell"
 export GOOGLE_APPLICATION_CREDENTIALS="/home/tobias/apps/continual-math-479109-f9-00b11bd14177.json"
 export GOOGLE_CLOUD_PROJECT="continual-math-479109-f9"
 export GOOGLE_CLOUD_LOCATION="global"
+
+# Android SDK
+export ANDROID_HOME="$HOME/Android/Sdk"
+export PATH="$PATH:$ANDROID_HOME/platform-tools"
 
 # Set list of themes to pick from when loading at random
 # Setting this variable when ZSH_THEME=random will cause zsh to load
@@ -110,3 +114,9 @@ source $ZSH/oh-my-zsh.sh
 # Custom Aliases
 alias claude-dangerous='claude --dangerously-skip-permissions'
 
+
+# opencode
+export PATH=/home/tobias/.opencode/bin:$PATH
+
+# nvm
+source /usr/share/nvm/init-nvm.sh

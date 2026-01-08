@@ -88,7 +88,7 @@ output "HDMI-A-2" {
     mode "3840x2160@60.000"
     scale 1.5
     transform "90"
-    position x=0 y=0
+    position x=0 y=-300
 }
 
 layout {
@@ -180,6 +180,12 @@ window-rule {
 	clip-to-geometry true
 }
 
+window-rule {
+    match app-id="discord"
+    open-on-output "HDMI-A-2"
+    default-column-width { proportion 1.0; }
+    default-window-height { proportion 0.33; }
+}
 
 binds {
     Mod+Escape { show-hotkey-overlay; }
@@ -189,7 +195,7 @@ binds {
     Mod+Space { spawn "alacritty"; }
     Mod+D { spawn "fuzzel"; }
     Super+Alt+L { spawn "swaylock"; }
-    Mod+x { spawn "xwayland-satellite"; }
+    // Mod+x - available for rebinding (xwayland-satellite now auto-starts)
     Mod+1 { spawn "chromium"; }
     Mod+2 { spawn "code" "/home/tobias/Documents/notes"; }
     
@@ -197,7 +203,7 @@ binds {
     XF86AudioRaiseVolume allow-when-locked=true { spawn "pactl" "--" "set-sink-volume" "@DEFAULT_SINK@" "+10%"; }
     XF86AudioLowerVolume allow-when-locked=true { spawn "pactl" "--" "set-sink-volume" "@DEFAULT_SINK@" "-10%"; }
     XF86AudioMute        allow-when-locked=true { spawn "pactl" "set-sink-mute" "@DEFAULT_SINK@" "toggle"; }
-    XF86AudioMicMute     allow-when-locked=true { spawn "pactl" "set-sink-mute" "@DEFAULT_AUDIO_SOURCE@" "toggle"; }
+    XF86AudioMicMute     allow-when-locked=true { spawn "pactl" "set-source-mute" "@DEFAULT_SOURCE@" "toggle"; }
 
     XF86MonBrightnessUp allow-when-locked=true { spawn "light" "-A" "1"; }
     XF86MonBrightnessDown allow-when-locked=true {spawn "light" "-U" "1"; }

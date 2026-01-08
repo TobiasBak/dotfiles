@@ -1,0 +1,4 @@
+# Mako notification daemon config
+
+# Timeout in milliseconds (10 seconds)
+default-timeout=10000
