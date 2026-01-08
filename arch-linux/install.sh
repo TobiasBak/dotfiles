@@ -127,6 +127,10 @@ setup_symlinks() {
     local settings_source="$DOTFILES_DIR/../.claude/settings.json"
     local settings_target="$HOME/.claude/settings.json"
     link_config "$settings_source" "$settings_target"
+
+    local hooks_source="$DOTFILES_DIR/../.claude/hooks"
+    local hooks_target="$HOME/.claude/hooks"
+    link_config "$hooks_source" "$hooks_target"
 }
 
 set_shell() {
