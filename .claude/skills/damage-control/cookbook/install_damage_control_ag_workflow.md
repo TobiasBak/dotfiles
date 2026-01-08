@@ -109,7 +109,10 @@ cp SKILL_DIR/patterns.yaml [TARGET_HOOKS_DIR]/
 
 15. **For Fresh Install or Overwrite**:
     - Write the settings template to TARGET_SETTINGS
-    - Update paths in settings.json to match TARGET_HOOKS_DIR
+    - Update paths in settings.json based on installation level:
+      - **Global**: Use `"$HOME/.claude/hooks/damage-control/..."` (NOT `~`)
+      - **Project/Local**: Use `"$CLAUDE_PROJECT_DIR/.claude/hooks/damage-control/..."`
+    - IMPORTANT: Always wrap paths in quotes and use `$HOME` not `~` for global installs
 
 16. **For Merge**:
     - Parse existing settings JSON
