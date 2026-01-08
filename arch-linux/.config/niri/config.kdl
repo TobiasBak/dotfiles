@@ -147,8 +147,7 @@ layout {
 
 
 spawn-at-startup "/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1"
-spawn-at-startup "/home/tobias/Downloads/xwayland-satellite/target/debug/xwayland-satellite"
-spawn-at-startup "/home/tobias/Downloads/xwayland-satellite/target/debug/xwayland-satellite"
+spawn-at-startup "xwayland-satellite"
 // spawn-at-startup "waybar"
 spawn-at-startup "quickshell"
 
@@ -190,7 +189,7 @@ binds {
     Mod+Space { spawn "alacritty"; }
     Mod+D { spawn "fuzzel"; }
     Super+Alt+L { spawn "swaylock"; }
-    Mod+x { spawn "/home/tobias/Downloads/xwayland-satellite/target/debug/xwayland-satellite"; }
+    Mod+x { spawn "xwayland-satellite"; }
     Mod+1 { spawn "chromium"; }
     Mod+2 { spawn "code" "/home/tobias/Documents/notes"; }
     
