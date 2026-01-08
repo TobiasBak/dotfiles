@@ -112,7 +112,7 @@ source $ZSH/oh-my-zsh.sh
 # alias ohmyzsh="mate ~/.oh-my-zsh"
 
 # Custom Aliases
-alias claude-dangerous='claude --dangerously-skip-permissions'
+alias claudy='claude --dangerously-skip-permissions'
 
 
 # opencode

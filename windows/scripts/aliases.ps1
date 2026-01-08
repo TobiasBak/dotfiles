@@ -1,7 +1,7 @@
 # Custom PowerShell Aliases/Functions
 
 # Alias for Claude with dangerous permissions skip
-function claude-dangerous {
+function claudy {
     claude --dangerously-skip-permissions @args
 }
 
