@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "A subagent just finished. If it was implementing or writing code, run the code-simplifier agent to review and simplify the changes. If it was doing research, exploration, or non-code tasks, no action needed."
+          }
+        ]
+      }
+    ]
+  }
+}

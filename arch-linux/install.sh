@@ -113,11 +113,20 @@ setup_symlinks() {
         fi
     done
 
-    # Claude Code skills
+    # Claude Code
+    mkdir -p "$HOME/.claude"
+
     local skills_source="$DOTFILES_DIR/../.claude/skills"
     local skills_target="$HOME/.claude/skills"
-    mkdir -p "$HOME/.claude"
     link_config "$skills_source" "$skills_target"
+
+    local agents_source="$DOTFILES_DIR/../.claude/agents"
+    local agents_target="$HOME/.claude/agents"
+    link_config "$agents_source" "$agents_target"
+
+    local settings_source="$DOTFILES_DIR/../.claude/settings.json"
+    local settings_target="$HOME/.claude/settings.json"
+    link_config "$settings_source" "$settings_target"
 }
 
 set_shell() {
