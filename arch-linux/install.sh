@@ -63,6 +63,20 @@ install_oh_my_zsh() {
     fi
 }
 
+install_paru() {
+    if ! command -v paru &> /dev/null; then
+        log_info "Installing paru AUR helper..."
+        local tmp_dir=$(mktemp -d)
+        git clone https://aur.archlinux.org/paru.git "$tmp_dir/paru"
+        cd "$tmp_dir/paru" && makepkg -si --noconfirm
+        cd - > /dev/null
+        rm -rf "$tmp_dir"
+        log_success "Paru installed."
+    else
+        log_info "Paru already installed."
+    fi
+}
+
 backup_file() {
     local target=$1
     if [ -e "$target" ] && [ ! -L "$target" ]; then
@@ -204,6 +218,7 @@ install_node() {
 check_dependencies
 install_packages
 install_oh_my_zsh
+install_paru
 install_cli_tools
 install_node
 configure_desktop_settings

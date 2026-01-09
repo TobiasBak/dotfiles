@@ -4,6 +4,9 @@ import Quickshell
 import "components"
 
 ShellRoot {
+    // Voice recording indicator (floating overlay)
+    VoiceIndicator {}
+
     // Main Bar
     PanelWindow {
         id: mainBar

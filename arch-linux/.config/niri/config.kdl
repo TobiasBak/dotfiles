@@ -198,6 +198,7 @@ binds {
     // Mod+x - available for rebinding (xwayland-satellite now auto-starts)
     Mod+1 { spawn "chromium"; }
     Mod+2 { spawn "code" "/home/tobias/Documents/notes"; }
+    Mod+Shift+V { spawn "/home/tobias/apps/arch-whisper/voice-input.sh"; }
     
     // Settings
     XF86AudioRaiseVolume allow-when-locked=true { spawn "pactl" "--" "set-sink-volume" "@DEFAULT_SINK@" "+10%"; }
