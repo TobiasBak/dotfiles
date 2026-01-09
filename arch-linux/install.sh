@@ -109,7 +109,18 @@ setup_symlinks() {
     for config_dir in "$DOTFILES_DIR/.config"/*; do
         if [ -d "$config_dir" ]; then
             local dirname=$(basename "$config_dir")
-            link_config "$config_dir" "$HOME/.config/$dirname"
+            # VS Code: only symlink individual files, not the whole directory
+            # (VS Code stores cache/logs/extensions in .config/Code)
+            if [ "$dirname" = "Code" ]; then
+                mkdir -p "$HOME/.config/Code/User"
+                for file in "$config_dir/User"/*; do
+                    if [ -f "$file" ]; then
+                        link_config "$file" "$HOME/.config/Code/User/$(basename "$file")"
+                    fi
+                done
+            else
+                link_config "$config_dir" "$HOME/.config/$dirname"
+            fi
         fi
     done
 
