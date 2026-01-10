@@ -71,6 +71,69 @@ Detect values using these heuristics:
 
 Replace `{pkg}` with detected package manager.
 
+### Phase 3.5: Ask User for Tooling (if not auto-detected)
+
+If lint, format, or test commands could NOT be auto-detected from config files, use AskUserQuestion to ask the user which tool they want to use. Provide up to 5 common options based on the detected language/ecosystem.
+
+#### Linting Tools by Language
+
+| Language | Options |
+|----------|---------|
+| JavaScript/TypeScript | ESLint, Biome, TSLint (deprecated), Standard, XO |
+| Python | Ruff, Pylint, Flake8, Pyflakes, Bandit |
+| Rust | Clippy (built-in) |
+| Go | golangci-lint, staticcheck, go vet, revive, errcheck |
+| Ruby | RuboCop, Standard Ruby, Reek, Brakeman, Fasterer |
+| Java | Checkstyle, SpotBugs, PMD, SonarLint, Error Prone |
+| C/C++ | clang-tidy, cppcheck, cpplint, include-what-you-use, Flawfinder |
+
+#### Formatting Tools by Language
+
+| Language | Options |
+|----------|---------|
+| JavaScript/TypeScript | Prettier, Biome, dprint, StandardJS, ESLint --fix |
+| Python | Black, Ruff format, autopep8, YAPF, Blue |
+| Rust | rustfmt (built-in) |
+| Go | gofmt (built-in), goimports, gofumpt, golines, gci |
+| Ruby | RuboCop --autocorrect, Standard Ruby, rufo, prettier-ruby, Syntax Tree |
+| Java | google-java-format, Spotless, Palantir Java Format, Eclipse formatter, AOSP formatter |
+| C/C++ | clang-format, astyle, uncrustify, indent, editorconfig |
+
+#### Testing Tools by Language
+
+| Language | Options |
+|----------|---------|
+| JavaScript/TypeScript | Vitest, Jest, Mocha, AVA, Playwright |
+| Python | pytest, unittest, nose2, doctest, ward |
+| Rust | cargo test (built-in), nextest |
+| Go | go test (built-in), testify, ginkgo, gocheck, goconvey |
+| Ruby | RSpec, Minitest, Test::Unit, Shoulda, Cucumber |
+| Java | JUnit, TestNG, Spock, Mockito, AssertJ |
+| C/C++ | Google Test, Catch2, CTest, doctest, Boost.Test |
+
+#### AskUserQuestion Format
+
+Ask up to 3 questions in a single AskUserQuestion call (one for each missing tool type). Example:
+
+```
+Question 1 (if lint not detected):
+- header: "Linter"
+- question: "Which linter would you like to use for this project?"
+- options: [appropriate options for detected language]
+
+Question 2 (if formatter not detected):
+- header: "Formatter"
+- question: "Which formatter would you like to use for this project?"
+- options: [appropriate options for detected language]
+
+Question 3 (if test runner not detected):
+- header: "Test Runner"
+- question: "Which test runner would you like to use for this project?"
+- options: [appropriate options for detected language]
+```
+
+If the user selects "Other", ask them to provide the command manually.
+
 #### Project Structure
 Generate an abstract tree of top-level directories with brief descriptions:
 ```
@@ -107,3 +170,49 @@ Replace placeholders with detected/provided values:
 - `{{PROJECT_STRUCTURE}}` - Auto-generated directory tree
 
 Write the final CLAUDE.md to the project root.
+
+### Phase 6: Setup PostToolUse Lint Hook
+
+After generating CLAUDE.md, set up a PostToolUse hook that automatically runs the lint command after Write and Edit tool calls. This ensures code quality is checked immediately after any file modifications.
+
+#### Ask User About Hook Setup
+
+Use AskUserQuestion:
+- header: "Lint Hook"
+- question: "Would you like to set up an automatic lint hook that runs after file edits?"
+- options:
+  - "Yes - Run lint after Write/Edit (Recommended)" - Automatically check code quality after modifications
+  - "No - I'll run lint manually" - Skip automatic hook setup
+
+#### Hook Configuration
+
+If user chooses yes, create or update `.claude/settings.local.json` in the project root with the following structure:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{LINT_COMMAND}}",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Replace `{{LINT_COMMAND}}` with the detected or user-selected lint command from Phase 3/3.5.
+
+#### Important Notes
+
+- Use `.claude/settings.local.json` (project-local) rather than global settings
+- If the file already exists, merge the new hook with existing hooks (don't overwrite)
+- Set a reasonable timeout (30 seconds) for the lint command
+- The matcher `Write|Edit` uses regex to match both tool names
+- If lint command was not detected/selected, skip this phase and inform the user

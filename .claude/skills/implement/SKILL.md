@@ -16,9 +16,8 @@ TDD-based workflow for all code changes.
 ### Phase 1: Understand & Plan
 
 1. Explore codebase to understand context and existing patterns
-2. Detect test framework and naming conventions (see [references/test-detection.md](references/test-detection.md))
-3. Create detailed TodoWrite items for each test case to implement
-4. Mark first todo as in_progress
+2. Create detailed TodoWrite items for each test case to implement
+3. Mark first todo as in_progress
 
 ### Phase 2: Red-Green-Refactor Cycle
 
@@ -45,34 +44,7 @@ For each todo item:
 2. Use available MCP servers or skills for additional verification if applicable
 3. Ensure all todos completed
 
-### Phase 4: Commit
 
-1. Single commit after feature complete
-2. Follow project commit message conventions
-
-## Test Framework Detection
-
-See [references/test-detection.md](references/test-detection.md) for language-specific detection patterns.
-
-Quick detection:
-| File | Framework |
-|------|-----------|
-| jest.config.* | Jest |
-| vitest.config.* | Vitest |
-| pytest.ini, conftest.py | Pytest |
-| *_test.go | Go testing |
-| Cargo.toml | Rust (cargo test) |
-| *.test.ts, *.spec.ts | Jest/Vitest |
-
-## Test Writing Guidelines
-
-See [references/tdd-examples.md](references/tdd-examples.md) for contract and example-driven test patterns.
-
-Key principles:
-- **Contract-focused**: Test the interface/API, not implementation details
-- **Example-driven**: Use concrete inputs and expected outputs
-- **Unit + Integration**: Write both as appropriate for the feature
-- **Follow conventions**: Match existing test naming and structure in the project
 
 ## Guidelines
 

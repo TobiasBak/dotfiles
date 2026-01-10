@@ -187,6 +187,13 @@ window-rule {
     default-window-height { proportion 0.33; }
 }
 
+window-rule {
+    match app-id="spotify"
+    open-on-output "HDMI-A-2"
+    default-column-width { proportion 1.0; }
+    default-window-height { proportion 0.33; }
+}
+
 binds {
     Mod+Escape { show-hotkey-overlay; }
     Mod+Q { close-window; }
