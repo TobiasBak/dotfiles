@@ -17,6 +17,20 @@ Pick up, implement, and complete the next available feature.
 3. If no features available, inform user and exit
 ```
 
+## Worktree Handling
+
+When working in a git worktree (path contains `/.trees/` or `\.trees\`):
+
+1. **Detect worktree**: Check if current directory path includes `.trees/`
+2. **Resolve main repo**: The main repository is the parent directory of `.trees/`
+    - Example: Working in `/project/.trees/feature-name/` → main repo is `/project/`
+3. **Feature operations in main repo**: All file operations on `.agent-features/` must happen in the main repository:
+    - Rename `NN-*.md` → `started-*.md` in main repo
+    - Move completed features to `completed/` in main repo
+4. **Implementation work in worktree**: Actual code changes happen in the worktree as normal
+
+This ensures feature state is shared across all worktrees and the main repo.
+
 ### 2. Claim Feature
 
 - Rename selected file to `started-<original-name>.md`
