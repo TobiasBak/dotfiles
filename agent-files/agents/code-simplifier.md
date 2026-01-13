@@ -1,6 +1,7 @@
 ---
 name: code-simplifier
 description: Use proactively when user says 'simplify my code', 'clean up this code', 'make this more readable', or 'refactor for simplicity'. Specialist for reducing code complexity while maintaining functionality.
+model: opus
 tools: Read, Grep, Glob, Edit, Bash
 color: green
 ---

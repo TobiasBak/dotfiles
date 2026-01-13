@@ -49,11 +49,10 @@ This ensures feature state is shared across all worktrees and the main repo.
 Run subagents in sequence:
 
 ```
-1. Invoke code-simplifier subagent on changed files
-2. Invoke test-reviewer subagent on test files
-3. Run tests again
-4. If tests fail → fix issues and repeat from step 1
-5. If tests pass → proceed to commit
+1. Invoke code-simplifier & test-reviewer subagents parallel on changed files
+2. Run tests again
+3. If tests fail → fix issues and repeat from step 1
+4. If tests pass → proceed to commit
 ```
 
 ### 5. Complete
