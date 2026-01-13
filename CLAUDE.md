@@ -12,7 +12,7 @@ Personal dotfiles repository for dual-boot Windows and Arch Linux environments. 
 - `arch-linux/.config/` - XDG config directories (niri, alacritty, mako, quickshell, Code)
 - `arch-linux/install.sh` - Main installation script for Arch Linux
 - `windows/` - Windows configurations and PowerShell setup scripts
-- `.claude/` - Claude Code settings, skills, agents, and hooks (symlinked to ~/.claude)
+- `agent_files/` - Claude Code settings, skills, agents, and hooks (symlinked to ~/.claude)
 
 ## Installation Commands
 
@@ -40,13 +40,13 @@ powershell -ExecutionPolicy Bypass -File .\windows\setup.ps1
 - **Keyboard Layout**: Danish (`dk`) with Left Alt as AltGr for 60% keyboards
 
 ### Claude Code Integration
-The `.claude/` directory contains:
+The `agent_files/` directory contains:
 - `settings.json` - Hook configurations for damage-control security (Bash, Edit, Write tools)
 - `skills/` - Custom skills (agent-creator, brainstorm, implement, damage-control, etc.)
 - `agents/` - Custom agent definitions (code-simplifier)
 - `hooks/damage-control/` - Python scripts that validate tool usage before execution
 
-The install script symlinks `.claude/` contents to `~/.claude/` for Claude Code to use.
+The install script symlinks `agent_files/` contents to `~/.claude/` for Claude Code to use.
 
 ## Development Conventions
 

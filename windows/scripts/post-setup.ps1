@@ -30,26 +30,51 @@ if (Test-Path $wtSettingsPath) {
     Write-Host "Windows Terminal settings not found. Skipping default profile configuration." -ForegroundColor Gray
 }
 
-# 2. Symlink Claude Code skills
-$dotfilesSkillsPath = Join-Path $PSScriptRoot "..\..\..\.claude\skills"
-$dotfilesSkillsPath = (Resolve-Path $dotfilesSkillsPath).Path
-$userSkillsPath = "$env:USERPROFILE\.claude\skills"
+# 2. Symlink Claude Code configuration (from agent_files/ to ~/.claude/)
+$agentFilesPath = Join-Path $PSScriptRoot "..\..\agent_files"
+$agentFilesPath = (Resolve-Path $agentFilesPath).Path
+$claudeDir = "$env:USERPROFILE\.claude"
 
-Write-Host "Setting up Claude Code skills symlink..." -ForegroundColor Yellow
+Write-Host "Setting up Claude Code symlinks..." -ForegroundColor Yellow
 
 # Create .claude directory if it doesn't exist
-$claudeDir = "$env:USERPROFILE\.claude"
 if (-not (Test-Path $claudeDir)) {
     New-Item -ItemType Directory -Path $claudeDir -Force | Out-Null
 }
 
-# Remove existing skills directory/symlink if it exists
-if (Test-Path $userSkillsPath) {
-    Remove-Item -Path $userSkillsPath -Recurse -Force
+# Helper function to create symlink
+function New-ClaudeSymlink {
+    param (
+        [string]$SourceName,
+        [string]$IsFile = $false
+    )
+
+    $source = Join-Path $agentFilesPath $SourceName
+    $target = Join-Path $claudeDir $SourceName
+
+    if (-not (Test-Path $source)) {
+        Write-Warning "Source not found: $source"
+        return
+    }
+
+    # Remove existing item if it exists
+    if (Test-Path $target) {
+        Remove-Item -Path $target -Recurse -Force
+    }
+
+    # Create symlink (requires admin)
+    if ($IsFile) {
+        New-Item -ItemType SymbolicLink -Path $target -Target $source -Force | Out-Null
+    } else {
+        New-Item -ItemType SymbolicLink -Path $target -Target $source -Force | Out-Null
+    }
+    Write-Host "Linked: $source -> $target" -ForegroundColor Green
 }
 
-# Create symlink (requires admin)
-New-Item -ItemType SymbolicLink -Path $userSkillsPath -Target $dotfilesSkillsPath -Force | Out-Null
-Write-Host "Linked Claude Code skills: $dotfilesSkillsPath -> $userSkillsPath" -ForegroundColor Green
+# Create symlinks for skills, agents, hooks, and settings.json
+New-ClaudeSymlink -SourceName "skills"
+New-ClaudeSymlink -SourceName "agents"
+New-ClaudeSymlink -SourceName "hooks"
+New-ClaudeSymlink -SourceName "settings.json" -IsFile $true
 
 Write-Host "Post-setup complete." -ForegroundColor Green

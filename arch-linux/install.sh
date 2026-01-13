@@ -138,22 +138,22 @@ setup_symlinks() {
         fi
     done
 
-    # Claude Code
+    # Claude Code (source from agent_files/, target to ~/.claude/)
     mkdir -p "$HOME/.claude"
 
-    local skills_source="$DOTFILES_DIR/../.claude/skills"
+    local skills_source="$DOTFILES_DIR/../agent_files/skills"
     local skills_target="$HOME/.claude/skills"
     link_config "$skills_source" "$skills_target"
 
-    local agents_source="$DOTFILES_DIR/../.claude/agents"
+    local agents_source="$DOTFILES_DIR/../agent_files/agents"
     local agents_target="$HOME/.claude/agents"
     link_config "$agents_source" "$agents_target"
 
-    local settings_source="$DOTFILES_DIR/../.claude/settings.json"
+    local settings_source="$DOTFILES_DIR/../agent_files/settings.json"
     local settings_target="$HOME/.claude/settings.json"
     link_config "$settings_source" "$settings_target"
 
-    local hooks_source="$DOTFILES_DIR/../.claude/hooks"
+    local hooks_source="$DOTFILES_DIR/../agent_files/hooks"
     local hooks_target="$HOME/.claude/hooks"
     link_config "$hooks_source" "$hooks_target"
 }
