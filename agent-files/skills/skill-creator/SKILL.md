@@ -1,0 +1,35 @@
+---
+name: skill-creator
+description: "Specialized skill for creating new OpenCode agent skills with consistent structure and best practices."
+license: MIT
+compatibility: opencode
+---
+
+# skill-creator
+
+This skill guides you through creating high-quality, reusable OpenCode agent skills.
+
+## Best Practices
+
+1.  **Naming**: Use `lowercase-alphanumeric-with-hyphens`. The name MUST match the directory name.
+2.  **Description**: Be precise. The agent uses this description to decide when to load the skill. Keep it between 1-1024 characters.
+3.  **Frontmatter**: Always include `name` and `description`. `license` and `compatibility` are recommended.
+4.  **Structure**:
+    *   One folder per skill name.
+    *   Place `SKILL.md` inside that folder.
+    *   Store templates or large reference docs in a `references/` subfolder to keep the main instruction set clean.
+5.  **Simplicity**: Focus on clear, actionable steps. Avoid over-explaining or including too many examples unless the task is highly complex.
+
+## Steps to Create a Skill
+
+1.  **Identify the behavior**: Define exactly what reusable logic you want to encapsulate.
+2.  **Scaffold**:
+    *   Create `agent-files/skills/<your-skill-name>`.
+    *   Create `agent-files/skills/<your-skill-name>/references` if needed.
+3.  **Initialize**: Copy the template from `agent-files/skills/skill-creator/references/SKILL_TEMPLATE.md` to the new `SKILL.md`.
+4.  **Draft Instructions**: Write the "how-to" for the agent. Use headers for clarity (e.g., `## Steps`, `## Guidelines`).
+5.  **Verify**: Ensure the frontmatter follows YAML standards and the name follows the regex `^[a-z0-9]+(-[a-z0-9]+)*$`.
+
+## Templates
+Use the standard template located at:
+`agent-files/skills/skill-creator/references/SKILL_TEMPLATE.md`
