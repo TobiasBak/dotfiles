@@ -1,2 +1,6 @@
 .env
 .claude/settings.local.json
+
+# Discord runtime data
+arch-linux/.config/discord/*
+!arch-linux/.config/discord/settings.json
