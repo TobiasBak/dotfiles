@@ -139,24 +139,30 @@ setup_symlinks() {
         fi
     done
 
-    # Claude Code (source from agent_files/, target to ~/.claude/)
+    # Claude Code (source from agent-files/, target to ~/.claude/)
     mkdir -p "$HOME/.claude"
 
-    local skills_source="$DOTFILES_DIR/../agent_files/skills"
+    local skills_source="$DOTFILES_DIR/../agent-files/skills"
     local skills_target="$HOME/.claude/skills"
     link_config "$skills_source" "$skills_target"
 
-    local agents_source="$DOTFILES_DIR/../agent_files/agents"
+    local agents_source="$DOTFILES_DIR/../agent-files/agents"
     local agents_target="$HOME/.claude/agents"
     link_config "$agents_source" "$agents_target"
 
-    local settings_source="$DOTFILES_DIR/../agent_files/settings.json"
+    local settings_source="$DOTFILES_DIR/../agent-files/settings.json"
     local settings_target="$HOME/.claude/settings.json"
     link_config "$settings_source" "$settings_target"
 
-    local hooks_source="$DOTFILES_DIR/../agent_files/hooks"
+    local hooks_source="$DOTFILES_DIR/../agent-files/hooks"
     local hooks_target="$HOME/.claude/hooks"
     link_config "$hooks_source" "$hooks_target"
+
+    # OpenCode
+    mkdir -p "$HOME/.config/opencode"
+    local commands_source="$DOTFILES_DIR/../agent-files/command"
+    local commands_target="$HOME/.config/opencode/command"
+    link_config "$commands_source" "$commands_target"
 }
 
 set_shell() {
