@@ -2,5 +2,7 @@
   "SKIP_HOST_UPDATE": true,
   "offloadAdmControls": true,
   "enableHardwareAcceleration": true,
-  "chromiumSwitches": {}
+  "chromiumSwitches": {},
+  "BACKGROUND_COLOR": "#121214",
+  "asyncVideoInputDeviceInit": false
 }
