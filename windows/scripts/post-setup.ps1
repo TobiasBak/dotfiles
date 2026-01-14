@@ -77,4 +77,42 @@ New-ClaudeSymlink -SourceName "agents"
 New-ClaudeSymlink -SourceName "hooks"
 New-ClaudeSymlink -SourceName "settings.json" -IsFile $true
 
-Write-Host "Post-setup complete." -ForegroundColor Green
+# 3. Symlink OpenCode configuration (from agent_files/ to %APPDATA%\opencode\)
+$opencodeDir = Join-Path $env:APPDATA "opencode"
+
+Write-Host "`nSetting up OpenCode symlinks..." -ForegroundColor Yellow
+
+# Create opencode directory if it doesn't exist
+if (-not (Test-Path $opencodeDir)) {
+    New-Item -ItemType Directory -Path $opencodeDir -Force | Out-Null
+}
+
+# Helper function to create OpenCode symlink
+function New-OpenCodeSymlink {
+    param (
+        [string]$SourceName,
+        [string]$TargetName
+    )
+
+    $source = Join-Path $agentFilesPath $SourceName
+    $target = Join-Path $opencodeDir $TargetName
+
+    if (-not (Test-Path $source)) {
+        Write-Warning "Source not found: $source"
+        return
+    }
+
+    # Remove existing item if it exists
+    if (Test-Path $target) {
+        Remove-Item -Path $target -Recurse -Force
+    }
+
+    # Create symlink (requires admin)
+    New-Item -ItemType SymbolicLink -Path $target -Target $source -Force | Out-Null
+    Write-Host "Linked: $source -> $target" -ForegroundColor Green
+}
+
+New-OpenCodeSymlink -SourceName "command" -TargetName "command"
+New-OpenCodeSymlink -SourceName "agents" -TargetName "agent"
+
+Write-Host "`nPost-setup complete." -ForegroundColor Green

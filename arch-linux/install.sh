@@ -163,6 +163,10 @@ setup_symlinks() {
     local commands_source="$DOTFILES_DIR/../agent-files/command"
     local commands_target="$HOME/.config/opencode/command"
     link_config "$commands_source" "$commands_target"
+
+    local agents_source="$DOTFILES_DIR/../agent-files/agents"
+    local agents_target="$HOME/.config/opencode/agent"
+    link_config "$agents_source" "$agents_target"
 }
 
 set_shell() {
