@@ -24,10 +24,10 @@ This skill guides you through creating high-quality, reusable OpenCode agent ski
 
 1.  **Identify the behavior**: Define exactly what reusable logic you want to encapsulate.
 2.  **Fetch Documentation**: Use the `webfetch` tool to read `https://opencode.ai/docs/skills/` to ensure the skill is created using the most up-to-date syntax and rules.
-3.  **Determine Location**: Ask the user if the skill should be created **locally** (project-level) or **globally** (user-level).
-
+3.  **Determine Location**: Use the `question` tool to ask the user if the skill should be created **locally** (project-level) or **globally** (user-level).
     *   **Local**: `.opencode/skill/` or `.claude/skills/` (default to `.claude/skills/` if the project uses it).
     *   **Global**: `~/.config/opencode/skill/` or `~/.claude/skills/` (default to `~/.claude/skills/`).
+
 3.  **Scaffold**:
     *   Create the skill directory in the chosen location.
     *   Create a `references/` subfolder if complex documentation is needed.
