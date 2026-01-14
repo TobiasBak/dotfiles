@@ -22,6 +22,7 @@ PACKAGES=(
     "mako"
     "nvm"
     "chromium"
+    "discord"
     "base-devel" # Required for building AUR packages
 )
 

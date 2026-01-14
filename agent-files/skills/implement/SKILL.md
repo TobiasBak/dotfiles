@@ -44,7 +44,11 @@ For each todo item:
 2. Use available MCP servers or skills for additional verification if applicable
 3. Ensure all todos completed
 
+### Phase 4: Subagents
 
+Run the following custom subagents parallel:
+1. code-simplifier
+2. test-reviewer
 
 ## Guidelines
 
