@@ -1,0 +1,41 @@
+{
+  "modelConfigs": {
+    "aliases": {
+      "gemini-3-flash-preview": {
+        "modelConfig": {
+          "generateContentConfig": {
+            "thinkingConfig": {
+              "thinkingLevel": "HIGH"
+            }
+          }
+        }
+      }
+    }
+  },
+  "security": {
+    "auth": {
+      "selectedType": "oauth-personal"
+    },
+    "enablePermanentToolApproval": true
+  },
+  "general": {
+    "previewFeatures": true
+  },
+  "experimental": {
+    "skills": true
+  },
+  "model": {
+    "name": "gemini-3-flash-preview"
+  },
+  "ui": {
+    "footer": {
+      "hideSandboxStatus": true
+    },
+    "theme": "Dracula",
+    "hideFooter": false,
+    "showModelInfoInChat": false
+  },
+  "tools": {
+    "autoAccept": true
+  }
+}

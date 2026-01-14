@@ -167,6 +167,12 @@ setup_symlinks() {
     local agents_source="$DOTFILES_DIR/../agent-files/agents"
     local agents_target="$HOME/.config/opencode/agent"
     link_config "$agents_source" "$agents_target"
+
+    # Gemini CLI
+    mkdir -p "$HOME/.gemini"
+    local gemini_settings_source="$DOTFILES_DIR/../.gemini/settings.json"
+    local gemini_settings_target="$HOME/.gemini/settings.json"
+    link_config "$gemini_settings_source" "$gemini_settings_target"
 }
 
 set_shell() {
