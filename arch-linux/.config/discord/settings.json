@@ -4,5 +4,13 @@
   "enableHardwareAcceleration": true,
   "chromiumSwitches": {},
   "BACKGROUND_COLOR": "#121214",
-  "asyncVideoInputDeviceInit": false
+  "asyncVideoInputDeviceInit": false,
+  "IS_MAXIMIZED": false,
+  "IS_MINIMIZED": false,
+  "WINDOW_BOUNDS": {
+    "x": 0,
+    "y": 0,
+    "width": 1424,
+    "height": 834
+  }
 }

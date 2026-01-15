@@ -171,44 +171,6 @@ Replace placeholders with detected/provided values:
 
 Write the final CLAUDE.md to the project root.
 
-### Phase 6: Setup PostToolUse Lint Hook
-
-After generating CLAUDE.md, set up a PostToolUse hook that automatically runs the lint command after Write and Edit tool calls. This ensures code quality is checked immediately after any file modifications.
-
-#### Ask User About Hook Setup
-
-Use AskUserQuestion:
-- header: "Lint Hook"
-- question: "Would you like to set up an automatic lint hook that runs after file edits?"
-- options:
-  - "Yes - Run lint after Write/Edit (Recommended)" - Automatically check code quality after modifications
-  - "No - I'll run lint manually" - Skip automatic hook setup
-
-#### Hook Configuration
-
-If user chooses yes, create or update `.claude/settings.local.json` in the project root with the following structure:
-
-```json
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "{{LINT_COMMAND}}",
-            "timeout": 30
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-Replace `{{LINT_COMMAND}}` with the detected or user-selected lint command from Phase 3/3.5.
-
 #### Important Notes
 
 - Use `.claude/settings.local.json` (project-local) rather than global settings

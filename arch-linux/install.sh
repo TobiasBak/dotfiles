@@ -173,6 +173,10 @@ setup_symlinks() {
     local gemini_settings_source="$DOTFILES_DIR/../.gemini/settings.json"
     local gemini_settings_target="$HOME/.gemini/settings.json"
     link_config "$gemini_settings_source" "$gemini_settings_target"
+
+    local gemini_skills_source="$DOTFILES_DIR/../agent-files/skills"
+    local gemini_skills_target="$HOME/.gemini/skills"
+    link_config "$gemini_skills_source" "$gemini_skills_target"
 }
 
 set_shell() {

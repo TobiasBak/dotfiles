@@ -8,8 +8,6 @@ Use this template when generating the CLAUDE.md file. Replace placeholders with 
 # Development workflow
 
 ```bash
-# 0. Use /implement skill if available
-
 # 1. Make changes
 
 # 2. Run lint (fast)
@@ -20,8 +18,6 @@ Use this template when generating the CLAUDE.md file. Replace placeholders with 
 
 # 4. Lint and format code
 {{FORMAT_COMMAND}}
-
-# 5. Make a git commit
 ```
 
 # Always do the following
