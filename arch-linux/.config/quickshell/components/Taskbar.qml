@@ -107,6 +107,7 @@ RowLayout {
                     if (id === "code-oss" || id === "code") return "image://icon/com.visualstudio.code.oss";
                     if (id === "chromium") return "image://icon/chromium";
                     if (id === "firefox") return "image://icon/firefox";
+                    if (id === "spotify") return "image://icon/spotify-launcher";
                     
                     return "image://icon/" + appId;
                 }

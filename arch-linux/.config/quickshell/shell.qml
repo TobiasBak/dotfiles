@@ -7,6 +7,9 @@ ShellRoot {
     // Voice recording indicator (floating overlay)
     VoiceIndicator {}
 
+    // Clipboard copy indicator
+    ClipboardPopup {}
+
     // Main Bar
     PanelWindow {
         id: mainBar
@@ -21,16 +24,8 @@ ShellRoot {
 
         Rectangle {
             anchors.fill: parent
-            color: "#1a1b26" // Tokyo Night Background
+            color: "transparent"
             
-            // Bottom border
-            Rectangle {
-                anchors.bottom: parent.bottom
-                width: parent.width
-                height: 1
-                color: "#7aa2f7"
-                opacity: 0.3
-            }
 
             // Left Side
             RowLayout {

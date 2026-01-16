@@ -20,6 +20,7 @@ PACKAGES=(
     "wl-clipboard"
     "fuzzel"
     "mako"
+    "swaybg"
     "nvm"
     "chromium"
     "discord"
@@ -216,6 +217,10 @@ configure_desktop_settings() {
     else
         log_warning "dconf not found, skipping dark mode setting."
     fi
+
+    # Symlink wallpapers directory
+    mkdir -p "$HOME/Pictures"
+    link_config "$DOTFILES_DIR/wallpapers" "$HOME/Pictures/Wallpapers"
 }
 
 install_node() {

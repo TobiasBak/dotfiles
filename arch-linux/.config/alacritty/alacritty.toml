@@ -7,6 +7,9 @@ terminal.shell = "/usr/bin/zsh"
 [mouse]
 hide_when_typing = true
 
+[selection]
+save_to_clipboard = true
+
 #[window]
 # dynamic_padding = true
 
