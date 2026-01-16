@@ -97,6 +97,7 @@ RowLayout {
                 height: 22
                 fillMode: Image.PreserveAspectFit
                 visible: status === Image.Ready
+                opacity: modelData.is_focused ? 1.0 : 0.5
                 
                 function getIconSource(appId) {
                     if (!appId) return "image://icon/application-x-executable";
@@ -131,6 +132,7 @@ RowLayout {
                 text: (modelData.app_id ? modelData.app_id.substring(0, 1).toUpperCase() : "?")
                 color: "#7aa2f7"
                 visible: iconImage.status !== Image.Ready
+                opacity: modelData.is_focused ? 1.0 : 0.5
                 font.pixelSize: 14
                 font.bold: true
             }
