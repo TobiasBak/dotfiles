@@ -161,6 +161,10 @@ setup_symlinks() {
 
     # OpenCode
     mkdir -p "$HOME/.config/opencode"
+    local opencode_config_source="$DOTFILES_DIR/../agent-files/opencode.json"
+    local opencode_config_target="$HOME/.config/opencode/opencode.json"
+    link_config "$opencode_config_source" "$opencode_config_target"
+
     local commands_source="$DOTFILES_DIR/../agent-files/command"
     local commands_target="$HOME/.config/opencode/command"
     link_config "$commands_source" "$commands_target"
