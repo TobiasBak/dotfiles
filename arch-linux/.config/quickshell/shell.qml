@@ -18,6 +18,7 @@ ShellRoot {
             left: true
             right: true
         }
+        margins.top: 8
         implicitHeight: 36
         
         color: "transparent" // Let the rectangle handle the color for rounded corners if needed

@@ -9,6 +9,7 @@ Item {
     property bool showPopup: false
     property int popupX: 100
     property int popupY: 50
+    property string outputName: ""
 
     Process {
         id: clipboardWatch
@@ -18,7 +19,9 @@ Item {
         stdout: SplitParser {
             splitMarker: "\n"
             onRead: (data) => {
+                console.log("Clipboard event: " + data)
                 if (data.trim() === "copied") {
+                    console.log("Triggering getWindowPos")
                     getWindowPos.running = true
                 }
             }
@@ -27,17 +30,20 @@ Item {
 
     Process {
         id: getWindowPos
-        command: ["sh", "-c", "niri msg --json focused-window | jq -r '.layout.tile_size[0], .layout.tile_size[1]'"]
+        command: ["/home/tobias/.config/quickshell/scripts/get-window-pos.py"]
         running: false
 
         stdout: StdioCollector {
             onStreamFinished: {
+                console.log("getWindowPos finished, output: " + text)
                 try {
-                    var lines = text.trim().split("\n")
-                    if (lines.length >= 2) {
-                        var windowWidth = parseFloat(lines[0])
-                        // Position popup at top-right area of screen (focused output)
-                        popupX = windowWidth - 150
+                    var parts = text.trim().split("\t")
+                    console.log("Parsed parts: " + parts.length + " - " + parts)
+                    if (parts.length >= 3) {
+                        popupX = parseFloat(parts[0])
+                        popupY = parseFloat(parts[1])
+                        outputName = parts[2]
+                        console.log("Setting popup position: " + popupX + ", " + popupY + " on " + outputName)
                     }
                 } catch (e) {
                     console.log("Error parsing window pos: " + e)
@@ -58,16 +64,18 @@ Item {
         id: popup
         visible: showPopup
 
+        screen: Quickshell.screens.find(s => s.name === outputName) ?? Quickshell.screens[0]
+
         exclusionMode: ExclusionMode.Ignore
 
         anchors {
             top: true
-            right: true
+            left: true
         }
 
         margins {
-            top: 50
-            right: 20
+            top: popupY
+            left: popupX
         }
 
         implicitWidth: container.width
