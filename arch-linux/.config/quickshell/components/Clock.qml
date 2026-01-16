@@ -6,7 +6,7 @@ import Quickshell
 Item {
     id: clock
     implicitWidth: timeLayout.implicitWidth
-    implicitHeight: timeLayout.implicitHeight
+    implicitHeight: 24
 
     property bool showCalendar: false
 
@@ -21,6 +21,9 @@ Item {
             color: mouseArea.containsMouse ? "#ff9e64" : "#c0caf5"
             font.pixelSize: 14
             font.bold: true
+            Layout.fillHeight: true
+            Layout.bottomMargin: 2
+            verticalAlignment: Text.AlignVCenter
         }
 
         Text {
@@ -28,6 +31,9 @@ Item {
             text: Qt.formatDateTime(new Date(), "MMM d")
             color: mouseArea.containsMouse ? "#ff9e64" : "#7aa2f7"
             font.pixelSize: 14
+            Layout.fillHeight: true
+            Layout.bottomMargin: 2
+            verticalAlignment: Text.AlignVCenter
         }
     }
 

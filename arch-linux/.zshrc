@@ -82,6 +82,9 @@ plugins=(git)
 
 source $ZSH/oh-my-zsh.sh
 
+# Tab completion: immediately select first match
+setopt MENU_COMPLETE
+
 # User configuration
 
 # export MANPATH="/usr/local/man:$MANPATH"
