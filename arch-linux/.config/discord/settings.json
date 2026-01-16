@@ -7,10 +7,11 @@
   "asyncVideoInputDeviceInit": false,
   "IS_MAXIMIZED": false,
   "IS_MINIMIZED": false,
+  "MINIMIZE_TO_TRAY": false,
   "WINDOW_BOUNDS": {
     "x": 0,
     "y": 0,
-    "width": 1424,
-    "height": 834
+    "width": 1709,
+    "height": 1001
   }
 }

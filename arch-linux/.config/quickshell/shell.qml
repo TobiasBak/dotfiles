@@ -55,6 +55,9 @@ ShellRoot {
                 }
                 spacing: 10
 
+                AudioControl {
+                    Layout.alignment: Qt.AlignVCenter
+                }
                 SysTray {
                     Layout.alignment: Qt.AlignVCenter
                 }
