@@ -1,9 +1,3 @@
-# Disable USB autosuspend for Wooting 60HE+
-ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="31e3", ATTR{idProduct}=="1322", ATTR{power/control}="on"
-
-# Disable USB autosuspend for BenQ ZOWIE Gaming Mouse
-ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="04a5", ATTR{idProduct}=="800d", ATTR{power/control}="on"
-
-# Ensure they are accessible (optional but helpful)
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="31e3", MODE="0666", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="31e3", MODE="0666", TAG+="uaccess"
+# Disable USB autosuspend for ALL USB devices and controllers
+# This fixes issues where mouse/keyboard/mic stop working after login
+ACTION=="add", SUBSYSTEM=="usb", ATTR{power/control}="on"

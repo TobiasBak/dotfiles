@@ -227,6 +227,20 @@ configure_desktop_settings() {
     link_config "$DOTFILES_DIR/wallpapers" "$HOME/Pictures/Wallpapers"
 }
 
+configure_hardware() {
+    log_info "Configuring hardware rules..."
+    # Install udev rules for USB autosuspend fix
+    if [ -f "$DOTFILES_DIR/99-input-fix.rules" ]; then
+        log_info "Installing USB autosuspend fix..."
+        sudo cp "$DOTFILES_DIR/99-input-fix.rules" /etc/udev/rules.d/
+        # Reload rules
+        sudo udevadm control --reload-rules && sudo udevadm trigger
+        log_success "USB input fix installed."
+    else
+        log_warning "99-input-fix.rules not found in dotfiles."
+    fi
+}
+
 install_node() {
     # Source nvm to make it available in this script
     if [ -f /usr/share/nvm/init-nvm.sh ]; then
@@ -252,6 +266,7 @@ install_paru
 install_cli_tools
 install_node
 configure_desktop_settings
+configure_hardware
 setup_symlinks
 set_shell
 
