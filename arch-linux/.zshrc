@@ -10,13 +10,13 @@ export ZSH="$HOME/.oh-my-zsh"
 # See https://github.com/ohmyzsh/ohmyzsh/wiki/Themes
 ZSH_THEME="robbyrussell"
 
-export GOOGLE_APPLICATION_CREDENTIALS="/home/tobias/code/continual-math-479109-f9-00b11bd14177.json"
-export GOOGLE_CLOUD_PROJECT="continual-math-479109-f9"
-export GOOGLE_CLOUD_LOCATION="global"
-
 # Android SDK
 export ANDROID_HOME="$HOME/Android/Sdk"
 export PATH="$PATH:$ANDROID_HOME/platform-tools"
+
+# Java
+export JAVA_HOME="/usr/lib/jvm/default"
+export PATH="$JAVA_HOME/bin:$PATH"
 
 # Set list of themes to pick from when loading at random
 # Setting this variable when ZSH_THEME=random will cause zsh to load

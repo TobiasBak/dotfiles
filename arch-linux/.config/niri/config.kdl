@@ -149,7 +149,7 @@ layout {
 spawn-at-startup "/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1"
 spawn-at-startup "xwayland-satellite"
 spawn-at-startup "quickshell"
-spawn-at-startup "swaybg" "-i" "~/Pictures/Wallpapers/wallpaper.jpg" "-m" "fill"
+spawn-at-startup "swaybg" "-i" "/home/tobias/Pictures/Wallpapers/wallpaper.jpg" "-m" "fill"
 
 environment {
 	DISPLAY ":1"
@@ -157,14 +157,10 @@ environment {
 
 prefer-no-csd
 
-screenshot-path "~/Pictures/Screenshots/Screenshot from %Y-%m-%d %H-%M-%S.png"
+screenshot-path "/home/tobias/Pictures/Screenshots/Screenshot from %Y-%m-%d %H-%M-%S.png"
 
 animations {
-    // Uncomment to turn off all animations.
-    // off
-
-    // Slow down all animations by this factor. Values below 1 speed them up instead.
-    // slowdown 3.0
+    off
 }
 
 window-rule {

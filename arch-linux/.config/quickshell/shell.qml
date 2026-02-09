@@ -13,6 +13,7 @@ ShellRoot {
     // Main Bar
     PanelWindow {
         id: mainBar
+        screen: Quickshell.screens.values.find(s => s.name === "DP-3") ?? Quickshell.screens.values[0]
         anchors {
             top: true
             left: true
