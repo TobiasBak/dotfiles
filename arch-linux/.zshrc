@@ -128,10 +128,10 @@ source /usr/share/nvm/init-nvm.sh
 source /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh 2>/dev/null
 
 # Highlight styles - commands green (#50fa7b), everything else default white
-ZSH_HIGHLIGHT_STYLES[command]='fg=#50fa7b'
-ZSH_HIGHLIGHT_STYLES[builtin]='fg=#50fa7b'
-ZSH_HIGHLIGHT_STYLES[alias]='fg=#50fa7b'
-ZSH_HIGHLIGHT_STYLES[precommand]='fg=#50fa7b'
+ZSH_HIGHLIGHT_STYLES[command]='fg=#48d269'
+ZSH_HIGHLIGHT_STYLES[builtin]='fg=#48d269'
+ZSH_HIGHLIGHT_STYLES[alias]='fg=#48d269'
+ZSH_HIGHLIGHT_STYLES[precommand]='fg=#48d269'
 ZSH_HIGHLIGHT_STYLES[path]='none'
 ZSH_HIGHLIGHT_STYLES[default]='none'
 ZSH_HIGHLIGHT_STYLES[unknown-token]='fg=#ff5555'

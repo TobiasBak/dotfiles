@@ -3,9 +3,9 @@
 # Line 2: →
 
 # Custom RGB colors (24-bit true color via ANSI escapes)
-_c_cyan=$'\e[38;2;128;255;234m'    # #80ffea - vibrant mint cyan
+_c_cyan=$'\e[38;2;151;243;249m'    # #97f3f9 - light cyan
 _c_pink=$'\e[38;2;255;121;198m'    # #ff79c6 - hot pink
-_c_green=$'\e[38;2;80;250;123m'    # #50fa7b - bright green
+_c_green=$'\e[38;2;72;210;105m'    # #48d269 - soft green
 _c_reset=$'\e[0m'
 
 _custom_git_prompt() {
