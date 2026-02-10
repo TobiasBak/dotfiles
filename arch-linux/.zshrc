@@ -8,7 +8,7 @@ export ZSH="$HOME/.oh-my-zsh"
 # load a random theme each time Oh My Zsh is loaded, in which case,
 # to know which specific one was loaded, run: echo $RANDOM_THEME
 # See https://github.com/ohmyzsh/ohmyzsh/wiki/Themes
-ZSH_THEME="robbyrussell"
+ZSH_THEME="custom"
 
 # Android SDK
 export ANDROID_HOME="$HOME/Android/Sdk"
@@ -123,3 +123,15 @@ export PATH=/home/tobias/.opencode/bin:$PATH
 
 # nvm
 source /usr/share/nvm/init-nvm.sh
+
+# Syntax highlighting (must be sourced after Oh My Zsh)
+source /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh 2>/dev/null
+
+# Highlight styles - commands green (#50fa7b), everything else default white
+ZSH_HIGHLIGHT_STYLES[command]='fg=#50fa7b'
+ZSH_HIGHLIGHT_STYLES[builtin]='fg=#50fa7b'
+ZSH_HIGHLIGHT_STYLES[alias]='fg=#50fa7b'
+ZSH_HIGHLIGHT_STYLES[precommand]='fg=#50fa7b'
+ZSH_HIGHLIGHT_STYLES[path]='none'
+ZSH_HIGHLIGHT_STYLES[default]='none'
+ZSH_HIGHLIGHT_STYLES[unknown-token]='fg=#ff5555'

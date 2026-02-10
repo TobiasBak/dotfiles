@@ -25,6 +25,11 @@ PACKAGES=(
     "chromium"
     "discord"
     "base-devel" # Required for building AUR packages
+    "ttf-jetbrains-mono-nerd" # Nerd Font for terminal icons
+    "noto-fonts"              # Standard Unicode coverage
+    "noto-fonts-cjk"          # Chinese/Japanese/Korean characters
+    "noto-fonts-emoji"        # Emoji support (browsers, apps)
+    "zsh-syntax-highlighting" # Command syntax highlighting
 )
 
 # --- Functions ---
@@ -105,6 +110,10 @@ setup_symlinks() {
 
     # Zsh
     link_config "$DOTFILES_DIR/.zshrc" "$HOME/.zshrc"
+
+    # Custom zsh theme
+    mkdir -p "$HOME/.oh-my-zsh/custom/themes"
+    link_config "$DOTFILES_DIR/custom.zsh-theme" "$HOME/.oh-my-zsh/custom/themes/custom.zsh-theme"
 
     # Config folders
     # find all directories inside .config and link them

@@ -2,6 +2,21 @@ general.live_config_reload = true
 window.opacity = 1.0
 terminal.shell = "/usr/bin/zsh"
 
+[font]
+size = 11.0
+
+[font.normal]
+family = "JetBrainsMono Nerd Font"
+style = "Regular"
+
+[font.bold]
+family = "JetBrainsMono Nerd Font"
+style = "Bold"
+
+[font.italic]
+family = "JetBrainsMono Nerd Font"
+style = "Italic"
+
 
 
 [mouse]
