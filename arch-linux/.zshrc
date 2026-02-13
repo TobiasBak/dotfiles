@@ -82,8 +82,9 @@ plugins=(git)
 
 source $ZSH/oh-my-zsh.sh
 
-# Tab completion: immediately select first match
+# Tab completion: immediately select first match and accept+execute on Enter
 setopt MENU_COMPLETE
+bindkey -M menuselect '^M' .accept-line
 
 # User configuration
 
