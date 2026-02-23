@@ -8,18 +8,23 @@ Item {
     width: pill.width
     height: 30
 
+    property string outputName: ""
     property var workspaceData: []
     property int focusedWorkspaceIdx: 1
+    property var workspaceIdMap: ({})
 
     function updateFromWorkspaces(workspaces) {
         if (!workspaces || !Array.isArray(workspaces)) return;
-        root.workspaceData = workspaces;
-        for (var i = 0; i < workspaces.length; i++) {
-            if (workspaces[i].is_focused) {
-                root.focusedWorkspaceIdx = workspaces[i].idx;
-                break;
+        var outputWs = workspaces.filter(w => w.output === root.outputName);
+        root.workspaceData = outputWs;
+        var idMap = {};
+        for (var i = 0; i < outputWs.length; i++) {
+            idMap[outputWs[i].idx] = outputWs[i].id;
+            if (outputWs[i].is_active) {
+                root.focusedWorkspaceIdx = outputWs[i].idx;
             }
         }
+        root.workspaceIdMap = idMap;
     }
 
     Timer {
@@ -140,7 +145,12 @@ Item {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
-                            switchProc.command = ["niri", "msg", "action", "focus-workspace", modelData.toString()];
+                            var wsId = root.workspaceIdMap[modelData];
+                            if (wsId !== undefined) {
+                                switchProc.command = ["niri", "msg", "action", "focus-workspace", "--id", wsId.toString()];
+                            } else {
+                                switchProc.command = ["niri", "msg", "action", "focus-workspace", modelData.toString()];
+                            }
                             switchProc.running = true;
                         }
                     }

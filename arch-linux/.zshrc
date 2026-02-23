@@ -18,6 +18,10 @@ export PATH="$PATH:$ANDROID_HOME/platform-tools"
 export JAVA_HOME="/usr/lib/jvm/default"
 export PATH="$JAVA_HOME/bin:$PATH"
 
+# Codex
+export PNPM_HOME="/home/tobias/.local/share/pnpm"
+export PATH="$PNPM_HOME:$PATH"
+
 # Set list of themes to pick from when loading at random
 # Setting this variable when ZSH_THEME=random will cause zsh to load
 # a theme from this variable instead of looking in $ZSH/themes/
@@ -136,3 +140,11 @@ ZSH_HIGHLIGHT_STYLES[precommand]='fg=#48d269'
 ZSH_HIGHLIGHT_STYLES[path]='none'
 ZSH_HIGHLIGHT_STYLES[default]='none'
 ZSH_HIGHLIGHT_STYLES[unknown-token]='fg=#ff5555'
+
+# pnpm
+export PNPM_HOME="/home/tobias/.local/share/pnpm"
+case ":$PATH:" in
+  *":$PNPM_HOME:"*) ;;
+  *) export PATH="$PNPM_HOME:$PATH" ;;
+esac
+# pnpm end

@@ -10,10 +10,13 @@ ShellRoot {
     // Clipboard copy indicator
     ClipboardPopup {}
 
-    // Main Bar
-    PanelWindow {
-        id: mainBar
-        screen: Quickshell.screens.values.find(s => s.name === "DP-3") ?? Quickshell.screens.values[0]
+    // Main Bar (one per screen)
+    Variants {
+        model: Quickshell.screens
+        PanelWindow {
+            id: mainBar
+            property var modelData
+            screen: modelData
         anchors {
             top: true
             left: true
@@ -44,6 +47,7 @@ ShellRoot {
             // Absolute Center: Workspaces
             Workspaces {
                 anchors.centerIn: parent
+                outputName: mainBar.screen.name
             }
 
             // Right Side
@@ -67,5 +71,6 @@ ShellRoot {
                 }
             }
         }
+    }
     }
 }

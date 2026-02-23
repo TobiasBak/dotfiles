@@ -109,6 +109,7 @@ RowLayout {
                     if (id === "chromium") return "image://icon/chromium";
                     if (id === "firefox") return "image://icon/firefox";
                     if (id === "spotify") return "image://icon/spotify-launcher";
+                    if (id === "codex" || id === "codex-app") return "file:///home/tobias/.local/share/icons/hicolor/512x512/apps/codex-app.png";
                     
                     return "image://icon/" + appId;
                 }
@@ -121,6 +122,7 @@ RowLayout {
                         var id = appId.toLowerCase();
                         if (id.includes("alacritty") || id.includes("terminal")) source = "image://icon/utilities-terminal";
                         else if (id.includes("code")) source = "image://icon/code";
+                        else if (id.includes("codex")) source = "file:///home/tobias/.local/share/icons/hicolor/512x512/apps/codex-app.png";
                         else if (id.includes("browser") || id.includes("chromium") || id.includes("firefox")) source = "image://icon/internet-web-browser";
                         else source = "image://icon/application-x-executable";
                     }

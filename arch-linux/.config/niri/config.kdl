@@ -274,6 +274,7 @@ binds {
     Mod+F { maximize-column; }
     Mod+Shift+F { fullscreen-window; }
     Mod+C { center-column; }
+    Mod+Shift+Space { toggle-window-floating; }
 
     // Finer width adjustments.
     // This command can also:
