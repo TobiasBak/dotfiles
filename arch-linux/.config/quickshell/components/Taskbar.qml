@@ -8,16 +8,41 @@ RowLayout {
     id: root
     spacing: 8
 
+    property string outputName: ""
     property var windows: []
+    property var workspaceOutputMap: ({})
+
+    function updateWorkspaces(workspaces) {
+        if (!workspaces || !Array.isArray(workspaces)) return;
+        var map = {};
+        for (var i = 0; i < workspaces.length; i++) {
+            map[workspaces[i].id] = workspaces[i].output;
+        }
+        root.workspaceOutputMap = map;
+        filterWindows();
+    }
+
+    property var allWindows: []
 
     function updateWindows(newWindows) {
         if (!newWindows) return;
-        // Ensure newWindows is an array
         if (Array.isArray(newWindows)) {
-            root.windows = newWindows;
+            root.allWindows = newWindows;
         } else if (newWindows.windows) {
-            root.windows = newWindows.windows;
+            root.allWindows = newWindows.windows;
         }
+        filterWindows();
+    }
+
+    function filterWindows() {
+        if (!root.outputName) {
+            root.windows = root.allWindows;
+            return;
+        }
+        var map = root.workspaceOutputMap;
+        root.windows = root.allWindows.filter(function(w) {
+            return map[w.workspace_id] === root.outputName;
+        });
     }
 
     Timer {
@@ -26,6 +51,23 @@ RowLayout {
         onTriggered: {
             if (!initialFetch.running) initialFetch.running = true;
             if (!niriEvents.running) niriEvents.running = true;
+        }
+    }
+
+    Process {
+        id: workspaceFetch
+        command: ["niri", "msg", "--json", "workspaces"]
+        running: true
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    if (text.trim() !== "") {
+                        root.updateWorkspaces(JSON.parse(text));
+                    }
+                } catch (e) {
+                    console.log("Error parsing workspaces for taskbar: " + e);
+                }
+            }
         }
     }
 
@@ -67,6 +109,11 @@ RowLayout {
                         updateWindows(event.WindowsChanged.windows);
                     } else if (event.WindowFocusChanged || event.WindowOpened || event.WindowClosed) {
                         initialFetch.running = true;
+                    }
+                    if (event.WorkspacesChanged) {
+                        root.updateWorkspaces(event.WorkspacesChanged.workspaces);
+                    } else if (event.WorkspaceActivated) {
+                        workspaceFetch.running = true;
                     }
                 } catch (e) {
                     // Ignore partial/invalid JSON

@@ -41,7 +41,9 @@ ShellRoot {
                 }
                 spacing: 10
 
-                Taskbar {}
+                Taskbar {
+                    outputName: mainBar.screen.name
+                }
             }
 
             // Absolute Center: Workspaces
