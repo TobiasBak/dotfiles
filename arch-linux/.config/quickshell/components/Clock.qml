@@ -22,7 +22,6 @@ Item {
             font.pixelSize: 14
             font.bold: true
             Layout.fillHeight: true
-            Layout.bottomMargin: 2
             verticalAlignment: Text.AlignVCenter
         }
 
@@ -32,7 +31,6 @@ Item {
             color: mouseArea.containsMouse ? "#ff9e64" : "#7aa2f7"
             font.pixelSize: 14
             Layout.fillHeight: true
-            Layout.bottomMargin: 2
             verticalAlignment: Text.AlignVCenter
         }
     }
