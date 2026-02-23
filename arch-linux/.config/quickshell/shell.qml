@@ -17,62 +17,82 @@ ShellRoot {
             id: mainBar
             property var modelData
             screen: modelData
-        anchors {
-            top: true
-            left: true
-            right: true
-        }
-        margins.top: 8
-        implicitHeight: 36
-        
-        color: "transparent" // Let the rectangle handle the color for rounded corners if needed
+            property real barScale: barSettingsCtrl.barScale
 
-        Rectangle {
-            anchors.fill: parent
+            anchors {
+                top: true
+                left: true
+                right: true
+            }
+            margins.top: 8
+            implicitHeight: 36 * barScale
+
             color: "transparent"
-            
 
-            // Left Side
-            RowLayout {
-                anchors {
-                    left: parent.left
-                    verticalCenter: parent.verticalCenter
-                    leftMargin: 12
-                }
-                spacing: 10
+            Item {
+                anchors.fill: parent
 
-                Taskbar {
-                    outputName: mainBar.screen.name
-                }
-            }
+                Item {
+                    width: parent.width / mainBar.barScale
+                    height: 36
+                    scale: mainBar.barScale
+                    transformOrigin: Item.TopLeft
 
-            // Absolute Center: Workspaces
-            Workspaces {
-                anchors.centerIn: parent
-                outputName: mainBar.screen.name
-            }
+                    Rectangle {
+                        anchors.fill: parent
+                        color: "transparent"
 
-            // Right Side
-            RowLayout {
-                anchors {
-                    right: parent.right
-                    top: parent.top
-                    bottom: parent.bottom
-                    rightMargin: 12
-                }
-                spacing: 10
+                        // Left Side
+                        RowLayout {
+                            anchors {
+                                left: parent.left
+                                verticalCenter: parent.verticalCenter
+                                leftMargin: 12
+                            }
+                            spacing: 10
 
-                AudioControl {
-                    Layout.alignment: Qt.AlignVCenter
-                }
-                SysTray {
-                    Layout.alignment: Qt.AlignVCenter
-                }
-                Clock {
-                    Layout.alignment: Qt.AlignVCenter
+                            Taskbar {
+                                outputName: mainBar.screen.name
+                            }
+                        }
+
+                        // Absolute Center: Workspaces
+                        Workspaces {
+                            anchors.centerIn: parent
+                            outputName: mainBar.screen.name
+                        }
+
+                        // Right Side
+                        RowLayout {
+                            anchors {
+                                right: parent.right
+                                top: parent.top
+                                bottom: parent.bottom
+                                rightMargin: 12
+                            }
+                            spacing: 10
+
+                            AudioControl {
+                                Layout.alignment: Qt.AlignVCenter
+                                popupScreen: mainBar.screen
+                            }
+                            SysTray {
+                                Layout.alignment: Qt.AlignVCenter
+                                popupScreen: mainBar.screen
+                            }
+                            BarSettings {
+                                id: barSettingsCtrl
+                                outputName: mainBar.screen.name
+                                popupScreen: mainBar.screen
+                                Layout.alignment: Qt.AlignVCenter
+                            }
+                            Clock {
+                                Layout.alignment: Qt.AlignVCenter
+                            }
+                        }
+                    }
                 }
             }
         }
-    }
     }
 }

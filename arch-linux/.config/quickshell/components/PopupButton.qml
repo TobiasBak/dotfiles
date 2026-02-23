@@ -14,6 +14,7 @@ Item {
     property int popupTopMargin: 52
     property int popupRightMargin: 80
     property int popupPadding: 16
+    property var popupScreen: Quickshell.screens[0]
 
     // Content to show inside the popup - set by parent
     default property alias popupContent: popupContentContainer.data
@@ -46,7 +47,7 @@ Item {
         id: popup
         visible: popupVisible
 
-        screen: Quickshell.screens[0]
+        screen: popupButton.popupScreen
         exclusionMode: ExclusionMode.Ignore
 
         WlrLayershell.layer: WlrLayer.Overlay
