@@ -20,4 +20,6 @@ This repository contains configuration files (dotfiles) for both Windows and Arc
 
 ### Arch Linux
 
-Refer to the configuration files in `arch-linux/` and symlink them to your home directory or `.config` folder.
+Run `./arch-linux/install.sh` to install the desktop packages and symlink the Arch Linux dotfiles.
+
+The Arch installer does not install or configure optional AI CLI tools such as Claude Code, Gemini CLI, or OpenCode.

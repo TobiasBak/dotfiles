@@ -135,48 +135,6 @@ setup_symlinks() {
         fi
     done
 
-    # Claude Code (source from agent-files/, target to ~/.claude/)
-    mkdir -p "$HOME/.claude"
-
-    local skills_source="$DOTFILES_DIR/../agent-files/skills"
-    local skills_target="$HOME/.claude/skills"
-    link_config "$skills_source" "$skills_target"
-
-    local agents_source="$DOTFILES_DIR/../agent-files/agents"
-    local agents_target="$HOME/.claude/agents"
-    link_config "$agents_source" "$agents_target"
-
-    local settings_source="$DOTFILES_DIR/../agent-files/settings.json"
-    local settings_target="$HOME/.claude/settings.json"
-    link_config "$settings_source" "$settings_target"
-
-    local hooks_source="$DOTFILES_DIR/../agent-files/hooks"
-    local hooks_target="$HOME/.claude/hooks"
-    link_config "$hooks_source" "$hooks_target"
-
-    # OpenCode
-    mkdir -p "$HOME/.config/opencode"
-    local opencode_config_source="$DOTFILES_DIR/../agent-files/opencode.json"
-    local opencode_config_target="$HOME/.config/opencode/opencode.json"
-    link_config "$opencode_config_source" "$opencode_config_target"
-
-    local commands_source="$DOTFILES_DIR/../agent-files/command"
-    local commands_target="$HOME/.config/opencode/command"
-    link_config "$commands_source" "$commands_target"
-
-    local agents_source="$DOTFILES_DIR/../agent-files/agents"
-    local agents_target="$HOME/.config/opencode/agent"
-    link_config "$agents_source" "$agents_target"
-
-    # Gemini CLI
-    mkdir -p "$HOME/.gemini"
-    local gemini_settings_source="$DOTFILES_DIR/../.gemini/settings.json"
-    local gemini_settings_target="$HOME/.gemini/settings.json"
-    link_config "$gemini_settings_source" "$gemini_settings_target"
-
-    local gemini_skills_source="$DOTFILES_DIR/../agent-files/skills"
-    local gemini_skills_target="$HOME/.gemini/skills"
-    link_config "$gemini_skills_source" "$gemini_skills_target"
 }
 
 set_shell() {
@@ -184,26 +142,6 @@ set_shell() {
         log_info "Changing default shell to zsh..."
         chsh -s "$(which zsh)"
         log_success "Shell changed. You may need to log out and back in."
-    fi
-}
-
-install_cli_tools() {
-    # Install Claude Code
-    if [ ! -f "$HOME/.local/bin/claude" ]; then
-        log_info "Installing Claude Code..."
-        curl -fsSL https://claude.ai/install.sh | bash
-        log_success "Claude Code installed."
-    else
-        log_info "Claude Code already installed."
-    fi
-
-    # Install OpenCode
-    if [ ! -f "$HOME/.local/bin/opencode" ]; then
-        log_info "Installing OpenCode..."
-        curl -fsSL https://opencode.ai/install | bash
-        log_success "OpenCode installed."
-    else
-        log_info "OpenCode already installed."
     fi
 }
 
@@ -257,7 +195,6 @@ install_node() {
 check_dependencies
 install_packages
 install_oh_my_zsh
-install_cli_tools
 install_node
 configure_desktop_settings
 configure_hardware
