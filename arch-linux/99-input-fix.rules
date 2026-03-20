@@ -1,3 +1,0 @@
-# Disable USB autosuspend for ALL USB devices and controllers
-# This fixes issues where mouse/keyboard/mic stop working after login
-ACTION=="add", SUBSYSTEM=="usb", ATTR{power/control}="on"

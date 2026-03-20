@@ -22,4 +22,6 @@ This repository contains configuration files (dotfiles) for both Windows and Arc
 
 Run `./arch-linux/install.sh` to install the desktop packages and symlink the Arch Linux dotfiles.
 
+The Arch installer also enables the `multilib` pacman repository so optional packages like Steam are available to install later.
+
 The Arch installer does not install or configure optional AI CLI tools such as Claude Code, Gemini CLI, or OpenCode.

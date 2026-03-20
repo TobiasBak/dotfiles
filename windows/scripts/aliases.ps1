@@ -1,8 +1,3 @@
-# Custom PowerShell Aliases/Functions
-
-# Alias for Claude with dangerous permissions skip
-function claudy {
-    claude --dangerously-skip-permissions @args
-}
+# Custom PowerShell aliases/functions
 
 Write-Host "Custom aliases loaded." -ForegroundColor Gray

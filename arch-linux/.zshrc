@@ -10,18 +10,6 @@ export ZSH="$HOME/.oh-my-zsh"
 # See https://github.com/ohmyzsh/ohmyzsh/wiki/Themes
 ZSH_THEME="custom"
 
-# Android SDK
-export ANDROID_HOME="$HOME/Android/Sdk"
-export PATH="$PATH:$ANDROID_HOME/platform-tools"
-
-# Java
-export JAVA_HOME="/usr/lib/jvm/default"
-export PATH="$JAVA_HOME/bin:$PATH"
-
-# Codex
-export PNPM_HOME="/home/tobias/.local/share/pnpm"
-export PATH="$PNPM_HOME:$PATH"
-
 # Set list of themes to pick from when loading at random
 # Setting this variable when ZSH_THEME=random will cause zsh to load
 # a theme from this variable instead of looking in $ZSH/themes/
@@ -118,13 +106,6 @@ bindkey -M menuselect '^M' .accept-line
 # Example aliases
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
-
-# Custom Aliases
-alias claudy='claude --dangerously-skip-permissions'
-
-
-# opencode
-export PATH=/home/tobias/.opencode/bin:$PATH
 
 # nvm
 source /usr/share/nvm/init-nvm.sh

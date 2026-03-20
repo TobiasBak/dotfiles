@@ -32,36 +32,4 @@ foreach ($app in $apps) {
     }
 }
 
-# Install Claude Code
-Write-Host "Installing Claude Code..." -ForegroundColor Yellow
-$claudeInstalled = Get-Command claude -ErrorAction SilentlyContinue
-
-if ($null -eq $claudeInstalled) {
-    Write-Host "Installing Claude Code..." -ForegroundColor Yellow
-    irm https://claude.ai/install.ps1 | iex
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "Successfully installed Claude Code." -ForegroundColor Green
-    } else {
-        Write-Warning "Claude Code installation may have failed. Please check manually."
-    }
-} else {
-    Write-Host "Claude Code is already installed." -ForegroundColor Cyan
-}
-
-# Install OpenCode
-Write-Host "Installing OpenCode..." -ForegroundColor Yellow
-$opencodeInstalled = Get-Command opencode -ErrorAction SilentlyContinue
-
-if ($null -eq $opencodeInstalled) {
-    Write-Host "Installing OpenCode..." -ForegroundColor Yellow
-    irm https://opencode.ai/install.ps1 | iex
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "Successfully installed OpenCode." -ForegroundColor Green
-    } else {
-        Write-Warning "OpenCode installation may have failed. Please check manually."
-    }
-} else {
-    Write-Host "OpenCode is already installed." -ForegroundColor Cyan
-}
-
 Write-Host "Application installation complete." -ForegroundColor Green

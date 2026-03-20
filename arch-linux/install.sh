@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e # Exit on error
+set -euo pipefail
 
 # --- Configuration ---
 DOTFILES_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -49,6 +49,56 @@ log_warning() {
 check_dependencies() {
     if ! command -v pacman &> /dev/null; then
         echo "Error: This script requires 'pacman'. Are you running Arch Linux?"
+        exit 1
+    fi
+}
+
+multilib_is_enabled() {
+    awk '
+        BEGIN { in_multilib = 0; multilib = 0; include = 0 }
+        /^[[:space:]]*\[multilib\][[:space:]]*$/ {
+            in_multilib = 1
+            multilib = 1
+            next
+        }
+        /^[[:space:]]*\[/ {
+            in_multilib = 0
+        }
+        in_multilib && /^[[:space:]]*Include[[:space:]]*=[[:space:]]*\/etc\/pacman\.d\/mirrorlist[[:space:]]*$/ {
+            include = 1
+        }
+        END {
+            exit !(multilib && include)
+        }
+    ' /etc/pacman.conf
+}
+
+enable_multilib_repository() {
+    local pacman_conf="/etc/pacman.conf"
+    local backup_path
+
+    if multilib_is_enabled; then
+        log_info "multilib repository already enabled."
+        return
+    fi
+
+    log_info "Enabling multilib repository..."
+    backup_path="${pacman_conf}.bak.$(date +%Y%m%d_%H%M%S)"
+    sudo cp "$pacman_conf" "$backup_path"
+
+    if grep -Eq '^[[:space:]]*#\[multilib\][[:space:]]*$' "$pacman_conf"; then
+        sudo sed -i \
+            '/^[[:space:]]*#\[multilib\][[:space:]]*$/,/^[[:space:]]*#Include[[:space:]]*=[[:space:]]*\/etc\/pacman\.d\/mirrorlist[[:space:]]*$/ s/^[[:space:]]*#//' \
+            "$pacman_conf"
+    else
+        printf '\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' | sudo tee -a "$pacman_conf" > /dev/null
+    fi
+
+    if multilib_is_enabled; then
+        log_success "multilib repository enabled. Backup saved to $backup_path"
+    else
+        log_warning "Failed to enable multilib repository. Restoring backup from $backup_path"
+        sudo cp "$backup_path" "$pacman_conf"
         exit 1
     fi
 }
@@ -116,12 +166,11 @@ setup_symlinks() {
     link_config "$DOTFILES_DIR/custom.zsh-theme" "$HOME/.oh-my-zsh/custom/themes/custom.zsh-theme"
 
     # Config folders
-    # find all directories inside .config and link them
     for config_dir in "$DOTFILES_DIR/.config"/*; do
         if [ -d "$config_dir" ]; then
             local dirname=$(basename "$config_dir")
-            # VS Code: only symlink individual files, not the whole directory
-            # (VS Code stores cache/logs/extensions in .config/Code)
+
+            # Symlink only the user-managed files for apps that also store runtime data.
             if [ "$dirname" = "Code" ]; then
                 mkdir -p "$HOME/.config/Code/User"
                 for file in "$config_dir/User"/*; do
@@ -129,6 +178,8 @@ setup_symlinks() {
                         link_config "$file" "$HOME/.config/Code/User/$(basename "$file")"
                     fi
                 done
+            elif [ "$dirname" = "discord" ]; then
+                link_config "$config_dir/settings.json" "$HOME/.config/discord/settings.json"
             else
                 link_config "$config_dir" "$HOME/.config/$dirname"
             fi
@@ -138,9 +189,12 @@ setup_symlinks() {
 }
 
 set_shell() {
-    if [ "$SHELL" != "$(which zsh)" ]; then
+    local zsh_path
+    zsh_path=$(command -v zsh)
+
+    if [ "$SHELL" != "$zsh_path" ]; then
         log_info "Changing default shell to zsh..."
-        chsh -s "$(which zsh)"
+        chsh -s "$zsh_path"
         log_success "Shell changed. You may need to log out and back in."
     fi
 }
@@ -158,20 +212,6 @@ configure_desktop_settings() {
     # Symlink wallpapers directory
     mkdir -p "$HOME/Pictures"
     link_config "$DOTFILES_DIR/wallpapers" "$HOME/Pictures/Wallpapers"
-}
-
-configure_hardware() {
-    log_info "Configuring hardware rules..."
-    # Install udev rules for USB autosuspend fix
-    if [ -f "$DOTFILES_DIR/99-input-fix.rules" ]; then
-        log_info "Installing USB autosuspend fix..."
-        sudo cp "$DOTFILES_DIR/99-input-fix.rules" /etc/udev/rules.d/
-        # Reload rules
-        sudo udevadm control --reload-rules && sudo udevadm trigger
-        log_success "USB input fix installed."
-    else
-        log_warning "99-input-fix.rules not found in dotfiles."
-    fi
 }
 
 install_node() {
@@ -193,11 +233,11 @@ install_node() {
 # --- Main Script ---
 
 check_dependencies
+enable_multilib_repository
 install_packages
 install_oh_my_zsh
 install_node
 configure_desktop_settings
-configure_hardware
 setup_symlinks
 set_shell
 
