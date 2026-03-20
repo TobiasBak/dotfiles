@@ -107,6 +107,9 @@ bindkey -M menuselect '^M' .accept-line
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
 
+# Codex
+alias cy='codex --dangerously-bypass-approvals-and-sandbox'
+
 # nvm
 source /usr/share/nvm/init-nvm.sh
 
