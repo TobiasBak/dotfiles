@@ -10,6 +10,7 @@ RowLayout {
 
     property string outputName: ""
     property var windows: []
+    property var displayItems: []
     property var workspaceOutputMap: ({})
 
     function updateWorkspaces(workspaces) {
@@ -35,14 +36,53 @@ RowLayout {
     }
 
     function filterWindows() {
+        var filteredWindows;
         if (!root.outputName) {
-            root.windows = root.allWindows;
-            return;
+            filteredWindows = root.allWindows.slice();
+        } else {
+            var map = root.workspaceOutputMap;
+            filteredWindows = root.allWindows.filter(function(w) {
+                return map[w.workspace_id] === root.outputName;
+            });
         }
-        var map = root.workspaceOutputMap;
-        root.windows = root.allWindows.filter(function(w) {
-            return map[w.workspace_id] === root.outputName;
+
+        filteredWindows.sort(function(a, b) {
+            var workspaceA = a.workspace_id || 0;
+            var workspaceB = b.workspace_id || 0;
+
+            if (workspaceA !== workspaceB) {
+                return workspaceA - workspaceB;
+            }
+
+            if (a.is_focused !== b.is_focused) {
+                return a.is_focused ? -1 : 1;
+            }
+
+            return a.id - b.id;
         });
+
+        root.windows = filteredWindows;
+
+        var items = [];
+        var lastWorkspaceId = null;
+        for (var i = 0; i < filteredWindows.length; i++) {
+            var window = filteredWindows[i];
+            if (lastWorkspaceId !== null && window.workspace_id !== lastWorkspaceId) {
+                items.push({
+                    kind: "separator",
+                    workspace_id: window.workspace_id
+                });
+            }
+
+            items.push({
+                kind: "window",
+                window: window
+            });
+
+            lastWorkspaceId = window.workspace_id;
+        }
+
+        root.displayItems = items;
     }
 
     Timer {
@@ -127,81 +167,103 @@ RowLayout {
     }
 
     Repeater {
-        model: root.windows
+        model: root.displayItems
 
-        Rectangle {
-            width: 32
+        Item {
+            property var itemData: modelData
+            property var windowData: itemData.kind === "window" ? itemData.window : null
+            width: itemData.kind === "separator" ? 10 : 32
             height: 32
-            radius: 6
-            color: modelData.is_focused ? "#363b54" : "transparent"
-            border.color: modelData.is_focused ? "#7aa2f7" : "transparent"
-            border.width: 1
-            
-            Image {
-                id: iconImage
+
+            Rectangle {
+                width: 1
+                height: 18
+                radius: 0
+                antialiasing: false
+                x: Math.round((parent.width - width) / 2)
+                y: Math.round((parent.height - height) / 2)
+                color: "#24283b"
+                opacity: 0.8
+                visible: itemData.kind === "separator"
+            }
+
+            Rectangle {
                 anchors.centerIn: parent
-                width: 22
-                height: 22
-                fillMode: Image.PreserveAspectFit
-                visible: status === Image.Ready
-                opacity: modelData.is_focused ? 1.0 : 0.5
-                
-                function getIconSource(appId) {
-                    if (!appId) return "image://icon/application-x-executable";
-                    var id = appId.toLowerCase();
-                    
-                    // Specific remappings
-                    if (id === "ghostty" || id === "com.mitchellh.ghostty") return "file:///usr/share/icons/hicolor/512x512/apps/com.mitchellh.ghostty.png";
-                    if (id === "code-oss" || id === "code") return "image://icon/com.visualstudio.code.oss";
-                    if (id === "chromium") return "image://icon/chromium";
-                    if (id === "firefox") return "image://icon/firefox";
-                    if (id === "spotify") return "image://icon/spotify-launcher";
-                    if (id === "codex" || id === "codex-app") return "file:///home/tobias/.local/share/icons/hicolor/512x512/apps/codex-app.png";
-                    
-                    return "image://icon/" + appId;
-                }
-                
-                source: getIconSource(modelData.app_id)
-                
-                onStatusChanged: {
-                    if (status === Image.Error) {
-                        var appId = modelData.app_id || "";
+                width: 32
+                height: 32
+                radius: 6
+                visible: itemData.kind === "window"
+                color: windowData && windowData.is_focused ? "#363b54" : "transparent"
+                border.color: windowData && windowData.is_focused ? "#7aa2f7" : "transparent"
+                border.width: 1
+
+                Image {
+                    id: iconImage
+                    anchors.centerIn: parent
+                    width: 22
+                    height: 22
+                    fillMode: Image.PreserveAspectFit
+                    visible: parent.visible && status === Image.Ready
+                    opacity: windowData && windowData.is_focused ? 1.0 : 0.5
+
+                    function getIconSource(appId) {
+                        if (!appId) return "image://icon/application-x-executable";
                         var id = appId.toLowerCase();
-                        if (id.includes("ghostty")) source = "file:///usr/share/icons/hicolor/512x512/apps/com.mitchellh.ghostty.png";
-                        else if (id.includes("terminal")) source = "image://icon/utilities-terminal";
-                        else if (id.includes("code")) source = "image://icon/code";
-                        else if (id.includes("codex")) source = "file:///home/tobias/.local/share/icons/hicolor/512x512/apps/codex-app.png";
-                        else if (id.includes("browser") || id.includes("chromium") || id.includes("firefox")) source = "image://icon/internet-web-browser";
-                        else source = "image://icon/application-x-executable";
+
+                        // Specific remappings
+                        if (id === "ghostty" || id === "com.mitchellh.ghostty") return "file:///usr/share/icons/hicolor/512x512/apps/com.mitchellh.ghostty.png";
+                        if (id === "code-oss" || id === "code") return "image://icon/com.visualstudio.code.oss";
+                        if (id === "chromium") return "image://icon/chromium";
+                        if (id === "firefox") return "image://icon/firefox";
+                        if (id === "spotify") return "image://icon/spotify-launcher";
+                        if (id === "codex" || id === "codex-app") return "file:///home/tobias/.local/share/icons/hicolor/512x512/apps/codex-app.png";
+
+                        return "image://icon/" + appId;
+                    }
+
+                    source: windowData ? getIconSource(windowData.app_id) : ""
+
+                    onStatusChanged: {
+                        if (status === Image.Error) {
+                            var appId = windowData && windowData.app_id ? windowData.app_id : "";
+                            var id = appId.toLowerCase();
+                            if (id.includes("ghostty")) source = "file:///usr/share/icons/hicolor/512x512/apps/com.mitchellh.ghostty.png";
+                            else if (id.includes("terminal")) source = "image://icon/utilities-terminal";
+                            else if (id.includes("code")) source = "image://icon/code";
+                            else if (id.includes("codex")) source = "file:///home/tobias/.local/share/icons/hicolor/512x512/apps/codex-app.png";
+                            else if (id.includes("browser") || id.includes("chromium") || id.includes("firefox")) source = "image://icon/internet-web-browser";
+                            else source = "image://icon/application-x-executable";
+                        }
                     }
                 }
-            }
 
-            Text {
-                anchors.centerIn: parent
-                text: (modelData.app_id ? modelData.app_id.substring(0, 1).toUpperCase() : "?")
-                color: "#7aa2f7"
-                visible: iconImage.status !== Image.Ready
-                opacity: modelData.is_focused ? 1.0 : 0.5
-                font.pixelSize: 14
-                font.bold: true
-            }
-
-            MouseArea {
-                id: mouseArea
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: {
-                    var focusProc = Qt.createQmlObject('import Quickshell.Io; Process {}', root);
-                    focusProc.command = ["niri", "msg", "action", "focus-window", "--id", modelData.id.toString()];
-                    focusProc.running = true;
+                Text {
+                    anchors.centerIn: parent
+                    text: windowData && windowData.app_id ? windowData.app_id.substring(0, 1).toUpperCase() : "?"
+                    color: "#7aa2f7"
+                    visible: parent.visible && iconImage.status !== Image.Ready
+                    opacity: windowData && windowData.is_focused ? 1.0 : 0.5
+                    font.pixelSize: 14
+                    font.bold: true
                 }
+
+                MouseArea {
+                    id: mouseArea
+                    anchors.fill: parent
+                    enabled: parent.visible
+                    hoverEnabled: true
+                    cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: {
+                        var focusProc = Qt.createQmlObject('import Quickshell.Io; Process {}', root);
+                        focusProc.command = ["niri", "msg", "action", "focus-window", "--id", windowData.id.toString()];
+                        focusProc.running = true;
+                    }
+                }
+
+                ToolTip.visible: mouseArea.containsMouse
+                ToolTip.text: windowData ? (windowData.title || windowData.app_id || "Window") : ""
+                ToolTip.delay: 500
             }
-            
-            ToolTip.visible: mouseArea.containsMouse
-            ToolTip.text: modelData.title || modelData.app_id || "Window"
-            ToolTip.delay: 500
         }
     }
 }
