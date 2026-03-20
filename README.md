@@ -4,7 +4,7 @@ This repository contains configuration files (dotfiles) for both Windows and Arc
 
 ## Structure
 
-- `arch-linux/`: Configuration files for Arch Linux (zsh, alacritty, waybar, niri, etc.)
+- `arch-linux/`: Configuration files for Arch Linux (zsh, ghostty, quickshell, niri, etc.)
 - `windows/`: Configuration files and setup scripts for Windows.
 - `.env`: Environment-specific variables (not tracked by Git if sensitive).
 

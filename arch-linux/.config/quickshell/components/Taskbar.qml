@@ -151,7 +151,7 @@ RowLayout {
                     var id = appId.toLowerCase();
                     
                     // Specific remappings
-                    if (id === "alacritty") return "image://icon/Alacritty";
+                    if (id === "ghostty" || id === "com.mitchellh.ghostty") return "image://icon/com.mitchellh.ghostty";
                     if (id === "code-oss" || id === "code") return "image://icon/com.visualstudio.code.oss";
                     if (id === "chromium") return "image://icon/chromium";
                     if (id === "firefox") return "image://icon/firefox";
@@ -167,7 +167,7 @@ RowLayout {
                     if (status === Image.Error) {
                         var appId = modelData.app_id || "";
                         var id = appId.toLowerCase();
-                        if (id.includes("alacritty") || id.includes("terminal")) source = "image://icon/utilities-terminal";
+                        if (id.includes("ghostty") || id.includes("terminal")) source = "image://icon/utilities-terminal";
                         else if (id.includes("code")) source = "image://icon/code";
                         else if (id.includes("codex")) source = "file:///home/tobias/.local/share/icons/hicolor/512x512/apps/codex-app.png";
                         else if (id.includes("browser") || id.includes("chromium") || id.includes("firefox")) source = "image://icon/internet-web-browser";

@@ -202,7 +202,7 @@ binds {
     Mod+Q { close-window; }
 
     // Applications
-    Mod+Space { spawn "alacritty"; }
+    Mod+Space { spawn "ghostty"; }
     Mod+D { spawn "fuzzel"; }
     Super+Alt+L { spawn "swaylock"; }
     Mod+1 { spawn "chromium"; }

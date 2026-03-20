@@ -13,7 +13,7 @@ PACKAGES=(
     "git"
     "github-cli"
     "quickshell"
-    "alacritty"
+    "ghostty"
     "htop"
     "niri"
     "xwayland-satellite"
