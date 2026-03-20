@@ -6,3 +6,5 @@ font-size = 11
 theme = "Flexoki Dark"
 
 mouse-hide-while-typing = true
+copy-on-select = clipboard
+confirm-close-surface = false
