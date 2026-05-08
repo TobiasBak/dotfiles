@@ -4,8 +4,11 @@ This repository contains configuration files (dotfiles) for both Windows and Arc
 
 ## Structure
 
-- `arch-linux/`: Configuration files for Arch Linux (zsh, ghostty, quickshell, niri, etc.)
-- `windows/`: Configuration files and setup scripts for Windows.
+- `configs/`: Shared program configs used by both OS installers where applicable.
+  - Linux installers symlink XDG configs from here into `~/.config` plus zsh files into `$HOME` / Oh My Zsh.
+  - Windows installers symlink supported shared configs (PowerShell aliases, VS Code, Discord, pi extensions) into their Windows locations and install Pi skills from `https://github.com/TobiasBak/skills.git`.
+- `arch-linux/`: Arch Linux installer and Linux-only assets (for example wallpapers).
+- `windows/`: Windows setup scripts.
 - `.env`: Environment-specific variables (not tracked by Git if sensitive).
 
 ## Usage
@@ -20,7 +23,7 @@ This repository contains configuration files (dotfiles) for both Windows and Arc
 
 ### Arch Linux
 
-Run `./arch-linux/install.sh` to install the desktop packages and symlink the Arch Linux dotfiles.
+Run `./arch-linux/install.sh` to install the desktop packages and symlink shared configs from `configs/`.
 
 The Arch installer also enables the `multilib` pacman repository so optional packages like Steam are available to install later.
 

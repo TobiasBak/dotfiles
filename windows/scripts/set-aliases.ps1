@@ -1,6 +1,6 @@
 # Script to link aliases to the PowerShell profiles (Windows PowerShell and PowerShell 7)
 
-$AliasScriptPath = Join-Path $PSScriptRoot "aliases.ps1"
+$AliasScriptPath = (Resolve-Path (Join-Path $PSScriptRoot "..\..\configs\powershell\aliases.ps1")).Path
 $SourceLine = ". `"$AliasScriptPath`""
 
 # List of potential profile paths

@@ -3,7 +3,9 @@
 set -euo pipefail
 
 # --- Configuration ---
-DOTFILES_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+REPO_DIR="$( cd "$SCRIPT_DIR/.." && pwd )"
+CONFIGS_DIR="$REPO_DIR/configs"
 BACKUP_DIR="$HOME/dotfiles_backup_$(date +%Y%m%d_%H%M%S)"
 
 # List of packages to install (official repos)
@@ -159,16 +161,26 @@ setup_symlinks() {
     log_info "Setting up symlinks..."
 
     # Zsh
-    link_config "$DOTFILES_DIR/.zshrc" "$HOME/.zshrc"
+    link_config "$CONFIGS_DIR/zsh/.zshrc" "$HOME/.zshrc"
 
     # Custom zsh theme
     mkdir -p "$HOME/.oh-my-zsh/custom/themes"
-    link_config "$DOTFILES_DIR/custom.zsh-theme" "$HOME/.oh-my-zsh/custom/themes/custom.zsh-theme"
+    link_config "$CONFIGS_DIR/zsh/custom.zsh-theme" "$HOME/.oh-my-zsh/custom/themes/custom.zsh-theme"
+
+    # Pi coding agent
+    link_config "$CONFIGS_DIR/pi/settings.json" "$HOME/.pi/agent/settings.json"
+    link_config "$CONFIGS_DIR/pi/APPEND_SYSTEM.md" "$HOME/.pi/agent/APPEND_SYSTEM.md"
+    link_config "$CONFIGS_DIR/pi/extensions" "$HOME/.pi/agent/extensions"
 
     # Config folders
-    for config_dir in "$DOTFILES_DIR/.config"/*; do
+    for config_dir in "$CONFIGS_DIR"/*; do
         if [ -d "$config_dir" ]; then
             local dirname=$(basename "$config_dir")
+
+            # Skip configs that are not XDG app config directories on Linux.
+            if [ "$dirname" = "zsh" ] || [ "$dirname" = "powershell" ] || [ "$dirname" = "pi" ]; then
+                continue
+            fi
 
             # Symlink only the user-managed files for apps that also store runtime data.
             if [ "$dirname" = "Code" ]; then
@@ -211,7 +223,7 @@ configure_desktop_settings() {
 
     # Symlink wallpapers directory
     mkdir -p "$HOME/Pictures"
-    link_config "$DOTFILES_DIR/wallpapers" "$HOME/Pictures/Wallpapers"
+    link_config "$SCRIPT_DIR/wallpapers" "$HOME/Pictures/Wallpapers"
 }
 
 install_node() {
@@ -230,6 +242,25 @@ install_node() {
     fi
 }
 
+install_pi_skills() {
+    local skills_repo="https://github.com/TobiasBak/skills.git"
+    local skills_dir="$HOME/apps/skills"
+    local target_dir="$HOME/.pi/agent/skills"
+
+    log_info "Installing Pi skills from $skills_repo..."
+    mkdir -p "$(dirname "$skills_dir")"
+    if [ -d "$skills_dir/.git" ]; then
+        git -C "$skills_dir" pull --ff-only
+    else
+        rm -rf "$skills_dir"
+        git clone "$skills_repo" "$skills_dir"
+    fi
+
+    rm -rf "$target_dir"
+    PI_SKILLS_DIR="$target_dir" "$skills_dir/scripts/install-links.sh"
+    log_success "Pi skills installed."
+}
+
 # --- Main Script ---
 
 check_dependencies
@@ -239,6 +270,7 @@ install_oh_my_zsh
 install_node
 configure_desktop_settings
 setup_symlinks
+install_pi_skills
 set_shell
 
 log_success "Installation complete! \nBackup of old files (if any) is in: $BACKUP_DIR"
