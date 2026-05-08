@@ -93,6 +93,12 @@ if (Test-Path $piExtensionsSource) {
     Link-DotfileConfig $piExtensionsSource $piExtensionsTarget
 }
 
+$piPromptsSource = Join-Path $ConfigsDir "pi\prompts"
+$piPromptsTarget = Join-Path $HOME ".pi\agent\prompts"
+if (Test-Path $piPromptsSource) {
+    Link-DotfileConfig $piPromptsSource $piPromptsTarget
+}
+
 # 3. Install Pi skills from private skills repo
 $piSkillsRepo = "https://github.com/TobiasBak/skills.git"
 $piSkillsDir = "C:\apps\skills"

@@ -171,6 +171,7 @@ setup_symlinks() {
     link_config "$CONFIGS_DIR/pi/settings.json" "$HOME/.pi/agent/settings.json"
     link_config "$CONFIGS_DIR/pi/APPEND_SYSTEM.md" "$HOME/.pi/agent/APPEND_SYSTEM.md"
     link_config "$CONFIGS_DIR/pi/extensions" "$HOME/.pi/agent/extensions"
+    link_config "$CONFIGS_DIR/pi/prompts" "$HOME/.pi/agent/prompts"
 
     # Config folders
     for config_dir in "$CONFIGS_DIR"/*; do
