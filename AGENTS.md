@@ -18,6 +18,27 @@ Check relevant links before or after config edits:
 
 If a target is a real file/dir instead of a link, report it and recommend rerunning the installer or replacing it with the correct symlink/junction. On Windows, directory symlinks may require admin/dev mode; junctions are acceptable for directories.
 
+## Pi skills repo
+
+Pi skills are managed by separate repo `C:\apps\skills`.
+
+Expected links:
+
+- `~/.pi/agent/skills/<skill>` -> `C:\apps\skills\skills\<skill>` for personal skills listed in `C:\apps\skills\skills.json`.
+- `~/.pi/agent/skills/<skill>` -> `C:\apps\skills\external\mattpocock-skills\<skill>` for external skills listed in `C:\apps\skills\skills.json`.
+
+Use PowerShell on Windows. Git Bash `ln -s` can create links that native Windows/Pi does not see correctly.
+
+- Install/fix skills: `powershell -ExecutionPolicy Bypass -File C:\apps\skills\scripts\install-links.ps1 -Fix`
+- Verify skills: `powershell -ExecutionPolicy Bypass -File C:\apps\skills\scripts\verify-links.ps1`
+
+When adding a new personal skill, add its name to `C:\apps\skills\skills.json`, then run installer/verifier.
+
+## Agent sync and verification
+
+- Verify Pi config + skills: `powershell -ExecutionPolicy Bypass -File .\windows\scripts\verify-links.ps1`
+- Sync/fix Pi skills and verify all agent links: `powershell -ExecutionPolicy Bypass -File .\windows\scripts\sync-agent.ps1`
+
 ## Installers
 
 - Windows setup: `powershell -ExecutionPolicy Bypass -File .\windows\setup.ps1` from elevated PowerShell.
