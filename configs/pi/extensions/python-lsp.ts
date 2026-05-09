@@ -232,15 +232,25 @@ export default function pythonLspExtension(pi: ExtensionAPI) {
 		ctx.ui.setStatus("python-lsp", "py-lsp: starting");
 		void getClient(ctx, ctx.signal)
 			.then(() => {
-				ctx.ui.setStatus("python-lsp", "py-lsp: ready");
-				if (event.reason === "startup" || event.reason === "reload") {
-					ctx.ui.notify("Python LSP ready (basedpyright via uv --with)", "success");
+				if (ctx.signal?.aborted) return;
+				try {
+					ctx.ui.setStatus("python-lsp", "py-lsp: ready");
+					if (event.reason === "startup" || event.reason === "reload") {
+						ctx.ui.notify("Python LSP ready (basedpyright via uv --with)", "success");
+					}
+				} catch {
+					// Session was replaced/reloaded after async LSP startup completed.
 				}
 			})
 			.catch((error) => {
 				lspActive = false;
-				ctx.ui.setStatus("python-lsp", "py-lsp: failed");
-				ctx.ui.notify(`${error instanceof Error ? error.message : String(error)}`, "warning");
+				if (ctx.signal?.aborted) return;
+				try {
+					ctx.ui.setStatus("python-lsp", "py-lsp: failed");
+					ctx.ui.notify(`${error instanceof Error ? error.message : String(error)}`, "warning");
+				} catch {
+					// Session was replaced/reloaded after async LSP startup failed.
+				}
 			});
 	});
 
