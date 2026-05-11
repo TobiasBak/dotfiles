@@ -26,6 +26,7 @@ Test-Link (Join-Path $HOME ".pi/agent/settings.json") (Join-Path $RepoRoot "conf
 Test-Link (Join-Path $HOME ".pi/agent/APPEND_SYSTEM.md") (Join-Path $RepoRoot "configs/pi/APPEND_SYSTEM.md")
 Test-Link (Join-Path $HOME ".pi/agent/extensions") (Join-Path $RepoRoot "configs/pi/extensions")
 Test-Link (Join-Path $HOME ".pi/agent/prompts") (Join-Path $RepoRoot "configs/pi/prompts")
+Test-Link (Join-Path $HOME ".pi/agent/keybindings.json") (Join-Path $RepoRoot "configs/pi/keybindings.json")
 
 $SkillsVerifier = "C:\apps\skills\scripts\verify-links.ps1"
 if (Test-Path -LiteralPath $SkillsVerifier) {

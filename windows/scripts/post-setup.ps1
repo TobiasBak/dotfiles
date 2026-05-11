@@ -48,11 +48,28 @@ if (Test-Path $wtSettingsPath) {
         
         if ($pwshProfile) {
             $settings.defaultProfile = $pwshProfile.guid
-            $settings | ConvertTo-Json -Depth 10 | Set-Content $wtSettingsPath
             Write-Host "Successfully set PowerShell 7 as the default profile in Windows Terminal." -ForegroundColor Green
         } else {
             Write-Warning "Could not find a PowerShell 7 profile in Windows Terminal settings."
         }
+
+        $shiftEnterInput = [string]([char]27) + "[13;2u"
+        $shiftEnterBinding = [ordered]@{
+            command = [ordered]@{
+                action = "sendInput"
+                input = $shiftEnterInput
+            }
+            keys = "shift+enter"
+        }
+
+        if (-not ($settings.PSObject.Properties.Name -contains "keybindings") -or $null -eq $settings.keybindings) {
+            $settings | Add-Member -NotePropertyName "keybindings" -NotePropertyValue @()
+        }
+
+        $settings.keybindings = @($shiftEnterBinding) + @($settings.keybindings | Where-Object { $_.keys -ne "shift+enter" })
+        Write-Host "Configured Shift+Enter to send Kitty CSI-u newline sequence for Pi." -ForegroundColor Green
+
+        $settings | ConvertTo-Json -Depth 10 | Set-Content $wtSettingsPath
     } catch {
         Write-Warning "Failed to update Windows Terminal settings: $_"
     }
@@ -97,6 +114,12 @@ $piPromptsSource = Join-Path $ConfigsDir "pi\prompts"
 $piPromptsTarget = Join-Path $HOME ".pi\agent\prompts"
 if (Test-Path $piPromptsSource) {
     Link-DotfileConfig $piPromptsSource $piPromptsTarget
+}
+
+$piKeybindingsSource = Join-Path $ConfigsDir "pi\keybindings.json"
+$piKeybindingsTarget = Join-Path $HOME ".pi\agent\keybindings.json"
+if (Test-Path $piKeybindingsSource) {
+    Link-DotfileConfig $piKeybindingsSource $piKeybindingsTarget
 }
 
 # 3. Install Pi skills from private skills repo
