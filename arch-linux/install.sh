@@ -132,12 +132,30 @@ backup_file() {
     fi
 }
 
+ensure_parent_dir() {
+    local target=$1
+    local parent
+    parent=$(dirname "$target")
+
+    if [ -d "$parent" ]; then
+        return
+    fi
+
+    if [ -L "$parent" ]; then
+        rm "$parent"
+        log_warning "Removed stale parent symlink: $parent"
+    elif [ -e "$parent" ]; then
+        backup_file "$parent"
+    fi
+
+    mkdir -p "$parent"
+}
+
 link_config() {
     local source=$1
     local target=$2
 
-    # Ensure parent directory exists
-    mkdir -p "$(dirname "$target")"
+    ensure_parent_dir "$target"
 
     # Check if correct link already exists
     if [ -L "$target" ] && [ "$(readlink -f "$target")" == "$source" ]; then
@@ -261,13 +279,13 @@ install_pi_skills() {
         return
     fi
 
-    if [ ! -x "$skills_dir/scripts/install-links.sh" ]; then
-        log_warning "$skills_dir/scripts/install-links.sh is missing or not executable. Skipping Pi skills."
+    if [ ! -f "$skills_dir/scripts/install-links.sh" ]; then
+        log_warning "$skills_dir/scripts/install-links.sh is missing. Skipping Pi skills."
         return
     fi
 
     rm -rf "$target_dir"
-    PI_SKILLS_DIR="$target_dir" "$skills_dir/scripts/install-links.sh"
+    PI_SKILLS_DIR="$target_dir" bash "$skills_dir/scripts/install-links.sh"
     log_success "Pi skills installed."
 }
 
