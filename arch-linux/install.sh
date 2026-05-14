@@ -17,6 +17,7 @@ PACKAGES=(
     "quickshell"
     "ghostty"
     "htop"
+    "eza"
     "niri"
     "xwayland-satellite"
     "wl-clipboard"
@@ -245,16 +246,24 @@ install_node() {
 
 install_pi_skills() {
     local skills_repo="https://github.com/TobiasBak/skills.git"
-    local skills_dir="$HOME/apps/skills"
+    local skills_dir="$HOME/code/skills"
     local target_dir="$HOME/.pi/agent/skills"
 
-    log_info "Installing Pi skills from $skills_repo..."
+    log_info "Installing Pi skills from $skills_dir..."
     mkdir -p "$(dirname "$skills_dir")"
     if [ -d "$skills_dir/.git" ]; then
         git -C "$skills_dir" pull --ff-only
-    else
+    elif [ ! -e "$skills_dir" ]; then
         rm -rf "$skills_dir"
         git clone "$skills_repo" "$skills_dir"
+    else
+        log_warning "$skills_dir exists but is not a git repository. Skipping Pi skills."
+        return
+    fi
+
+    if [ ! -x "$skills_dir/scripts/install-links.sh" ]; then
+        log_warning "$skills_dir/scripts/install-links.sh is missing or not executable. Skipping Pi skills."
+        return
     fi
 
     rm -rf "$target_dir"

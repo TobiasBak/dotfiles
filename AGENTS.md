@@ -20,19 +20,19 @@ If a target is a real file/dir instead of a link, report it and recommend rerunn
 
 ## Pi skills repo
 
-Pi skills are managed by separate repo `C:\apps\skills`.
+Pi skills are managed by separate repo `~/code/skills` on Linux and `C:\code\skills` on Windows.
 
 Expected links:
 
-- `~/.pi/agent/skills/<skill>` -> `C:\apps\skills\skills\<skill>` for personal skills listed in `C:\apps\skills\skills.json`.
-- `~/.pi/agent/skills/<skill>` -> `C:\apps\skills\external\mattpocock-skills\<skill>` for external skills listed in `C:\apps\skills\skills.json`.
+- `~/.pi/agent/skills/<skill>` -> `C:\code\skills\skills\<skill>` for personal skills listed in `C:\code\skills\skills.json`.
+- `~/.pi/agent/skills/<skill>` -> `C:\code\skills\external\mattpocock-skills\<skill>` for external skills listed in `C:\code\skills\skills.json`.
 
 Use PowerShell on Windows. Git Bash `ln -s` can create links that native Windows/Pi does not see correctly.
 
-- Install/fix skills: `powershell -ExecutionPolicy Bypass -File C:\apps\skills\scripts\install-links.ps1 -Fix`
-- Verify skills: `powershell -ExecutionPolicy Bypass -File C:\apps\skills\scripts\verify-links.ps1`
+- Install/fix skills: `powershell -ExecutionPolicy Bypass -File C:\code\skills\scripts\install-links.ps1 -Fix`
+- Verify skills: `powershell -ExecutionPolicy Bypass -File C:\code\skills\scripts\verify-links.ps1`
 
-When adding a new personal skill, add its name to `C:\apps\skills\skills.json`, then run installer/verifier.
+When adding a new personal skill, add its name to `C:\code\skills\skills.json`, then run installer/verifier.
 
 ## Agent sync and verification
 

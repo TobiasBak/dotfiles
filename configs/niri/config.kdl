@@ -170,6 +170,21 @@ animations {
     off
 }
 
+debug {
+    // Work around PipeWire/DRM modifier negotiation failures in screencasts.
+    force-pipewire-invalid-modifier
+
+    // Mixed AMD+NVIDIA setups can fail PipeWire screencast negotiation when
+    // niri renders on the NVIDIA node. Prefer the AMD render node instead.
+    render-drm-device "/dev/dri/renderD128"
+
+    // Force composited rendering while debugging PipeWire screencast failures.
+    disable-cursor-plane
+    disable-direct-scanout
+    restrict-primary-scanout-to-matching-format
+    wait-for-frame-completion-before-queueing
+}
+
 window-rule {
     // This regular expression is intentionally made as specific as possible,
     // since this is the default config, and we want no false positives.

@@ -1,4 +1,8 @@
 command = /usr/bin/zsh
+working-directory = home
+window-inherit-working-directory = false
+tab-inherit-working-directory = false
+split-inherit-working-directory = false
 
 font-family = JetBrainsMono Nerd Font
 font-size = 11

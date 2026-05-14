@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "../..")
-$SkillsInstaller = "C:\apps\skills\scripts\install-links.ps1"
+$SkillsInstaller = "C:\code\skills\scripts\install-links.ps1"
 if (!(Test-Path -LiteralPath $SkillsInstaller)) {
     throw "Missing skills installer: $SkillsInstaller"
 }

@@ -109,6 +109,20 @@ bindkey -M menuselect '^M' .accept-line
 
 # Codex
 alias cy='codex --dangerously-bypass-approvals-and-sandbox'
+alias ls='eza --icons --grid --group-directories-first'
+
+# Prefer pnpm for interactive package management.
+npm() {
+  print -u2 "npm is blocked in this shell. Use pnpm instead."
+  print -u2 "If you really need npm once, run: command npm $*"
+  return 1
+}
+
+npx() {
+  print -u2 "npx is blocked in this shell. Use pnpm dlx instead."
+  print -u2 "If you really need npx once, run: command npx $*"
+  return 1
+}
 
 # nvm
 source /usr/share/nvm/init-nvm.sh
@@ -127,8 +141,6 @@ ZSH_HIGHLIGHT_STYLES[unknown-token]='fg=#ff5555'
 
 # pnpm
 export PNPM_HOME="/home/tobias/.local/share/pnpm"
-case ":$PATH:" in
-  *":$PNPM_HOME:"*) ;;
-  *) export PATH="$PNPM_HOME:$PATH" ;;
-esac
+path=("$PNPM_HOME" ${path:#$PNPM_HOME})
+export PATH
 # pnpm end
