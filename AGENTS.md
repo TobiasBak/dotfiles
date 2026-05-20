@@ -13,6 +13,9 @@ Check relevant links before or after config edits:
   - `~/.pi/agent/APPEND_SYSTEM.md` -> `configs/pi/APPEND_SYSTEM.md`
   - `~/.pi/agent/extensions` -> `configs/pi/extensions`
   - `~/.pi/agent/prompts` -> `configs/pi/prompts`
+- Windows Codex CLI config:
+  - `~/.codex/config.toml` -> `configs/codex/config.toml`
+  - `~/.codex/prompts` -> `configs/codex/prompts`
 - Windows app configs installed by `windows/scripts/post-setup.ps1`.
 - Linux configs installed by `arch-linux/install.sh` into `$HOME`, Oh My Zsh, and `$HOME/.config`.
 

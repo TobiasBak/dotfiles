@@ -1,0 +1,23 @@
+model = "gpt-5.5"
+model_reasoning_effort = "low"
+approvals_reviewer = "user"
+
+[projects.'c:\apps']
+trust_level = "trusted"
+
+[projects.'c:\apps\dotfiles']
+trust_level = "trusted"
+
+[windows]
+sandbox = "elevated"
+
+[tui]
+status_line = ["model-with-reasoning", "current-dir", "context-used", "context-window-size"]
+status_line_use_colors = true
+
+[features]
+terminal_resize_reflow = true
+goals = true
+
+[notice]
+hide_full_access_warning = true

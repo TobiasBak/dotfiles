@@ -122,6 +122,18 @@ if (Test-Path $piKeybindingsSource) {
     Link-DotfileConfig $piKeybindingsSource $piKeybindingsTarget
 }
 
+$codexConfigSource = Join-Path $ConfigsDir "codex\config.toml"
+$codexConfigTarget = Join-Path $HOME ".codex\config.toml"
+if (Test-Path $codexConfigSource) {
+    Link-DotfileConfig $codexConfigSource $codexConfigTarget
+}
+
+$codexPromptsSource = Join-Path $ConfigsDir "codex\prompts"
+$codexPromptsTarget = Join-Path $HOME ".codex\prompts"
+if (Test-Path $codexPromptsSource) {
+    Link-DotfileConfig $codexPromptsSource $codexPromptsTarget
+}
+
 # 3. Install Pi skills from private skills repo
 $piSkillsRepo = "https://github.com/TobiasBak/skills.git"
 $piSkillsDir = "C:\apps\skills"
