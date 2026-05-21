@@ -23,8 +23,7 @@
     isNormalUser = true;
     extraGroups = [ "wheel" "networkmanager" ];
     openssh.authorizedKeys.keys = [
-      # Replace this with your real public key before relying on remote SSH.
-      "ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY tobias"
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFEvr2qCdxh7peyDqmauJKmLiql3e77uo8+IrkmSwRDe tobias@windows"
     ];
   };
 
