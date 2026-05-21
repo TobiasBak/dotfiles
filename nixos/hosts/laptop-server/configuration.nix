@@ -12,12 +12,15 @@
   boot.loader.efi.canTouchEfiVariables = true;
 
   services.xserver.enable = true;
+  services.xserver.xkb.layout = "dk";
   services.xserver.desktopManager.xfce.enable = true;
   services.xrdp = {
     enable = true;
     defaultWindowManager = "startxfce4";
     openFirewall = false;
   };
+
+  console.keyMap = "dk";
 
   users.users.tobias = {
     isNormalUser = true;
