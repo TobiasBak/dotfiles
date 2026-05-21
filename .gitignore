@@ -1,5 +1,25 @@
 .env
+.env.*
+!.env.example
 .claude/settings.local.json
+
+# Local secrets and machine-private NixOS files
+*.age
+*.key
+*.pem
+*.p12
+*.pfx
+*.secret
+*.secrets
+secrets/
+nixos/secrets/
+nixos/**/secrets/
+nixos/**/tailscale-authkey*
+nixos/**/wifi*.nix
+nixos/**/wireless*.nix
+nixos/**/wpa_supplicant*.conf
+nixos/**/hashed-password*.nix
+nixos/**/password*.nix
 
 # Quickshell runtime data
 arch-linux/.config/quickshell/bar-scales.json
