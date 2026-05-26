@@ -42,6 +42,10 @@ When adding a new personal skill, add its name to `C:\code\skills\skills.json`, 
 - Verify Pi config + skills: `powershell -ExecutionPolicy Bypass -File .\windows\scripts\verify-links.ps1`
 - Sync/fix Pi skills and verify all agent links: `powershell -ExecutionPolicy Bypass -File .\windows\scripts\sync-agent.ps1`
 
+## NixOS servers
+
+Before changing or remotely rebuilding NixOS servers, read `nixos/README.md`, especially remote server operation notes. Prefer normal OpenSSH over Tailscale (`tailscale up --ssh=false`) unless user explicitly wants Tailscale SSH browser checks. Avoid interactive `nixos-rebuild switch` over SSH for networking/firewall/SSH/Tailscale changes; use `dry-build` then `boot + reboot` or detached `systemd-run`.
+
 ## Installers
 
 - Windows setup: `powershell -ExecutionPolicy Bypass -File .\windows\setup.ps1` from elevated PowerShell.

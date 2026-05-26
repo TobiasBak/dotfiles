@@ -39,10 +39,10 @@ Install or rebuild with:
 nixos-install --flake /mnt/path/to/dotfiles/nixos#laptop-server
 ```
 
-After booting:
+After booting, join Tailscale without Tailscale SSH if you want normal OpenSSH key auth:
 
 ```bash
-sudo tailscale up --ssh
+sudo tailscale up --ssh=false
 ```
 
 Verify SSH from another Tailscale device:
@@ -52,6 +52,82 @@ ssh tobias@laptop-server
 ```
 
 Use Windows Remote Desktop over Tailscale by connecting to `laptop-server` or the laptop's Tailscale IP. The config enables xrdp but does not open the normal LAN firewall port for RDP.
+
+## Remote server operation
+
+### Prefer normal OpenSSH over Tailscale
+
+Tailscale MagicDNS can still be used with normal OpenSSH:
+
+```bash
+ssh tobias@laptop-server
+```
+
+Keep `services.openssh.enable = true` and declare `users.users.<user>.openssh.authorizedKeys.keys` in NixOS config. Disable Tailscale SSH with:
+
+```bash
+sudo tailscale up --ssh=false
+```
+
+Reason: Tailscale SSH may require browser re-auth/checks based on tailnet ACLs. Normal OpenSSH over the Tailscale IP uses SSH keys and avoids frequent Tailscale login prompts.
+
+### Remote rebuild safety
+
+Avoid plain interactive `nixos-rebuild switch` over SSH when changing any of these:
+
+- NetworkManager/networking
+- firewall rules
+- SSH/OpenSSH
+- Tailscale
+- hostname
+- remote desktop/NAS services needed for access
+
+A switch may restart NetworkManager, firewall, tailscaled, or sshd. If the SSH session dies, the activation can be interrupted or leave you without remote access until local reboot.
+
+Safer patterns:
+
+```bash
+sudo nixos-rebuild dry-build -I nixos-config=/etc/nixos/configuration.nix
+```
+
+Then either apply on next boot:
+
+```bash
+sudo nixos-rebuild boot -I nixos-config=/etc/nixos/configuration.nix
+sudo reboot
+```
+
+or run the switch detached under systemd so it keeps running after SSH drops:
+
+```bash
+sudo systemd-run --unit=nixos-switch --collect --same-dir \
+  nixos-rebuild switch -I nixos-config=/etc/nixos/configuration.nix
+```
+
+For risky changes, keep local console/keyboard access available.
+
+### NAS access: split LAN and remote paths
+
+For home use, prefer LAN SMB path:
+
+```text
+\\192.168.86.209\nas
+```
+
+For remote use, prefer Tailscale MagicDNS:
+
+```text
+\\laptop-server\nas
+```
+
+Samba `hosts allow` should include both Tailscale and home LAN ranges, for example:
+
+```nix
+"hosts allow" = "100.64.0.0/10 192.168.86.0/24 127.0.0.1";
+"hosts deny" = "0.0.0.0/0";
+```
+
+Reason: local NAS should not depend on Tailscale DERP/control-plane/DNS health while at home.
 
 ## Notes
 
