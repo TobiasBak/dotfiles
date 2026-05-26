@@ -3,6 +3,9 @@
 !.env.example
 .claude/settings.local.json
 
+# Local temp workspace
+/tmp/
+
 # Local secrets and machine-private NixOS files
 *.age
 *.key
