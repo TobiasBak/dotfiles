@@ -6,6 +6,28 @@ This directory contains flake-based NixOS host configs.
 
 - `laptop-server`: lightweight laptop server with XFCE, xrdp, SSH, Tailscale, firewall, garbage collection, and laptop sleep disabled.
 
+## Source of truth
+
+`laptop-server` must run the config from this repo. Do not make lasting edits
+directly in `/etc/nixos/configuration.nix` on the laptop. Change files under
+`nixos/` here, copy or pull the repo on the laptop, then rebuild from the flake:
+
+```bash
+cd /path/to/dotfiles/nixos
+nix build .#nixosConfigurations.laptop-server.config.system.build.toplevel
+sudo nixos-rebuild switch --flake .#laptop-server
+```
+
+If emergency changes are made on the laptop, immediately copy them back into
+this repo and rebuild from the flake. `/etc/nixos` is not the source of truth.
+
+The generated hardware config is the only machine-specific file expected in the
+repo:
+
+```bash
+cp /etc/nixos/hardware-configuration.nix /path/to/dotfiles/nixos/hosts/laptop-server/hardware-configuration.nix
+```
+
 ## Install flow
 
 From the NixOS installer:
@@ -33,7 +55,7 @@ cp /mnt/etc/nixos/hardware-configuration.nix /mnt/path/to/dotfiles/nixos/hosts/l
 
 Before the first rebuild, edit `hosts/laptop-server/configuration.nix` and replace the placeholder SSH key.
 
-Install or rebuild with:
+Install with:
 
 ```bash
 nixos-install --flake /mnt/path/to/dotfiles/nixos#laptop-server
@@ -51,7 +73,7 @@ Verify SSH from another Tailscale device:
 ssh tobias@laptop-server
 ```
 
-Use Windows Remote Desktop over Tailscale by connecting to `laptop-server` or the laptop's Tailscale IP. The config enables xrdp but does not open the normal LAN firewall port for RDP.
+Use Windows Remote Desktop over Tailscale by connecting to `laptop-server` or the laptop's Tailscale IP. The config enables xrdp.
 
 ## Remote server operation
 
@@ -84,16 +106,17 @@ Avoid plain interactive `nixos-rebuild switch` over SSH when changing any of the
 
 A switch may restart NetworkManager, firewall, tailscaled, or sshd. If the SSH session dies, the activation can be interrupted or leave you without remote access until local reboot.
 
-Safer patterns:
+Safer flake patterns:
 
 ```bash
-sudo nixos-rebuild dry-build -I nixos-config=/etc/nixos/configuration.nix
+cd /path/to/dotfiles/nixos
+nix build .#nixosConfigurations.laptop-server.config.system.build.toplevel
 ```
 
 Then either apply on next boot:
 
 ```bash
-sudo nixos-rebuild boot -I nixos-config=/etc/nixos/configuration.nix
+sudo nixos-rebuild boot --flake .#laptop-server
 sudo reboot
 ```
 
@@ -101,10 +124,23 @@ or run the switch detached under systemd so it keeps running after SSH drops:
 
 ```bash
 sudo systemd-run --unit=nixos-switch --collect --same-dir \
-  nixos-rebuild switch -I nixos-config=/etc/nixos/configuration.nix
+  nixos-rebuild switch --flake .#laptop-server
 ```
 
 For risky changes, keep local console/keyboard access available.
+
+### Remote update from Windows
+
+From this repo on Windows:
+
+```powershell
+scp -r .\nixos\* tobias@laptop-server:~/dotfiles-nixos/
+ssh tobias@laptop-server "cd ~/dotfiles-nixos && nix build .#nixosConfigurations.laptop-server.config.system.build.toplevel"
+ssh -t tobias@laptop-server "cd ~/dotfiles-nixos && sudo nixos-rebuild switch --flake .#laptop-server"
+```
+
+Use the last command only after the build succeeds. It prompts for the laptop
+sudo password.
 
 ### NAS access: split LAN and remote paths
 
@@ -131,7 +167,7 @@ Reason: local NAS should not depend on Tailscale DERP/control-plane/DNS health w
 
 ## Notes
 
-- Tailscale is enabled, but the machine is not automatically joined to a tailnet. Run `tailscale up` after boot or add an auth-key based flow later.
+- Tailscale is enabled, but the machine is not automatically joined to a tailnet. Run `tailscale up --ssh=false` after boot or add an auth-key based flow later.
 - `hardware-configuration.nix` is intentionally machine-specific. Do not reuse it across laptops without regenerating it.
 - Automatic system upgrades are not enabled by default because the final flake path depends on where you keep this repo on the installed machine.
 - Public internet exposure should be added deliberately with Tailscale Funnel, a reverse proxy, or router port forwarding only after the private setup is working.
