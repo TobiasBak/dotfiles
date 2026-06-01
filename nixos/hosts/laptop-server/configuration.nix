@@ -75,7 +75,7 @@
       users = [ "tobias" ];
       commands = [
         {
-          command = "/run/current-system/sw/bin/systemd-run --unit=nixos-switch --collect /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/dotfiles-nixos#laptop-server";
+          command = "/run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/dotfiles-nixos#laptop-server";
           options = [ "NOPASSWD" ];
         }
       ];
