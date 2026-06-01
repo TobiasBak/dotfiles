@@ -70,6 +70,18 @@
     ];
   };
 
+  security.sudo.extraRules = [
+    {
+      users = [ "tobias" ];
+      commands = [
+        {
+          command = "/run/current-system/sw/bin/systemd-run --unit=nixos-switch --collect /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/dotfiles-nixos#laptop-server";
+          options = [ "NOPASSWD" ];
+        }
+      ];
+    }
+  ];
+
   # Keep this at the generated install release unless you intentionally migrate it.
   system.stateVersion = "25.11";
 }

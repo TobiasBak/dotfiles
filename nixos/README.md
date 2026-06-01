@@ -136,11 +136,12 @@ From this repo on Windows:
 ```powershell
 scp -r .\nixos\* tobias@laptop-server:~/dotfiles-nixos/
 ssh tobias@laptop-server "cd ~/dotfiles-nixos && nix build .#nixosConfigurations.laptop-server.config.system.build.toplevel"
-ssh -t tobias@laptop-server "cd ~/dotfiles-nixos && sudo nixos-rebuild switch --flake .#laptop-server"
+ssh tobias@laptop-server "sudo systemd-run --unit=nixos-switch --collect /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/dotfiles-nixos#laptop-server"
 ```
 
-Use the last command only after the build succeeds. It prompts for the laptop
-sudo password.
+Use the last command only after the build succeeds. The config grants `tobias`
+passwordless sudo for that exact detached rebuild command, while normal sudo
+still requires a password.
 
 ### NAS access: split LAN and remote paths
 
