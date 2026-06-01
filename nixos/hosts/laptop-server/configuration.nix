@@ -16,7 +16,7 @@
   services.xserver.desktopManager.xfce.enable = true;
   services.xrdp = {
     enable = true;
-    defaultWindowManager = "startxfce4";
+    defaultWindowManager = "xfce4-session";
     openFirewall = false;
   };
 
@@ -45,7 +45,7 @@
     };
   };
 
-  networking.firewall.interfaces.tailscale0.allowedTCPPorts = [ 445 ];
+  networking.firewall.interfaces.tailscale0.allowedTCPPorts = [ 445 3389 ];
 
   systemd.tmpfiles.rules = [
     "d /srv/nas 0755 tobias users -"
