@@ -136,7 +136,7 @@ From this repo on Windows:
 ```powershell
 scp -r .\nixos\* tobias@laptop-server:~/dotfiles-nixos/
 ssh tobias@laptop-server "cd ~/dotfiles-nixos && nix build .#nixosConfigurations.laptop-server.config.system.build.toplevel"
-ssh tobias@laptop-server "sudo /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/dotfiles-nixos#laptop-server"
+ssh tobias@laptop-server "sudo /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/dotfiles-nixos"
 ```
 
 Use the last command only after the build succeeds. The config grants `tobias`
