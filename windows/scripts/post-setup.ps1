@@ -136,7 +136,7 @@ if (Test-Path $codexPromptsSource) {
 
 # 3. Install Pi skills from private skills repo
 $piSkillsRepo = "https://github.com/TobiasBak/skills.git"
-$piSkillsDir = "C:\apps\skills"
+$piSkillsDir = Join-Path (Split-Path $RepoRoot -Parent) "skills"
 $piSkillsTarget = Join-Path $HOME ".pi\agent\skills"
 
 Write-Host "Installing Pi skills from $piSkillsRepo..." -ForegroundColor Yellow

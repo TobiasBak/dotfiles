@@ -60,7 +60,8 @@ Test-LinkOrHardLink (Join-Path $HOME ".pi/agent/keybindings.json") (Join-Path $R
 Test-LinkOrHardLink (Join-Path $HOME ".codex/config.toml") (Join-Path $RepoRoot "configs/codex/config.toml")
 Test-Link (Join-Path $HOME ".codex/prompts") (Join-Path $RepoRoot "configs/codex/prompts")
 
-$SkillsVerifier = "C:\apps\skills\scripts\verify-links.ps1"
+$SkillsRoot = Join-Path (Split-Path $RepoRoot -Parent) "skills"
+$SkillsVerifier = Join-Path $SkillsRoot "scripts\verify-links.ps1"
 if (Test-Path -LiteralPath $SkillsVerifier) {
     & powershell -NoProfile -ExecutionPolicy Bypass -File $SkillsVerifier
     if ($LASTEXITCODE -ne 0) { $Failures += "Skill link verifier failed." }

@@ -13,7 +13,6 @@ if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
 $apps = @(
     "Git.Git",
     "GitHub.GitHubDesktop",
-    "Docker.DockerDesktop",
     "Microsoft.VisualStudioCode",
     "Microsoft.PowerShell"
 )
@@ -28,16 +27,20 @@ foreach ($app in $apps) {
     }
 }
 
-Write-Host "Installing Pi coding agent via npm..." -ForegroundColor Yellow
-if (Get-Command npm -ErrorAction SilentlyContinue) {
-    npm install -g @earendil-works/pi-coding-agent
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "Successfully installed Pi coding agent." -ForegroundColor Green
-    } else {
-        Write-Warning "Failed to install Pi coding agent via npm."
-    }
+if (Get-Command pi -ErrorAction SilentlyContinue) {
+    Write-Host "Pi coding agent already installed. Skipping npm install." -ForegroundColor Cyan
 } else {
-    Write-Warning "npm not found. Install Node.js/npm before running this setup if Pi should be installed automatically."
+    Write-Host "Installing Pi coding agent via npm..." -ForegroundColor Yellow
+    if (Get-Command npm -ErrorAction SilentlyContinue) {
+        npm install -g @earendil-works/pi-coding-agent
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "Successfully installed Pi coding agent." -ForegroundColor Green
+        } else {
+            Write-Warning "Failed to install Pi coding agent via npm."
+        }
+    } else {
+        Write-Warning "npm not found. Install Node.js/npm before running this setup if Pi should be installed automatically."
+    }
 }
 
 Write-Host "Application installation complete." -ForegroundColor Green

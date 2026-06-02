@@ -6,7 +6,7 @@ This repository contains configuration files (dotfiles) for both Windows and Arc
 
 - `configs/`: Shared program configs used by both OS installers where applicable.
   - Linux installers symlink XDG configs from here into `~/.config` plus zsh files into `$HOME` / Oh My Zsh.
-  - Windows installers symlink supported shared configs (PowerShell aliases, VS Code, Discord, Pi config/extensions/prompts, and Codex CLI config/prompts) into their Windows locations and install Pi skills from the skills repo under `C:\code\skills`.
+  - Windows installers symlink supported shared configs (PowerShell aliases, VS Code, Discord, Pi config/extensions/prompts, and Codex CLI config/prompts) into their Windows locations and install Pi skills from sibling skills repo `../skills` relative to this dotfiles repo.
 - `arch-linux/`: Arch Linux installer and Linux-only assets (for example wallpapers).
 - `nixos/`: Flake-based NixOS host configs, including a laptop server profile.
 - `windows/`: Windows setup scripts.
