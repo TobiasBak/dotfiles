@@ -32,7 +32,29 @@ function Link-DotfileConfig {
     Write-Host "Linked $Source -> $Target" -ForegroundColor Green
 }
 
-# 1. Set PowerShell 7 as the default profile in Windows Terminal (if installed)
+function Set-RegistryDword {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [Parameter(Mandatory=$true)][string]$Name,
+        [Parameter(Mandatory=$true)][int]$Value
+    )
+
+    if (-not (Test-Path $Path)) {
+        New-Item -Path $Path -Force | Out-Null
+    }
+
+    New-ItemProperty -Path $Path -Name $Name -Value $Value -PropertyType DWord -Force | Out-Null
+}
+
+# 1. Disable web and cloud content in Windows Search
+Write-Host "Disabling web and cloud content in Windows Search..." -ForegroundColor Yellow
+Set-RegistryDword -Path "HKCU:\Software\Policies\Microsoft\Windows\Explorer" -Name "DisableSearchBoxSuggestions" -Value 1
+Set-RegistryDword -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\SearchSettings" -Name "IsMSACloudSearchEnabled" -Value 0
+Set-RegistryDword -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\SearchSettings" -Name "IsAADCloudSearchEnabled" -Value 0
+Set-RegistryDword -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\SearchSettings" -Name "IsDynamicSearchBoxEnabled" -Value 0
+Write-Host "Windows Search web results, cloud content search, and search highlights are disabled for the current user." -ForegroundColor Green
+
+# 2. Set PowerShell 7 as the default profile in Windows Terminal (if installed)
 $wtSettingsPath = "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
 if (-not (Test-Path $wtSettingsPath)) {
     $wtSettingsPath = "$env:LOCALAPPDATA\Microsoft\WindowsTerminal\settings.json"
@@ -77,7 +99,7 @@ if (Test-Path $wtSettingsPath) {
     Write-Host "Windows Terminal settings not found. Skipping default profile configuration." -ForegroundColor Gray
 }
 
-# 2. Link shared program configs
+# 3. Link shared program configs
 Write-Host "Linking shared program configs..." -ForegroundColor Yellow
 
 $vsCodeSettingsSource = Join-Path $ConfigsDir "Code\User\settings.json"
@@ -134,7 +156,7 @@ if (Test-Path $codexPromptsSource) {
     Link-DotfileConfig $codexPromptsSource $codexPromptsTarget
 }
 
-# 3. Install Pi skills from private skills repo
+# 4. Install Pi skills from private skills repo
 $piSkillsRepo = "https://github.com/TobiasBak/skills.git"
 $piSkillsDir = Join-Path (Split-Path $RepoRoot -Parent) "skills"
 $piSkillsTarget = Join-Path $HOME ".pi\agent\skills"
