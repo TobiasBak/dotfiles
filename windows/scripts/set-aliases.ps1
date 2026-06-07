@@ -20,12 +20,9 @@ foreach ($Path in $ProfilePaths) {
         }
 
         $Content = Get-Content $Path
-        if ($Content -notcontains $SourceLine) {
-            Add-Content -Path $Path -Value "`n$SourceLine"
-            Write-Host "Added aliases.ps1 to $Path" -ForegroundColor Green
-        } else {
-            Write-Host "aliases.ps1 is already sourced in $Path" -ForegroundColor Cyan
-        }
+        $ContentWithoutSourceLine = @($Content | Where-Object { $_ -ne $SourceLine })
+        Set-Content -Path $Path -Value ($ContentWithoutSourceLine + "" + $SourceLine) -Encoding UTF8
+        Write-Host "Ensured aliases.ps1 is sourced last in $Path" -ForegroundColor Green
     }
 }
 

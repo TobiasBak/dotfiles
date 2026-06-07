@@ -62,11 +62,109 @@ resources:
     useLatest: true
 
 - type: Microsoft.WinGet/Package
+  name: Eza
+  properties:
+    id: eza-community.eza
+    source: winget
+    useLatest: true
+
+- type: Microsoft.WinGet/Package
+  name: Coreutils
+  properties:
+    id: Microsoft.Coreutils
+    source: winget
+    useLatest: true
+
+- type: Microsoft.WinGet/Package
   name: PowerToys
   properties:
     id: Microsoft.PowerToys
     source: winget
     useLatest: true
+
+- name: PowerToysDisableFindMyMouseDoubleCtrl
+  type: Microsoft.DSC.Transitional/PowerShellScript
+  dependsOn:
+    - PowerToys
+  properties:
+    getScript: |
+      $settingsPath = Join-Path $env:LOCALAPPDATA 'Microsoft\PowerToys\settings.json'
+      $mousePath = Join-Path $env:LOCALAPPDATA 'Microsoft\PowerToys\MouseUtils\settings.json'
+      $findMyMouseEnabled = $null
+      $activationMethod = $null
+      if (Test-Path $settingsPath) {
+        $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
+        $findMyMouseEnabled = $settings.enabled.FindMyMouse
+      }
+      if (Test-Path $mousePath) {
+        $mouse = Get-Content $mousePath -Raw | ConvertFrom-Json
+        $activationMethod = $mouse.properties.activation_method.value
+      }
+      return @{ findMyMouseEnabled = $findMyMouseEnabled; activationMethod = $activationMethod }
+    testScript: |
+      $settingsPath = Join-Path $env:LOCALAPPDATA 'Microsoft\PowerToys\settings.json'
+      $mousePath = Join-Path $env:LOCALAPPDATA 'Microsoft\PowerToys\MouseUtils\settings.json'
+      if (-not (Test-Path $settingsPath)) { return $false }
+      $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
+      $disabled = $settings.enabled.FindMyMouse -eq $false
+      $shortcut = $false
+      if (Test-Path $mousePath) {
+        $mouse = Get-Content $mousePath -Raw | ConvertFrom-Json
+        $shortcut = $mouse.properties.activation_method.value -eq 3
+      }
+      return ($disabled -and $shortcut)
+    setScript: |
+      $root = Join-Path $env:LOCALAPPDATA 'Microsoft\PowerToys'
+      $settingsPath = Join-Path $root 'settings.json'
+      $mouseDir = Join-Path $root 'MouseUtils'
+      $mousePath = Join-Path $mouseDir 'settings.json'
+      New-Item -ItemType Directory -Force -Path $root, $mouseDir | Out-Null
+
+      if (Test-Path $settingsPath) {
+        $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
+      } else {
+        $settings = [pscustomobject]@{ enabled = [pscustomobject]@{} }
+      }
+      if (-not $settings.PSObject.Properties['enabled']) {
+        $settings | Add-Member -NotePropertyName enabled -NotePropertyValue ([pscustomobject]@{})
+      }
+      if ($settings.enabled.PSObject.Properties['FindMyMouse']) {
+        $settings.enabled.FindMyMouse = $false
+      } else {
+        $settings.enabled | Add-Member -NotePropertyName FindMyMouse -NotePropertyValue $false
+      }
+      $settings | ConvertTo-Json -Depth 20 | Set-Content -Path $settingsPath -Encoding UTF8
+
+      if (Test-Path $mousePath) {
+        $mouse = Get-Content $mousePath -Raw | ConvertFrom-Json
+      } else {
+        $mouse = [pscustomobject]@{
+          name = 'FindMyMouse'
+          version = '1.1'
+          properties = [pscustomobject]@{
+            activation_method = [pscustomobject]@{ value = 3 }
+            include_win_key = [pscustomobject]@{ value = $false }
+            activation_shortcut = [pscustomobject]@{ win = $true; ctrl = $false; alt = $false; shift = $true; code = 70 }
+            do_not_activate_on_game_mode = [pscustomobject]@{ value = $true }
+            background_color = [pscustomobject]@{ value = '#80000000' }
+            spotlight_color = [pscustomobject]@{ value = '#80FFFFFF' }
+            spotlight_radius = [pscustomobject]@{ value = 100 }
+            animation_duration_ms = [pscustomobject]@{ value = 500 }
+            spotlight_initial_zoom = [pscustomobject]@{ value = 9 }
+            excluded_apps = [pscustomobject]@{ value = '' }
+            shaking_minimum_distance = [pscustomobject]@{ value = 1000 }
+            shaking_interval_ms = [pscustomobject]@{ value = 1000 }
+            shaking_factor = [pscustomobject]@{ value = 400 }
+          }
+        }
+      }
+      if (-not $mouse.PSObject.Properties['properties']) { $mouse | Add-Member -NotePropertyName properties -NotePropertyValue ([pscustomobject]@{}) }
+      if ($mouse.properties.PSObject.Properties['activation_method']) {
+        $mouse.properties.activation_method.value = 3
+      } else {
+        $mouse.properties | Add-Member -NotePropertyName activation_method -NotePropertyValue ([pscustomobject]@{ value = 3 })
+      }
+      $mouse | ConvertTo-Json -Depth 20 | Set-Content -Path $mousePath -Encoding UTF8
 
 - type: Microsoft.WinGet/Package
   name: OhMyPosh

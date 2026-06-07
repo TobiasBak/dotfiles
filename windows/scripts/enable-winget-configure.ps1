@@ -22,7 +22,7 @@ if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
 }
 
 Write-Host 'Enabling winget configure...' -ForegroundColor Yellow
-& winget configure --enable --disable-interactivity --accept-source-agreements
+& winget configure --enable
 if ($LASTEXITCODE -ne 0) {
     Write-Warning "winget configure --enable exited $LASTEXITCODE. Continuing; it may already be enabled."
 }

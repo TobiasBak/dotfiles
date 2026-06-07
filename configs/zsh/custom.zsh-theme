@@ -17,8 +17,8 @@ _custom_git_prompt() {
   branch=$(command git rev-parse --short HEAD 2>/dev/null)
   [[ -z "$branch" ]] && return
 
-  # Nerd Font git branch icon (U+E725, nf-dev-git_branch)
-  local branch_icon=$'\ue725'
+  # Nerd Font branch icon
+  local branch_icon=$''
 
   # Ahead/behind upstream
   local arrows=""
