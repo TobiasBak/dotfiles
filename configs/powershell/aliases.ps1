@@ -30,4 +30,9 @@ if (Get-Command PSConsoleHostReadLine -ErrorAction SilentlyContinue) {
     }
 }
 
+if (Get-Module PSReadLine -ListAvailable) {
+    Set-PSReadLineKeyHandler -Chord Shift+Enter -Function AddLine
+    Set-PSReadLineKeyHandler -Chord Ctrl+Enter -Function AddLine
+}
+
 Write-Host "Custom aliases loaded." -ForegroundColor Gray

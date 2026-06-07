@@ -75,21 +75,44 @@ if (Test-Path $wtSettingsPath) {
             Write-Warning "Could not find a PowerShell 7 profile in Windows Terminal settings."
         }
 
-        $shiftEnterInput = [string]([char]27) + "[13;2u"
-        $shiftEnterBinding = [ordered]@{
-            command = [ordered]@{
-                action = "sendInput"
-                input = $shiftEnterInput
-            }
-            keys = "shift+enter"
+        if (-not ($settings.PSObject.Properties.Name -contains "profiles") -or $null -eq $settings.profiles) {
+            $settings | Add-Member -NotePropertyName "profiles" -NotePropertyValue ([ordered]@{})
         }
+        if (-not ($settings.profiles.PSObject.Properties.Name -contains "defaults") -or $null -eq $settings.profiles.defaults) {
+            $settings.profiles | Add-Member -NotePropertyName "defaults" -NotePropertyValue ([ordered]@{})
+        }
+        if (-not ($settings.profiles.defaults.PSObject.Properties.Name -contains "font") -or $null -eq $settings.profiles.defaults.font) {
+            $settings.profiles.defaults | Add-Member -NotePropertyName "font" -NotePropertyValue ([ordered]@{})
+        }
+        if ($settings.profiles.defaults.font.PSObject.Properties.Name -contains "face") {
+            $settings.profiles.defaults.font.face = "JetBrainsMono Nerd Font"
+        } else {
+            $settings.profiles.defaults.font | Add-Member -NotePropertyName "face" -NotePropertyValue "JetBrainsMono Nerd Font"
+        }
+        Write-Host "Configured Windows Terminal to use JetBrainsMono Nerd Font by default." -ForegroundColor Green
 
         if (-not ($settings.PSObject.Properties.Name -contains "keybindings") -or $null -eq $settings.keybindings) {
             $settings | Add-Member -NotePropertyName "keybindings" -NotePropertyValue @()
         }
 
-        $settings.keybindings = @($shiftEnterBinding) + @($settings.keybindings | Where-Object { $_.keys -ne "shift+enter" })
-        Write-Host "Configured Shift+Enter to send Kitty CSI-u newline sequence for Pi." -ForegroundColor Green
+        $shiftEnterCsiInput = "$([char]27)[13;2u"
+        $badShiftEnterActionIds = @()
+        if ($settings.PSObject.Properties.Name -contains "actions" -and $null -ne $settings.actions) {
+            $badShiftEnterActionIds = @($settings.actions | Where-Object {
+                $_.command.action -eq "sendInput" -and $_.command.input -eq $shiftEnterCsiInput
+            } | ForEach-Object { $_.id })
+            $settings.actions = @($settings.actions | Where-Object {
+                $badShiftEnterActionIds -notcontains $_.id
+            })
+        }
+
+        $settings.keybindings = @($settings.keybindings | Where-Object {
+            -not (
+                ($_.keys -eq "shift+enter" -and $_.command.action -eq "sendInput" -and $_.command.input -eq $shiftEnterCsiInput) -or
+                ($badShiftEnterActionIds -contains $_.id)
+            )
+        })
+        Write-Host "Removed Windows Terminal Shift+Enter CSI-u binding; PowerShell handles multiline input via PSReadLine." -ForegroundColor Green
 
         $settings | ConvertTo-Json -Depth 10 | Set-Content $wtSettingsPath
     } catch {

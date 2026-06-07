@@ -18,6 +18,13 @@ resources:
     useLatest: true
 
 - type: Microsoft.WinGet/Package
+  name: JetBrainsMonoNerdFont
+  properties:
+    id: DEVCOM.JetBrainsMonoNerdFont
+    source: winget
+    useLatest: true
+
+- type: Microsoft.WinGet/Package
   name: PowerShell
   properties:
     id: Microsoft.PowerShell
@@ -165,6 +172,126 @@ resources:
         $mouse.properties | Add-Member -NotePropertyName activation_method -NotePropertyValue ([pscustomobject]@{ value = 3 })
       }
       $mouse | ConvertTo-Json -Depth 20 | Set-Content -Path $mousePath -Encoding UTF8
+
+- name: PowerToysCtrlShiftSpacePowerShellTerminal
+  type: Microsoft.DSC.Transitional/PowerShellScript
+  dependsOn:
+    - PowerToys
+    - Terminal
+    - PowerShell
+  properties:
+    getScript: |
+      $root = Join-Path $env:LOCALAPPDATA 'Microsoft\PowerToys'
+      $settingsPath = Join-Path $root 'settings.json'
+      $keyboardPath = Join-Path $root 'Keyboard Manager\default.json'
+      $keyboardEnabled = $null
+      $mappingPresent = $false
+      if (Test-Path $settingsPath) {
+        $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
+        $keyboardEnabled = $settings.enabled.'Keyboard Manager'
+      }
+      if (Test-Path $keyboardPath) {
+        $profile = Get-Content $keyboardPath -Raw | ConvertFrom-Json
+        $mappingPresent = [bool]($profile.remapShortcuts.global | Where-Object {
+          $_.originalKeys -eq '17;16;32' -and $_.operationType -eq 1 -and
+          $_.runProgramFilePath -match 'wt\.exe$' -and $_.runProgramArgs -eq '-p PowerShell'
+        })
+      }
+      return @{ keyboardEnabled = $keyboardEnabled; mappingPresent = $mappingPresent }
+    testScript: |
+      $root = Join-Path $env:LOCALAPPDATA 'Microsoft\PowerToys'
+      $settingsPath = Join-Path $root 'settings.json'
+      $keyboardPath = Join-Path $root 'Keyboard Manager\default.json'
+      if (-not (Test-Path $settingsPath) -or -not (Test-Path $keyboardPath)) { return $false }
+      $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
+      if ($settings.enabled.'Keyboard Manager' -ne $true) { return $false }
+      $profile = Get-Content $keyboardPath -Raw | ConvertFrom-Json
+      return [bool]($profile.remapShortcuts.global | Where-Object {
+        $_.originalKeys -eq '17;16;32' -and $_.operationType -eq 1 -and
+        $_.runProgramFilePath -match 'wt\.exe$' -and $_.runProgramArgs -eq '-p PowerShell'
+      })
+    setScript: |
+      $root = Join-Path $env:LOCALAPPDATA 'Microsoft\PowerToys'
+      $settingsPath = Join-Path $root 'settings.json'
+      $keyboardDir = Join-Path $root 'Keyboard Manager'
+      $keyboardSettingsPath = Join-Path $keyboardDir 'settings.json'
+      $keyboardProfilePath = Join-Path $keyboardDir 'default.json'
+      New-Item -ItemType Directory -Force -Path $root, $keyboardDir | Out-Null
+
+      if (Test-Path $settingsPath) {
+        $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
+      } else {
+        $settings = [pscustomobject]@{ enabled = [pscustomobject]@{} }
+      }
+      if (-not $settings.PSObject.Properties['enabled']) {
+        $settings | Add-Member -NotePropertyName enabled -NotePropertyValue ([pscustomobject]@{})
+      }
+      if ($settings.enabled.PSObject.Properties['Keyboard Manager']) {
+        $settings.enabled.'Keyboard Manager' = $true
+      } else {
+        $settings.enabled | Add-Member -NotePropertyName 'Keyboard Manager' -NotePropertyValue $true
+      }
+      $settings | ConvertTo-Json -Depth 20 | Set-Content -Path $settingsPath -Encoding UTF8
+
+      if (Test-Path $keyboardSettingsPath) {
+        $keyboardSettings = Get-Content $keyboardSettingsPath -Raw | ConvertFrom-Json
+      } else {
+        $keyboardSettings = [pscustomobject]@{
+          properties = [pscustomobject]@{
+            activeConfiguration = [pscustomobject]@{ value = 'default' }
+            keyboardConfigurations = [pscustomobject]@{ value = @('default') }
+            DefaultEditorShortcut = [pscustomobject]@{ win = $true; ctrl = $false; alt = $false; shift = $true; code = 81; key = '' }
+            EditorShortcut = [pscustomobject]@{ win = $true; ctrl = $false; alt = $false; shift = $true; code = 81; key = '' }
+            useNewEditor = $false
+          }
+          name = 'Keyboard Manager'
+          version = '1'
+        }
+      }
+      $keyboardSettings | ConvertTo-Json -Depth 20 | Set-Content -Path $keyboardSettingsPath -Encoding UTF8
+
+      if (Test-Path $keyboardProfilePath) {
+        $profile = Get-Content $keyboardProfilePath -Raw | ConvertFrom-Json
+      } else {
+        $profile = [pscustomobject]@{}
+      }
+      if (-not $profile.PSObject.Properties['remapKeys']) {
+        $profile | Add-Member -NotePropertyName remapKeys -NotePropertyValue ([pscustomobject]@{ inProcess = @() })
+      }
+      if (-not $profile.PSObject.Properties['remapKeysToText']) {
+        $profile | Add-Member -NotePropertyName remapKeysToText -NotePropertyValue ([pscustomobject]@{ inProcess = @() })
+      }
+      if (-not $profile.PSObject.Properties['remapShortcuts']) {
+        $profile | Add-Member -NotePropertyName remapShortcuts -NotePropertyValue ([pscustomobject]@{ global = @(); appSpecific = @() })
+      }
+      if (-not $profile.remapShortcuts.PSObject.Properties['global']) {
+        $profile.remapShortcuts | Add-Member -NotePropertyName global -NotePropertyValue @()
+      }
+      if (-not $profile.remapShortcuts.PSObject.Properties['appSpecific']) {
+        $profile.remapShortcuts | Add-Member -NotePropertyName appSpecific -NotePropertyValue @()
+      }
+      if (-not $profile.PSObject.Properties['remapShortcutsToText']) {
+        $profile | Add-Member -NotePropertyName remapShortcutsToText -NotePropertyValue ([pscustomobject]@{ global = @(); appSpecific = @() })
+      }
+
+      $wt = Get-Command wt.exe -ErrorAction SilentlyContinue
+      $wtPath = if ($wt) { $wt.Source } else { Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\wt.exe' }
+      $mapping = [pscustomobject]@{
+        originalKeys = '17;16;32'
+        operationType = 1
+        secondKeyOfChord = 0
+        runProgramElevationLevel = 0
+        runProgramAlreadyRunningAction = 0
+        runProgramStartWindowType = 0
+        runProgramFilePath = $wtPath
+        runProgramArgs = '-p PowerShell'
+        runProgramStartInDir = ''
+        unicodeText = '*Unsupported*'
+      }
+
+      $profile.remapShortcuts.global = @($profile.remapShortcuts.global | Where-Object { $_.originalKeys -notin @('91;32', '17;16;32') })
+      $profile.remapShortcuts.global = @($profile.remapShortcuts.global) + $mapping
+      $profile | ConvertTo-Json -Depth 20 | Set-Content -Path $keyboardProfilePath -Encoding UTF8
 
 - type: Microsoft.WinGet/Package
   name: OhMyPosh
@@ -389,16 +516,16 @@ resources:
     - RebootForVmp
   properties:
     getScript: |
-      $distros = (& wsl --list --quiet 2>$null) -replace "`0", ""
-      return @{ archPresent = [bool]($distros | Where-Object { $_ -eq 'Arch Linux' }) }
+      $distros = (& wsl --list --quiet 2>$null) -replace "`0", "" | ForEach-Object { $_.Trim() }
+      return @{ archPresent = [bool]($distros | Where-Object { $_ -eq 'archlinux' }) }
     testScript: |
-      $distros = (& wsl --list --quiet 2>$null) -replace "`0", ""
-      return [bool]($distros | Where-Object { $_ -eq 'Arch Linux' })
+      $distros = (& wsl --list --quiet 2>$null) -replace "`0", "" | ForEach-Object { $_.Trim() }
+      return [bool]($distros | Where-Object { $_ -eq 'archlinux' })
     setScript: |
-      Write-Host "InstallArchLinux: running wsl --install -d Arch Linux --no-launch..."
-      $process = Start-Process -FilePath "cmd.exe" -ArgumentList '/c wsl --install -d "Arch Linux" --no-launch >nul 2>&1' -Wait -PassThru
+      Write-Host "InstallArchLinux: running wsl --install -d archlinux --no-launch..."
+      $process = Start-Process -FilePath "cmd.exe" -ArgumentList '/c wsl --install -d archlinux --no-launch' -Wait -PassThru
       if ($process.ExitCode -ne 0) {
-        throw "InstallArchLinux: wsl --install -d Arch Linux --no-launch failed with exit code $($process.ExitCode)"
+        throw "InstallArchLinux: wsl --install -d archlinux --no-launch failed with exit code $($process.ExitCode)"
       }
   metadata:
     securityContext: elevated
@@ -409,10 +536,10 @@ resources:
     - InstallArchLinux
   properties:
     getScript: |
-      $marker = (& wsl -d "Arch Linux" -- bash -lc 'test -f ~/.dotfiles-arch-wsl-shell-ok && echo yes || true' 2>$null)
+      $marker = (& wsl -d archlinux -- bash -lc 'test -f ~/.dotfiles-arch-wsl-shell-ok && echo yes || true' 2>$null)
       return @{ bootstrapped = ($marker -contains 'yes') }
     testScript: |
-      $marker = (& wsl -d "Arch Linux" -- bash -lc 'test -f ~/.dotfiles-arch-wsl-shell-ok && echo yes || true' 2>$null)
+      $marker = (& wsl -d archlinux -- bash -lc 'test -f ~/.dotfiles-arch-wsl-shell-ok && echo yes || true' 2>$null)
       return ($marker -contains 'yes')
     setScript: |
       $bootstrapPath = Join-Path (Split-Path "${WinGetConfigRoot}" -Parent) 'windows\scripts\bootstrap-arch-wsl.sh'
@@ -420,9 +547,9 @@ resources:
         throw "BootstrapArchWslShell: not found: $bootstrapPath"
       }
 
-      $linuxPath = (& wsl -d "Arch Linux" -- wslpath -a $bootstrapPath) -replace "`0", ""
+      $linuxPath = (& wsl -d archlinux -- wslpath -a $bootstrapPath) -replace "`0", ""
       Write-Host "BootstrapArchWslShell: running $linuxPath inside Arch Linux..."
-      & wsl -d "Arch Linux" -- bash -lc "chmod +x '$linuxPath' && '$linuxPath' && touch ~/.dotfiles-arch-wsl-shell-ok"
+      & wsl -d archlinux -- bash -lc "chmod +x '$linuxPath' && '$linuxPath' && touch ~/.dotfiles-arch-wsl-shell-ok"
       if ($LASTEXITCODE -ne 0) {
         throw "BootstrapArchWslShell: failed with exit code $LASTEXITCODE"
       }
@@ -433,6 +560,7 @@ resources:
   type: Microsoft.DSC.Transitional/PowerShellScript
   dependsOn:
     - Terminal
+    - JetBrainsMonoNerdFont
     - BootstrapArchWslShell
   properties:
     getScript: |
@@ -449,10 +577,13 @@ resources:
           @{
             guid = '{9a6426d2-7c79-45f5-9d84-fef67f3cb1f0}'
             name = 'Arch zsh'
-            commandline = 'wsl.exe -d "Arch Linux" --cd ~ --exec zsh -l'
+            commandline = 'wsl.exe -d archlinux --cd ~ --exec zsh -l'
             startingDirectory = '%USERPROFILE%'
             hidden = $false
             tabTitle = 'Arch zsh'
+            font = @{
+              face = 'JetBrainsMono Nerd Font'
+            }
           }
         )
       }
