@@ -36,3 +36,25 @@ goals = true
 
 [notice]
 hide_full_access_warning = true
+
+[marketplaces.wt-local]
+last_updated = "2026-06-07T15:05:15Z"
+source_type = "local"
+source = '\\?\C:\Users\tobias\AppData\Local\Packages\Microsoft.IntelligentTerminal_8wekyb3d8bbwe\LocalState\IntelligentTerminal\hook-bundle-staging\codex'
+
+[plugins."wt-agent-hooks@wt-local"]
+enabled = true
+
+[hooks.state]
+
+[hooks.state."wt-agent-hooks@wt-local:hooks/hooks.json:permission_request:0:0"]
+trusted_hash = "sha256:70694805b34e9a409e6a7901e917f77bcc3e055a6db4f3166db2739f96c7128b"
+
+[hooks.state."wt-agent-hooks@wt-local:hooks/hooks.json:session_start:0:0"]
+trusted_hash = "sha256:8d4ed34e086e8e28b2c1dd8c33f67b0a3245f803b15c0fd867e1741e506874f6"
+
+[hooks.state."wt-agent-hooks@wt-local:hooks/hooks.json:user_prompt_submit:0:0"]
+trusted_hash = "sha256:f01910d7a6484d5e71a6ca26627173de73b7ff564ec60b220d9fd8d0e00fd969"
+
+[hooks.state."wt-agent-hooks@wt-local:hooks/hooks.json:stop:0:0"]
+trusted_hash = "sha256:6477235952644176d737686210df4d42bd4c73375efe1d3067c0367c746d099d"

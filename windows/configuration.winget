@@ -1,0 +1,361 @@
+# Tobias Windows developer workstation config.
+# Apply with:
+# winget configure -f .\windows\configuration.winget --accept-configuration-agreements --disable-interactivity
+
+$schema: https://raw.githubusercontent.com/PowerShell/DSC/main/schemas/2023/08/config/document.json
+metadata:
+  winget:
+    processor:
+      identifier: dscv3
+resources:
+
+# Core tools
+- type: Microsoft.WinGet/Package
+  name: Terminal
+  properties:
+    id: Microsoft.WindowsTerminal
+    source: winget
+    useLatest: true
+
+- type: Microsoft.WinGet/Package
+  name: PowerShell
+  properties:
+    id: Microsoft.PowerShell
+    source: winget
+    useLatest: true
+
+- type: Microsoft.WinGet/Package
+  name: Git
+  properties:
+    id: Git.Git
+    source: winget
+    useLatest: true
+
+- type: Microsoft.WinGet/Package
+  name: GitHubCLI
+  dependsOn:
+    - Git
+  properties:
+    id: GitHub.cli
+    source: winget
+    useLatest: true
+
+- type: Microsoft.WinGet/Package
+  name: VSCode
+  properties:
+    id: Microsoft.VisualStudioCode
+    source: winget
+    useLatest: true
+
+- type: Microsoft.WinGet/Package
+  name: NvmForWindows
+  properties:
+    id: CoreyButler.NVMforWindows
+    source: winget
+    useLatest: true
+
+- type: Microsoft.WinGet/Package
+  name: UV
+  properties:
+    id: astral-sh.uv
+    source: winget
+    useLatest: true
+
+- type: Microsoft.WinGet/Package
+  name: PowerToys
+  properties:
+    id: Microsoft.PowerToys
+    source: winget
+    useLatest: true
+
+- type: Microsoft.WinGet/Package
+  name: OhMyPosh
+  properties:
+    id: JanDeDobbeleer.OhMyPosh
+    source: winget
+    useLatest: true
+
+- name: PowerShellZshLikePrompt
+  type: Microsoft.DSC.Transitional/PowerShellScript
+  dependsOn:
+    - OhMyPosh
+  properties:
+    getScript: |
+      $profilePath = Join-Path $HOME 'Documents\PowerShell\Microsoft.PowerShell_profile.ps1'
+      $repoRoot = Split-Path "${WinGetConfigRoot}" -Parent
+      $themePath = Join-Path $repoRoot 'configs\oh-my-posh\custom-zsh.omp.json'
+      $line = "oh-my-posh init pwsh --config '$themePath' | Invoke-Expression"
+      $present = (Test-Path $profilePath) -and ((Get-Content $profilePath -Raw) -match [regex]::Escape($line))
+      return @{ profile = $profilePath; theme = $themePath; configured = $present }
+    testScript: |
+      $profilePath = Join-Path $HOME 'Documents\PowerShell\Microsoft.PowerShell_profile.ps1'
+      $repoRoot = Split-Path "${WinGetConfigRoot}" -Parent
+      $themePath = Join-Path $repoRoot 'configs\oh-my-posh\custom-zsh.omp.json'
+      $line = "oh-my-posh init pwsh --config '$themePath' | Invoke-Expression"
+      return ((Test-Path $themePath) -and (Test-Path $profilePath) -and ((Get-Content $profilePath -Raw) -match [regex]::Escape($line)))
+    setScript: |
+      $profilePath = Join-Path $HOME 'Documents\PowerShell\Microsoft.PowerShell_profile.ps1'
+      $repoRoot = Split-Path "${WinGetConfigRoot}" -Parent
+      $themePath = Join-Path $repoRoot 'configs\oh-my-posh\custom-zsh.omp.json'
+      if (-not (Test-Path $themePath)) { throw "Oh My Posh theme not found: $themePath" }
+      New-Item -ItemType Directory -Force -Path (Split-Path $profilePath -Parent) | Out-Null
+      if (-not (Test-Path $profilePath)) { New-Item -ItemType File -Force -Path $profilePath | Out-Null }
+      $line = "oh-my-posh init pwsh --config '$themePath' | Invoke-Expression"
+      $content = Get-Content $profilePath -Raw
+      if ($content -notmatch [regex]::Escape($line)) {
+        Add-Content -Path $profilePath -Value "`n$line"
+      }
+
+- name: UvManagedPython
+  type: Microsoft.DSC.Transitional/PowerShellScript
+  dependsOn:
+    - UV
+  properties:
+    getScript: |
+      $python = uv python find 3.14 2>$null
+      return @{ python = $python }
+    testScript: |
+      $python = uv python find 3.14 2>$null
+      return [bool]$python
+    setScript: |
+      uv python install 3.14
+
+# Windows settings
+- type: Microsoft.Windows/Registry
+  name: DeveloperMode
+  properties:
+    keyPath: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock
+    valueName: AllowDevelopmentWithoutDevLicense
+    valueData:
+      DWord: 1
+  metadata:
+    securityContext: elevated
+
+- type: Microsoft.Windows/Registry
+  name: LongPaths
+  properties:
+    keyPath: HKLM\SYSTEM\CurrentControlSet\Control\FileSystem
+    valueName: LongPathsEnabled
+    valueData:
+      DWord: 1
+  metadata:
+    securityContext: elevated
+
+- type: Microsoft.Windows/Registry
+  name: DarkThemeApps
+  properties:
+    keyPath: HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize
+    valueName: AppsUseLightTheme
+    valueData:
+      DWord: 0
+
+- type: Microsoft.Windows/Registry
+  name: DarkThemeSystem
+  properties:
+    keyPath: HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize
+    valueName: SystemUsesLightTheme
+    valueData:
+      DWord: 0
+
+- type: Microsoft.Windows/Registry
+  name: ShowFileExtensions
+  properties:
+    keyPath: HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced
+    valueName: HideFileExt
+    valueData:
+      DWord: 0
+
+- type: Microsoft.Windows/Registry
+  name: ShowHiddenFiles
+  properties:
+    keyPath: HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced
+    valueName: Hidden
+    valueData:
+      DWord: 1
+
+- type: Microsoft.Windows/Registry
+  name: OpenExplorerToThisPC
+  properties:
+    keyPath: HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced
+    valueName: LaunchTo
+    valueData:
+      DWord: 1
+
+- type: Microsoft.Windows/Registry
+  name: DisableSearchBoxSuggestions
+  properties:
+    keyPath: HKCU\SOFTWARE\Policies\Microsoft\Windows\Explorer
+    valueName: DisableSearchBoxSuggestions
+    valueData:
+      DWord: 1
+
+- type: Microsoft.Windows/Registry
+  name: DisableSearchHighlights
+  properties:
+    keyPath: HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\SearchSettings
+    valueName: IsDynamicSearchBoxEnabled
+    valueData:
+      DWord: 0
+
+- type: Microsoft.Windows/Registry
+  name: DisableMSACloudSearch
+  properties:
+    keyPath: HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\SearchSettings
+    valueName: IsMSACloudSearchEnabled
+    valueData:
+      DWord: 0
+
+- type: Microsoft.Windows/Registry
+  name: DisableAADCloudSearch
+  properties:
+    keyPath: HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\SearchSettings
+    valueName: IsAADCloudSearchEnabled
+    valueData:
+      DWord: 0
+
+- type: Microsoft.Windows/Registry
+  name: HideWidgetsButton
+  properties:
+    keyPath: HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced
+    valueName: TaskbarDa
+    valueData:
+      DWord: 0
+
+- type: Microsoft.Windows/Registry
+  name: DisableWindowsCopilotUser
+  properties:
+    keyPath: HKCU\Software\Policies\Microsoft\Windows\WindowsCopilot
+    valueName: TurnOffWindowsCopilot
+    valueData:
+      DWord: 1
+
+- type: Microsoft.Windows/Registry
+  name: DisableWindowsCopilotMachine
+  properties:
+    keyPath: HKLM\Software\Policies\Microsoft\Windows\WindowsCopilot
+    valueName: TurnOffWindowsCopilot
+    valueData:
+      DWord: 1
+  metadata:
+    securityContext: elevated
+
+# WSL install. May reboot; setup.ps1 registers post-setup RunOnce before applying this config.
+# Uses the Arch Linux WSL distro name from `wsl --list --online`.
+- name: InstallWslComponents
+  type: Microsoft.DSC.Transitional/WindowsPowerShellScript
+  properties:
+    getScript: |
+      $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='vmcompute'"
+      return @{ vmcomputePresent = [bool]$svc }
+    testScript: |
+      $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='vmcompute'"
+      return [bool]$svc
+    setScript: |
+      Write-Host "InstallWslComponents: running wsl --install --no-distribution..."
+      $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c wsl --install --no-distribution >nul 2>&1" -Wait -PassThru
+      if ($process.ExitCode -eq 3010 -or $process.ExitCode -eq 1641) {
+        Write-Host "WSL installed successfully, but a system reboot is required."
+      }
+      elseif ($process.ExitCode -ne 0) {
+        throw "InstallWslComponents: wsl --install failed with exit code $($process.ExitCode)"
+      }
+  metadata:
+    securityContext: elevated
+
+- name: RebootForVmp
+  type: Microsoft.DSC.Transitional/WindowsPowerShellScript
+  dependsOn:
+    - InstallWslComponents
+  properties:
+    getScript: |
+      $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='vmcompute'"
+      return @{ vmcomputePresent = [bool]$svc }
+    testScript: |
+      $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='vmcompute'"
+      return [bool]$svc
+    setScript: |
+      $configFile = "${WinGetConfigRoot}\configuration.winget"
+      $resumeCmd  = "winget configure --file `"$configFile`" --accept-configuration-agreements --disable-interactivity"
+      $runOncePath = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
+      Set-ItemProperty -Path $runOncePath -Name 'DotfilesWingetConfigureResume' -Value $resumeCmd -Force
+      Write-Host "RebootForVmp: registered RunOnce resume key."
+      Restart-Computer -Force
+      Start-Sleep -Seconds 60
+      throw "Reboot initiated to activate Virtual Machine Platform. winget configure will resume via RunOnce on next login."
+  metadata:
+    securityContext: elevated
+
+- name: InstallArchLinux
+  type: Microsoft.DSC.Transitional/WindowsPowerShellScript
+  dependsOn:
+    - RebootForVmp
+  properties:
+    getScript: |
+      $distros = (& wsl --list --quiet 2>$null) -replace "`0", ""
+      return @{ archPresent = [bool]($distros | Where-Object { $_ -eq 'Arch Linux' }) }
+    testScript: |
+      $distros = (& wsl --list --quiet 2>$null) -replace "`0", ""
+      return [bool]($distros | Where-Object { $_ -eq 'Arch Linux' })
+    setScript: |
+      Write-Host "InstallArchLinux: running wsl --install -d Arch Linux --no-launch..."
+      $process = Start-Process -FilePath "cmd.exe" -ArgumentList '/c wsl --install -d "Arch Linux" --no-launch >nul 2>&1' -Wait -PassThru
+      if ($process.ExitCode -ne 0) {
+        throw "InstallArchLinux: wsl --install -d Arch Linux --no-launch failed with exit code $($process.ExitCode)"
+      }
+  metadata:
+    securityContext: elevated
+
+- name: BootstrapArchWslShell
+  type: Microsoft.DSC.Transitional/WindowsPowerShellScript
+  dependsOn:
+    - InstallArchLinux
+  properties:
+    getScript: |
+      $marker = (& wsl -d "Arch Linux" -- bash -lc 'test -f ~/.dotfiles-arch-wsl-shell-ok && echo yes || true' 2>$null)
+      return @{ bootstrapped = ($marker -contains 'yes') }
+    testScript: |
+      $marker = (& wsl -d "Arch Linux" -- bash -lc 'test -f ~/.dotfiles-arch-wsl-shell-ok && echo yes || true' 2>$null)
+      return ($marker -contains 'yes')
+    setScript: |
+      $bootstrapPath = Join-Path (Split-Path "${WinGetConfigRoot}" -Parent) 'windows\scripts\bootstrap-arch-wsl.sh'
+      if (-not (Test-Path $bootstrapPath)) {
+        throw "BootstrapArchWslShell: not found: $bootstrapPath"
+      }
+
+      $linuxPath = (& wsl -d "Arch Linux" -- wslpath -a $bootstrapPath) -replace "`0", ""
+      Write-Host "BootstrapArchWslShell: running $linuxPath inside Arch Linux..."
+      & wsl -d "Arch Linux" -- bash -lc "chmod +x '$linuxPath' && '$linuxPath' && touch ~/.dotfiles-arch-wsl-shell-ok"
+      if ($LASTEXITCODE -ne 0) {
+        throw "BootstrapArchWslShell: failed with exit code $LASTEXITCODE"
+      }
+  metadata:
+    securityContext: elevated
+
+- name: ArchZshTerminalProfile
+  type: Microsoft.DSC.Transitional/PowerShellScript
+  dependsOn:
+    - Terminal
+    - BootstrapArchWslShell
+  properties:
+    getScript: |
+      $fragmentPath = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows Terminal\Fragments\Dotfiles\arch-zsh.fragment.json'
+      return @{ fragmentPresent = (Test-Path $fragmentPath) }
+    testScript: |
+      $fragmentPath = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows Terminal\Fragments\Dotfiles\arch-zsh.fragment.json'
+      return (Test-Path $fragmentPath)
+    setScript: |
+      $fragmentsDir = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows Terminal\Fragments\Dotfiles'
+      New-Item -ItemType Directory -Path $fragmentsDir -Force | Out-Null
+      $fragment = @{
+        profiles = @(
+          @{
+            guid = '{9a6426d2-7c79-45f5-9d84-fef67f3cb1f0}'
+            name = 'Arch zsh'
+            commandline = 'wsl.exe -d "Arch Linux" --cd ~ --exec zsh -l'
+            startingDirectory = '%USERPROFILE%'
+            hidden = $false
+            tabTitle = 'Arch zsh'
+          }
+        )
+      }
+      $fragment | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $fragmentsDir 'arch-zsh.fragment.json') -Encoding UTF8
