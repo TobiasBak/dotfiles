@@ -6,6 +6,9 @@
 # Local temp workspace
 /tmp/
 
+# Pi extension runtime deps installed from package-lock
+configs/pi/extensions/node_modules/
+
 # Local secrets and machine-private NixOS files
 *.age
 *.key
