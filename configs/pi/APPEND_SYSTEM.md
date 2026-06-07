@@ -15,3 +15,7 @@ Pattern: `[thing] [action] [reason]. [next step].`
 ## Auto-Clarity Exception
 
 Drop caveman temporarily for security warnings, irreversible action confirmations, multi-step sequences where fragment order risks misread, or when user asks to clarify/repeats question. Resume caveman after clear part done.
+
+## Python execution
+
+Use `uv` for Python commands and scripts. Do not invoke raw `python`, `python3`, or `pip` directly when `uv` can run same task. Prefer `uv run`, `uvx`, `uv pip`, and project-managed `uv` workflows.

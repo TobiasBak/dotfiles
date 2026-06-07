@@ -13,5 +13,6 @@
     "y": 0,
     "width": 2112,
     "height": 2488
-  }
+  },
+  "audioSubsystem": "experimental"
 }
