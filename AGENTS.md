@@ -21,26 +21,29 @@ Check relevant links before or after config edits:
 
 If a target is a real file/dir instead of a link, report it and recommend rerunning the installer or replacing it with the correct symlink/junction. On Windows, directory symlinks may require admin/dev mode; junctions are acceptable for directories.
 
-## Pi skills repo
+## Agent skills repo
 
-Pi skills are managed by separate sibling repo `../skills` relative to this dotfiles repo (for example `C:\Users\tobias\code\skills` when dotfiles is `C:\Users\tobias\code\dotfiles`).
+Pi and Codex CLI personal skills are managed by separate sibling repo `../skills` relative to this dotfiles repo (for example `C:\Users\tobias\code\skills` when dotfiles is `C:\Users\tobias\code\dotfiles`).
 
 Expected links:
 
 - `~/.pi/agent/skills/<skill>` -> `../skills/skills/<skill>` for personal skills listed in `../skills/skills.json`.
 - `~/.pi/agent/skills/<skill>` -> `../skills/external/mattpocock-skills/<skill>` for external skills listed in `../skills/skills.json`.
+- `~/.agents/skills/<skill>` -> `../skills/skills/<skill>` for Codex personal skills listed in `../skills/skills.json`.
+- `~/.agents/skills/<skill>` -> `../skills/external/mattpocock-skills/<skill>` for Codex external skills listed in `../skills/skills.json`.
 
 Use PowerShell on Windows. Git Bash `ln -s` can create links that native Windows/Pi does not see correctly.
 
-- Install/fix skills: `powershell -ExecutionPolicy Bypass -File ..\skills\scripts\install-links.ps1 -Fix`
-- Verify skills: `powershell -ExecutionPolicy Bypass -File ..\skills\scripts\verify-links.ps1`
+- Install/fix all agent skills: `powershell -ExecutionPolicy Bypass -File .\windows\scripts\sync-agent.ps1`
+- Verify all agent links: `powershell -ExecutionPolicy Bypass -File .\windows\scripts\verify-links.ps1`
+- Install/fix one target manually: set `PI_SKILLS_DIR` to the target skill directory, then run `powershell -ExecutionPolicy Bypass -File ..\skills\scripts\install-links.ps1 -Fix`.
 
 When adding a new personal skill, add its name to `..\skills\skills.json`, then run installer/verifier.
 
 ## Agent sync and verification
 
-- Verify Pi config + skills: `powershell -ExecutionPolicy Bypass -File .\windows\scripts\verify-links.ps1`
-- Sync/fix Pi skills and verify all agent links: `powershell -ExecutionPolicy Bypass -File .\windows\scripts\sync-agent.ps1`
+- Verify Pi/Codex config + skills: `powershell -ExecutionPolicy Bypass -File .\windows\scripts\verify-links.ps1`
+- Sync/fix Pi/Codex skills and verify all agent links: `powershell -ExecutionPolicy Bypass -File .\windows\scripts\sync-agent.ps1`
 
 ## NixOS servers
 
@@ -49,6 +52,8 @@ Before changing or remotely rebuilding NixOS servers, read `nixos/README.md`, es
 ## Installers
 
 - Windows setup: `powershell -ExecutionPolicy Bypass -File .\windows\setup.ps1` from elevated PowerShell.
+- Windows winget configuration only: `powershell -ExecutionPolicy Bypass -File .\windows\scripts\install-apps.ps1` from elevated PowerShell.
+- Windows Codex/Pi CLI repair only: `powershell -ExecutionPolicy Bypass -File .\windows\scripts\install-agent-clis.ps1`.
 - Linux setup: `./arch-linux/install.sh`.
 
 Avoid running installers without user approval because they install packages and mutate user config.

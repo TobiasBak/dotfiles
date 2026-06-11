@@ -63,8 +63,26 @@ Test-Link (Join-Path $HOME ".codex/prompts") (Join-Path $RepoRoot "configs/codex
 $SkillsRoot = Join-Path (Split-Path $RepoRoot -Parent) "skills"
 $SkillsVerifier = Join-Path $SkillsRoot "scripts\verify-links.ps1"
 if (Test-Path -LiteralPath $SkillsVerifier) {
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $SkillsVerifier
-    if ($LASTEXITCODE -ne 0) { $Failures += "Skill link verifier failed." }
+    $SkillTargets = @(
+        [pscustomobject]@{ Name = "Pi"; TargetDir = Join-Path $HOME ".pi\agent\skills" },
+        [pscustomobject]@{ Name = "Codex CLI"; TargetDir = Join-Path $HOME ".agents\skills" }
+    )
+
+    foreach ($SkillTarget in $SkillTargets) {
+        Write-Host "Verifying $($SkillTarget.Name) skill links..."
+        $previousTarget = $env:PI_SKILLS_DIR
+        try {
+            $env:PI_SKILLS_DIR = $SkillTarget.TargetDir
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $SkillsVerifier
+            if ($LASTEXITCODE -ne 0) { $Failures += "$($SkillTarget.Name) skill link verifier failed." }
+        } finally {
+            if ($null -ne $previousTarget) {
+                $env:PI_SKILLS_DIR = $previousTarget
+            } else {
+                Remove-Item Env:PI_SKILLS_DIR -ErrorAction SilentlyContinue
+            }
+        }
+    }
 } else {
     $Failures += "Missing skills verifier: $SkillsVerifier"
 }

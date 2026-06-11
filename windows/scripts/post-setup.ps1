@@ -54,69 +54,81 @@ Set-RegistryDword -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\SearchS
 Set-RegistryDword -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\SearchSettings" -Name "IsDynamicSearchBoxEnabled" -Value 0
 Write-Host "Windows Search web results, cloud content search, and search highlights are disabled for the current user." -ForegroundColor Green
 
-# 2. Set PowerShell 7 as the default profile in Windows Terminal (if installed)
-$wtSettingsPath = "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
-if (-not (Test-Path $wtSettingsPath)) {
-    $wtSettingsPath = "$env:LOCALAPPDATA\Microsoft\WindowsTerminal\settings.json"
-}
+# 2. Set PowerShell 7 as the default profile in Windows Terminal-compatible hosts
+$wtSettingsPaths = @(
+    "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json",
+    "$env:LOCALAPPDATA\Microsoft\WindowsTerminal\settings.json",
+    "$env:LOCALAPPDATA\Packages\Microsoft.IntelligentTerminal_8wekyb3d8bbwe\LocalState\settings.json"
+) | Select-Object -Unique | Where-Object { Test-Path $_ }
 
-if (Test-Path $wtSettingsPath) {
-    Write-Host "Configuring Windows Terminal to use PowerShell 7 as default..." -ForegroundColor Yellow
-    try {
-        $settings = Get-Content $wtSettingsPath -Raw | ConvertFrom-Json
-        
-        # Find the PowerShell 7 profile GUID or Name
-        $pwshProfile = $settings.profiles.list | Where-Object { $_.name -eq "PowerShell" -or $_.commandline -like "*pwsh.exe*" }
-        
-        if ($pwshProfile) {
-            $settings.defaultProfile = $pwshProfile.guid
-            Write-Host "Successfully set PowerShell 7 as the default profile in Windows Terminal." -ForegroundColor Green
-        } else {
-            Write-Warning "Could not find a PowerShell 7 profile in Windows Terminal settings."
-        }
+if ($wtSettingsPaths.Count -gt 0) {
+    foreach ($wtSettingsPath in $wtSettingsPaths) {
+        Write-Host "Configuring terminal settings at $wtSettingsPath..." -ForegroundColor Yellow
+        try {
+            $settings = Get-Content $wtSettingsPath -Raw | ConvertFrom-Json
 
-        if (-not ($settings.PSObject.Properties.Name -contains "profiles") -or $null -eq $settings.profiles) {
-            $settings | Add-Member -NotePropertyName "profiles" -NotePropertyValue ([ordered]@{})
-        }
-        if (-not ($settings.profiles.PSObject.Properties.Name -contains "defaults") -or $null -eq $settings.profiles.defaults) {
-            $settings.profiles | Add-Member -NotePropertyName "defaults" -NotePropertyValue ([ordered]@{})
-        }
-        if (-not ($settings.profiles.defaults.PSObject.Properties.Name -contains "font") -or $null -eq $settings.profiles.defaults.font) {
-            $settings.profiles.defaults | Add-Member -NotePropertyName "font" -NotePropertyValue ([ordered]@{})
-        }
-        if ($settings.profiles.defaults.font.PSObject.Properties.Name -contains "face") {
-            $settings.profiles.defaults.font.face = "JetBrainsMono Nerd Font"
-        } else {
-            $settings.profiles.defaults.font | Add-Member -NotePropertyName "face" -NotePropertyValue "JetBrainsMono Nerd Font"
-        }
-        Write-Host "Configured Windows Terminal to use JetBrainsMono Nerd Font by default." -ForegroundColor Green
+            if (-not ($settings.PSObject.Properties.Name -contains "profiles") -or $null -eq $settings.profiles) {
+                $settings | Add-Member -NotePropertyName "profiles" -NotePropertyValue ([ordered]@{})
+            }
+            if (-not ($settings.profiles.PSObject.Properties.Name -contains "defaults") -or $null -eq $settings.profiles.defaults) {
+                $settings.profiles | Add-Member -NotePropertyName "defaults" -NotePropertyValue ([ordered]@{})
+            }
+            if (-not ($settings.profiles.defaults.PSObject.Properties.Name -contains "font") -or $null -eq $settings.profiles.defaults.font) {
+                $settings.profiles.defaults | Add-Member -NotePropertyName "font" -NotePropertyValue ([ordered]@{})
+            }
+            if ($settings.profiles.defaults.font.PSObject.Properties.Name -contains "face") {
+                $settings.profiles.defaults.font.face = "JetBrainsMono Nerd Font"
+            } else {
+                $settings.profiles.defaults.font | Add-Member -NotePropertyName "face" -NotePropertyValue "JetBrainsMono Nerd Font"
+            }
+            Write-Host "Configured Windows Terminal to use JetBrainsMono Nerd Font by default." -ForegroundColor Green
 
-        if (-not ($settings.PSObject.Properties.Name -contains "keybindings") -or $null -eq $settings.keybindings) {
-            $settings | Add-Member -NotePropertyName "keybindings" -NotePropertyValue @()
+            # Find the PowerShell 7 profile GUID or Name
+            $pwshProfile = $null
+            if ($settings.profiles.PSObject.Properties.Name -contains "list" -and $null -ne $settings.profiles.list) {
+                $pwshProfile = @($settings.profiles.list | Where-Object { $_.name -eq "PowerShell" -or $_.commandline -like "*pwsh.exe*" }) | Select-Object -First 1
+            }
+
+            if ($pwshProfile -and $pwshProfile.guid) {
+                if ($settings.PSObject.Properties.Name -contains "defaultProfile") {
+                    $settings.defaultProfile = $pwshProfile.guid
+                } else {
+                    $settings | Add-Member -NotePropertyName "defaultProfile" -NotePropertyValue $pwshProfile.guid
+                }
+                Write-Host "Successfully set PowerShell 7 as the default profile in Windows Terminal." -ForegroundColor Green
+            } else {
+                Write-Warning "Could not find a PowerShell 7 profile in Windows Terminal settings."
+            }
+
+            $shiftEnterInput = [string]([char]27) + "[13;2u"
+            $legacyActionIds = @()
+
+            if ($settings.PSObject.Properties.Name -contains "actions" -and $null -ne $settings.actions) {
+                $legacyActions = @($settings.actions | Where-Object {
+                    $null -ne $_.command -and $_.command.action -eq "sendInput" -and $_.command.input -eq $shiftEnterInput
+                })
+                $legacyActionIds = @($legacyActions | ForEach-Object { $_.id } | Where-Object { $_ })
+                $settings.actions = @($settings.actions | Where-Object {
+                    -not ($null -ne $_.command -and $_.command.action -eq "sendInput" -and $_.command.input -eq $shiftEnterInput)
+                })
+            }
+
+            if ($settings.PSObject.Properties.Name -contains "keybindings" -and $null -ne $settings.keybindings) {
+                $settings.keybindings = @($settings.keybindings | Where-Object {
+                    $keys = [string]$_.keys
+                    $isShiftEnter = $keys.Equals("shift+enter", [System.StringComparison]::OrdinalIgnoreCase)
+                    $isLegacyCommand = $null -ne $_.command -and $_.command.action -eq "sendInput" -and $_.command.input -eq $shiftEnterInput
+                    $isLegacyActionId = $_.id -and $legacyActionIds -contains $_.id
+                    -not ($isShiftEnter -and ($isLegacyCommand -or $isLegacyActionId))
+                })
+            }
+
+            Write-Host "Removed legacy Shift+Enter raw input binding; PSReadLine and app keymaps handle new lines." -ForegroundColor Green
+
+            $settings | ConvertTo-Json -Depth 10 | Set-Content $wtSettingsPath
+        } catch {
+            Write-Warning "Failed to update Windows Terminal settings: $_"
         }
-
-        $shiftEnterCsiInput = "$([char]27)[13;2u"
-        $badShiftEnterActionIds = @()
-        if ($settings.PSObject.Properties.Name -contains "actions" -and $null -ne $settings.actions) {
-            $badShiftEnterActionIds = @($settings.actions | Where-Object {
-                $_.command.action -eq "sendInput" -and $_.command.input -eq $shiftEnterCsiInput
-            } | ForEach-Object { $_.id })
-            $settings.actions = @($settings.actions | Where-Object {
-                $badShiftEnterActionIds -notcontains $_.id
-            })
-        }
-
-        $settings.keybindings = @($settings.keybindings | Where-Object {
-            -not (
-                ($_.keys -eq "shift+enter" -and $_.command.action -eq "sendInput" -and $_.command.input -eq $shiftEnterCsiInput) -or
-                ($badShiftEnterActionIds -contains $_.id)
-            )
-        })
-        Write-Host "Removed Windows Terminal Shift+Enter CSI-u binding; PowerShell handles multiline input via PSReadLine." -ForegroundColor Green
-
-        $settings | ConvertTo-Json -Depth 10 | Set-Content $wtSettingsPath
-    } catch {
-        Write-Warning "Failed to update Windows Terminal settings: $_"
     }
 } else {
     Write-Host "Windows Terminal settings not found. Skipping default profile configuration." -ForegroundColor Gray
@@ -179,23 +191,53 @@ if (Test-Path $codexPromptsSource) {
     Link-DotfileConfig $codexPromptsSource $codexPromptsTarget
 }
 
-# 4. Install Pi skills from private skills repo
-$piSkillsRepo = "https://github.com/TobiasBak/skills.git"
-$piSkillsDir = Join-Path (Split-Path $RepoRoot -Parent) "skills"
-$piSkillsTarget = Join-Path $HOME ".pi\agent\skills"
+# 4. Install agent skills from private skills repo
+$skillsRepo = "https://github.com/TobiasBak/skills.git"
+$skillsDir = Join-Path (Split-Path $RepoRoot -Parent) "skills"
+$skillsInstaller = Join-Path $skillsDir "scripts\install-links.ps1"
 
-Write-Host "Installing Pi skills from $piSkillsRepo..." -ForegroundColor Yellow
-if (Test-Path $piSkillsDir) {
-    git -C $piSkillsDir pull --ff-only
+function Install-AgentSkillLinks {
+    param(
+        [Parameter(Mandatory=$true)][string]$TargetDir,
+        [Parameter(Mandatory=$true)][string]$DisplayName
+    )
+
+    if (-not (Test-Path -LiteralPath $skillsInstaller)) {
+        Write-Warning "Skills installer not found: $skillsInstaller"
+        return
+    }
+
+    Write-Host "Installing $DisplayName skills into $TargetDir..." -ForegroundColor Yellow
+    $previousTarget = $env:PI_SKILLS_DIR
+    try {
+        $env:PI_SKILLS_DIR = $TargetDir
+        & $skillsInstaller -Fix
+    } finally {
+        if ($null -ne $previousTarget) {
+            $env:PI_SKILLS_DIR = $previousTarget
+        } else {
+            Remove-Item Env:PI_SKILLS_DIR -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+Write-Host "Installing agent skills from $skillsRepo..." -ForegroundColor Yellow
+if (Test-Path $skillsDir) {
+    git -C $skillsDir pull --ff-only
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Could not update skills repo at $skillsDir. Continuing with the existing checkout."
+    }
 } else {
-    New-Item -ItemType Directory -Force -Path (Split-Path $piSkillsDir -Parent) | Out-Null
-    git clone $piSkillsRepo $piSkillsDir
+    New-Item -ItemType Directory -Force -Path (Split-Path $skillsDir -Parent) | Out-Null
+    git clone $skillsRepo $skillsDir
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Could not clone skills repo into $skillsDir. Skipping agent skill links."
+    }
 }
 
-if (Test-Path $piSkillsTarget) {
-    Remove-Item -Recurse -Force $piSkillsTarget
+if (Test-Path -LiteralPath $skillsInstaller) {
+    Install-AgentSkillLinks (Join-Path $HOME ".pi\agent\skills") "Pi"
+    Install-AgentSkillLinks (Join-Path $HOME ".agents\skills") "Codex CLI"
 }
-$env:PI_SKILLS_DIR = $piSkillsTarget
-& (Join-Path $piSkillsDir "scripts\install-links.ps1")
 
 Write-Host "`nPost-setup complete." -ForegroundColor Green

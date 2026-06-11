@@ -1,7 +1,9 @@
 # Windows Setup Script
-# This script bootstraps winget configure, applies the Windows configuration,
+# This script bootstraps winget configure, installs non-winget agent CLIs,
 # and runs dotfiles post-setup. The winget config may reboot for WSL; post-setup
 # is registered in RunOnce before configure starts so it still runs after login.
+
+$ErrorActionPreference = "Stop"
 
 Write-Host "Starting Windows dotfiles setup..." -ForegroundColor Cyan
 
@@ -23,12 +25,16 @@ function Invoke-SetupScript {
     $scriptPath = Join-Path $PSScriptRoot $RelativePath
     if (Test-Path $scriptPath) {
         Write-Host "`n--- Executing $RelativePath ---" -ForegroundColor Blue
-        & $scriptPath
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warning "$RelativePath exited with code $LASTEXITCODE"
+        try {
+            & $scriptPath
+            if ($LASTEXITCODE -ne 0) {
+                throw "$RelativePath exited with code $LASTEXITCODE"
+            }
+        } catch {
+            throw "Setup step failed: $RelativePath. $($_.Exception.Message)"
         }
     } else {
-        Write-Warning "Could not find $scriptPath, skipping..."
+        throw "Could not find $scriptPath"
     }
 }
 
@@ -44,6 +50,7 @@ if ((Test-Path $postSetupPath) -and (Test-Path $postSetupElevatedPath)) {
 
 Invoke-SetupScript "scripts\enable-winget-configure.ps1"
 Invoke-SetupScript "scripts\install-apps.ps1"
+Invoke-SetupScript "scripts\install-agent-clis.ps1"
 Invoke-SetupScript "scripts\set-aliases.ps1"
 Invoke-SetupScript "scripts\post-setup.ps1"
 

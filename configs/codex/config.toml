@@ -1,5 +1,5 @@
 model = "gpt-5.5"
-model_reasoning_effort = "low"
+model_reasoning_effort = "xhigh"
 approvals_reviewer = "user"
 
 [projects.'c:\apps']
@@ -20,6 +20,24 @@ trust_level = "trusted"
 [projects.'c:\users\tobias']
 trust_level = "trusted"
 
+[projects.'c:\users\tobias\code\order-integration-platform']
+trust_level = "trusted"
+
+[projects.'c:\apps\larsbroescripts']
+trust_level = "trusted"
+
+[projects.'c:\apps\monitorerpimport']
+trust_level = "trusted"
+
+[projects.'c:\']
+trust_level = "trusted"
+
+[projects.'c:\users\tobias\code\thesis_presentation']
+trust_level = "trusted"
+
+[projects.'c:\users\tobias\code\skills']
+trust_level = "trusted"
+
 [windows]
 sandbox = "elevated"
 
@@ -33,9 +51,11 @@ status_line_use_colors = true
 [features]
 terminal_resize_reflow = true
 goals = true
+memories = true
 
 [notice]
 hide_full_access_warning = true
+hide_rate_limit_model_nudge = true
 
 [marketplaces.wt-local]
 last_updated = "2026-06-07T15:05:15Z"
