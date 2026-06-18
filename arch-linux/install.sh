@@ -285,7 +285,7 @@ install_pi_skills() {
     fi
 
     rm -rf "$target_dir"
-    PI_SKILLS_DIR="$target_dir" bash "$skills_dir/scripts/install-links.sh"
+    PI_SKILLS_DIR="$target_dir" bash "$skills_dir/scripts/install-links.sh" --fix
     log_success "Pi skills installed."
 }
 

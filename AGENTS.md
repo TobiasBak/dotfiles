@@ -27,10 +27,10 @@ Pi and Codex CLI personal skills are managed by separate sibling repo `../skills
 
 Expected links:
 
-- `~/.pi/agent/skills/<skill>` -> `../skills/skills/<skill>` for personal skills listed in `../skills/skills.json`.
-- `~/.pi/agent/skills/<skill>` -> `../skills/external/mattpocock-skills/<skill>` for external skills listed in `../skills/skills.json`.
-- `~/.agents/skills/<skill>` -> `../skills/skills/<skill>` for Codex personal skills listed in `../skills/skills.json`.
-- `~/.agents/skills/<skill>` -> `../skills/external/mattpocock-skills/<skill>` for Codex external skills listed in `../skills/skills.json`.
+- `~/.pi/agent/skills/<skill>` -> `../skills/skills/<skill>` for each personal skill folder with `SKILL.md`.
+- `~/.pi/agent/skills/<skill>` -> `../skills/external/<vendor>/<skill>` for each vendored skill folder with `SKILL.md`.
+- `~/.agents/skills/<skill>` -> `../skills/skills/<skill>` for each Codex personal skill folder with `SKILL.md`.
+- `~/.agents/skills/<skill>` -> `../skills/external/<vendor>/<skill>` for each Codex external skill folder with `SKILL.md`.
 
 Use PowerShell on Windows. Git Bash `ln -s` can create links that native Windows/Pi does not see correctly.
 
@@ -38,7 +38,7 @@ Use PowerShell on Windows. Git Bash `ln -s` can create links that native Windows
 - Verify all agent links: `powershell -ExecutionPolicy Bypass -File .\windows\scripts\verify-links.ps1`
 - Install/fix one target manually: set `PI_SKILLS_DIR` to the target skill directory, then run `powershell -ExecutionPolicy Bypass -File ..\skills\scripts\install-links.ps1 -Fix`.
 
-When adding a new personal skill, add its name to `..\skills\skills.json`, then run installer/verifier.
+When adding a new personal skill, create `..\skills\skills\<name>\SKILL.md`, then run installer/verifier.
 
 ## Agent sync and verification
 
