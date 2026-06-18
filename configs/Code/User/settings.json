@@ -79,5 +79,7 @@
     "chat.contextUsage.enabled": false,
     "chat.disableAIFeatures": true,
     "explorer.confirmDelete": false,
-    "extensions.ignoreRecommendations": true
+    "extensions.ignoreRecommendations": true,
+    "terminal.integrated.enableMultiLinePasteWarning": "never",
+    "explorer.confirmPasteNative": false
 }

@@ -38,6 +38,9 @@ trust_level = "trusted"
 [projects.'c:\users\tobias\code\skills']
 trust_level = "trusted"
 
+[projects.'c:\users\tobias\code\thesis_exam']
+trust_level = "trusted"
+
 [windows]
 sandbox = "elevated"
 

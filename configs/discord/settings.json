@@ -5,7 +5,7 @@
   "chromiumSwitches": {},
   "BACKGROUND_COLOR": "#121214",
   "asyncVideoInputDeviceInit": true,
-  "IS_MAXIMIZED": false,
+  "IS_MAXIMIZED": true,
   "IS_MINIMIZED": false,
   "MINIMIZE_TO_TRAY": false,
   "WINDOW_BOUNDS": {
