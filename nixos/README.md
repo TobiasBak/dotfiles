@@ -100,6 +100,10 @@ Keep `services.openssh.enable = true` and declare `users.users.<user>.openssh.au
 sudo tailscale up --ssh=false
 ```
 
+This homelab config allows normal password login for the `tobias` user as a
+recovery path, while keeping direct root SSH disabled. SSH keys are still the
+preferred day-to-day path and should be kept declared in the host config.
+
 Reason: Tailscale SSH may require browser re-auth/checks based on tailnet ACLs. Normal OpenSSH over the Tailscale IP uses SSH keys and avoids frequent Tailscale login prompts.
 
 ### Remote rebuild safety
