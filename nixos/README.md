@@ -14,7 +14,7 @@ directly in `/etc/nixos/configuration.nix` on the laptop. Change files under
 
 ```bash
 cd /path/to/dotfiles/nixos
-nix build .#nixosConfigurations.laptop-server.config.system.build.toplevel
+nix build --no-link .#nixosConfigurations.laptop-server.config.system.build.toplevel
 sudo nixos-rebuild switch --flake .#laptop-server
 ```
 
@@ -123,7 +123,7 @@ Safer flake patterns:
 
 ```bash
 cd /path/to/dotfiles/nixos
-nix build .#nixosConfigurations.laptop-server.config.system.build.toplevel
+nix build --no-link .#nixosConfigurations.laptop-server.config.system.build.toplevel
 ```
 
 Then either apply on next boot:
@@ -149,7 +149,7 @@ From this repo on Windows:
 ```powershell
 ssh tobias@laptop-server "mkdir -p ~/code && test -d ~/code/dotfiles/.git || git clone https://github.com/TobiasBak/dotfiles.git ~/code/dotfiles"
 ssh tobias@laptop-server "cd ~/code/dotfiles && git pull --ff-only"
-ssh tobias@laptop-server "cd ~/code/dotfiles/nixos && nix build .#nixosConfigurations.laptop-server.config.system.build.toplevel"
+ssh tobias@laptop-server "cd ~/code/dotfiles/nixos && nix build --no-link .#nixosConfigurations.laptop-server.config.system.build.toplevel"
 ssh tobias@laptop-server "sudo /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/code/dotfiles/nixos"
 ```
 

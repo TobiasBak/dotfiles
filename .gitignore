@@ -6,6 +6,10 @@
 # Local temp workspace
 /tmp/
 
+# Nix build result symlinks
+result
+result-*
+
 # Pi extension runtime deps installed from package-lock
 configs/pi/extensions/node_modules/
 
