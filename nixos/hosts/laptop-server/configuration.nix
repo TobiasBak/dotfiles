@@ -71,7 +71,7 @@
       users = [ "tobias" ];
       commands = [
         {
-          command = "/run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/code/dotfiles/nixos#laptop-server";
+          command = "/run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/code/dotfiles/nixos";
           options = [ "NOPASSWD" ];
         }
       ];

@@ -150,7 +150,7 @@ From this repo on Windows:
 ssh tobias@laptop-server "mkdir -p ~/code && test -d ~/code/dotfiles/.git || git clone https://github.com/TobiasBak/dotfiles.git ~/code/dotfiles"
 ssh tobias@laptop-server "cd ~/code/dotfiles && git pull --ff-only"
 ssh tobias@laptop-server "cd ~/code/dotfiles/nixos && nix build .#nixosConfigurations.laptop-server.config.system.build.toplevel"
-ssh tobias@laptop-server "sudo /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/code/dotfiles/nixos#laptop-server"
+ssh tobias@laptop-server "sudo /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/code/dotfiles/nixos"
 ```
 
 Use the last command only after the build succeeds. The config grants `tobias`
