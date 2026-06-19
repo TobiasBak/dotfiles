@@ -4,7 +4,7 @@ This directory contains flake-based NixOS host configs.
 
 ## Hosts
 
-- `laptop-server`: lightweight laptop server with XFCE, xrdp, SSH, Tailscale, firewall, garbage collection, and laptop sleep disabled.
+- `laptop-server`: headless lab server with SSH, Tailscale, Docker/Compose, Samba, firewall, garbage collection, and laptop sleep disabled.
 
 ## Source of truth
 
@@ -73,7 +73,16 @@ Verify SSH from another Tailscale device:
 ssh tobias@laptop-server
 ```
 
-Use Windows Remote Desktop over Tailscale by connecting to `laptop-server` or the laptop's Tailscale IP. The config enables xrdp.
+The host is intended to be managed headlessly over SSH:
+
+```bash
+ssh tobias@laptop-server
+```
+
+Docker and Docker Compose are enabled for ad hoc lab services. The `tobias`
+user is in the `docker` group, which is root-equivalent access to the host. Log
+out and back in after the rebuild if `docker ps` still requires elevated
+permissions.
 
 ## Remote server operation
 
