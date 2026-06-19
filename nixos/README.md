@@ -10,7 +10,7 @@ This directory contains flake-based NixOS host configs.
 
 `laptop-server` must run the config from this repo. Do not make lasting edits
 directly in `/etc/nixos/configuration.nix` on the laptop. Change files under
-`nixos/` here, copy or pull the repo on the laptop, then rebuild from the flake:
+`nixos/` here, pull the public repo on the laptop, then rebuild from the flake:
 
 ```bash
 cd /path/to/dotfiles/nixos
@@ -147,9 +147,10 @@ For risky changes, keep local console/keyboard access available.
 From this repo on Windows:
 
 ```powershell
-scp -r .\nixos\* tobias@laptop-server:~/dotfiles-nixos/
-ssh tobias@laptop-server "cd ~/dotfiles-nixos && nix build .#nixosConfigurations.laptop-server.config.system.build.toplevel"
-ssh tobias@laptop-server "sudo /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/dotfiles-nixos"
+ssh tobias@laptop-server "mkdir -p ~/code && test -d ~/code/dotfiles/.git || git clone https://github.com/TobiasBak/dotfiles.git ~/code/dotfiles"
+ssh tobias@laptop-server "cd ~/code/dotfiles && git pull --ff-only"
+ssh tobias@laptop-server "cd ~/code/dotfiles/nixos && nix build .#nixosConfigurations.laptop-server.config.system.build.toplevel"
+ssh tobias@laptop-server "sudo /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/code/dotfiles/nixos#laptop-server"
 ```
 
 Use the last command only after the build succeeds. The config grants `tobias`
