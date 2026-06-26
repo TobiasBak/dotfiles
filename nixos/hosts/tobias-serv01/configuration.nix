@@ -32,7 +32,7 @@
         "smb encrypt" = "required";
       };
       nas = {
-        "path" = "/srv/nas";
+        "path" = "/srv/nas/files";
         "browseable" = "yes";
         "read only" = "no";
         "valid users" = [ "tobias" ];
@@ -56,7 +56,10 @@
   systemd.services.samba-smbd = {
     requires = [ "srv-nas.mount" "nas-directory-permissions.service" ];
     after = [ "srv-nas.mount" "nas-directory-permissions.service" ];
-    unitConfig.AssertPathIsMountPoint = "/srv/nas";
+    unitConfig = {
+      AssertPathIsMountPoint = "/srv/nas";
+      AssertPathIsDirectory = "/srv/nas/files";
+    };
   };
 
   systemd.services.nas-directory-permissions = {
@@ -70,8 +73,11 @@
       RemainAfterExit = true;
     };
     script = ''
+      ${pkgs.coreutils}/bin/mkdir -p /srv/nas/files
       ${pkgs.coreutils}/bin/chown tobias:users /srv/nas
+      ${pkgs.coreutils}/bin/chown tobias:users /srv/nas/files
       ${pkgs.coreutils}/bin/chmod 0755 /srv/nas
+      ${pkgs.coreutils}/bin/chmod 0755 /srv/nas/files
     '';
   };
 
