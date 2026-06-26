@@ -59,6 +59,7 @@ Test-Link (Join-Path $HOME ".pi/agent/prompts") (Join-Path $RepoRoot "configs/pi
 Test-LinkOrHardLink (Join-Path $HOME ".pi/agent/keybindings.json") (Join-Path $RepoRoot "configs/pi/keybindings.json")
 Test-LinkOrHardLink (Join-Path $HOME ".codex/config.toml") (Join-Path $RepoRoot "configs/codex/config.toml")
 Test-Link (Join-Path $HOME ".codex/prompts") (Join-Path $RepoRoot "configs/codex/prompts")
+Test-LinkOrHardLink (Join-Path $HOME ".wezterm.lua") (Join-Path $RepoRoot "configs/wezterm/wezterm.lua")
 
 $SkillsRoot = Join-Path (Split-Path $RepoRoot -Parent) "skills"
 $SkillsVerifier = Join-Path $SkillsRoot "scripts\verify-links.ps1"

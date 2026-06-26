@@ -1,0 +1,14 @@
+# Keep this repo stable when edited from both Windows and Linux/WSL.
+# Git stores text files as LF and checks them out as LF everywhere.
+* text=auto eol=lf
+
+# Binary assets must not be line-ending normalized.
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary

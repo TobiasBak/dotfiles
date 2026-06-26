@@ -4,18 +4,17 @@ This directory contains flake-based NixOS host configs.
 
 ## Hosts
 
-- `laptop-server`: headless lab server with SSH, Tailscale, Docker/Compose, Samba, firewall, garbage collection, and laptop sleep disabled.
-- `tobias-serv01`: main runner/server with SSH, Tailscale, Docker/Compose, Samba, firewall, garbage collection, and sleep/hibernation disabled.
+- `laptop-server`: lightweight laptop server with XFCE, xrdp, SSH, Tailscale, firewall, garbage collection, and laptop sleep disabled.
 
 ## Source of truth
 
 `laptop-server` must run the config from this repo. Do not make lasting edits
 directly in `/etc/nixos/configuration.nix` on the laptop. Change files under
-`nixos/` here, pull the public repo on the laptop, then rebuild from the flake:
+`nixos/` here, copy or pull the repo on the laptop, then rebuild from the flake:
 
 ```bash
 cd /path/to/dotfiles/nixos
-nix build --no-link .#nixosConfigurations.laptop-server.config.system.build.toplevel
+nix build .#nixosConfigurations.laptop-server.config.system.build.toplevel
 sudo nixos-rebuild switch --flake .#laptop-server
 ```
 
@@ -27,12 +26,6 @@ repo:
 
 ```bash
 cp /etc/nixos/hardware-configuration.nix /path/to/dotfiles/nixos/hosts/laptop-server/hardware-configuration.nix
-```
-
-For `tobias-serv01`, copy the generated hardware config to:
-
-```bash
-cp /etc/nixos/hardware-configuration.nix /path/to/dotfiles/nixos/hosts/tobias-serv01/hardware-configuration.nix
 ```
 
 ## Install flow
@@ -80,16 +73,7 @@ Verify SSH from another Tailscale device:
 ssh tobias@laptop-server
 ```
 
-The host is intended to be managed headlessly over SSH:
-
-```bash
-ssh tobias@laptop-server
-```
-
-Docker and Docker Compose are enabled for ad hoc lab services. The `tobias`
-user is in the `docker` group, which is root-equivalent access to the host. Log
-out and back in after the rebuild if `docker ps` still requires elevated
-permissions.
+Use Windows Remote Desktop over Tailscale by connecting to `laptop-server` or the laptop's Tailscale IP. The config enables xrdp.
 
 ## Remote server operation
 
@@ -106,10 +90,6 @@ Keep `services.openssh.enable = true` and declare `users.users.<user>.openssh.au
 ```bash
 sudo tailscale up --ssh=false
 ```
-
-This homelab config allows normal password login for the `tobias` user as a
-recovery path, while keeping direct root SSH disabled. SSH keys are still the
-preferred day-to-day path and should be kept declared in the host config.
 
 Reason: Tailscale SSH may require browser re-auth/checks based on tailnet ACLs. Normal OpenSSH over the Tailscale IP uses SSH keys and avoids frequent Tailscale login prompts.
 
@@ -130,7 +110,7 @@ Safer flake patterns:
 
 ```bash
 cd /path/to/dotfiles/nixos
-nix build --no-link .#nixosConfigurations.laptop-server.config.system.build.toplevel
+nix build .#nixosConfigurations.laptop-server.config.system.build.toplevel
 ```
 
 Then either apply on next boot:
@@ -154,10 +134,9 @@ For risky changes, keep local console/keyboard access available.
 From this repo on Windows:
 
 ```powershell
-ssh tobias@laptop-server "mkdir -p ~/code && test -d ~/code/dotfiles/.git || git clone https://github.com/TobiasBak/dotfiles.git ~/code/dotfiles"
-ssh tobias@laptop-server "cd ~/code/dotfiles && git pull --ff-only"
-ssh tobias@laptop-server "cd ~/code/dotfiles/nixos && nix build --no-link .#nixosConfigurations.laptop-server.config.system.build.toplevel"
-ssh tobias@laptop-server "sudo /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/code/dotfiles/nixos"
+scp -r .\nixos\* tobias@laptop-server:~/dotfiles-nixos/
+ssh tobias@laptop-server "cd ~/dotfiles-nixos && nix build .#nixosConfigurations.laptop-server.config.system.build.toplevel"
+ssh tobias@laptop-server "sudo /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/dotfiles-nixos"
 ```
 
 Use the last command only after the build succeeds. The config grants `tobias`

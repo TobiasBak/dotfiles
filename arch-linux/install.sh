@@ -16,6 +16,8 @@ PACKAGES=(
     "github-cli"
     "quickshell"
     "ghostty"
+    "wezterm"
+    "tmux"
     "htop"
     "eza"
     "niri"
@@ -29,6 +31,7 @@ PACKAGES=(
     "discord"
     "base-devel" # Required for building AUR packages
     "ttf-jetbrains-mono-nerd" # Nerd Font for terminal icons
+    "ttf-hack-nerd"           # Hack Nerd Font for WezTerm
     "noto-fonts"              # Standard Unicode coverage
     "noto-fonts-cjk"          # Chinese/Japanese/Korean characters
     "noto-fonts-emoji"        # Emoji support (browsers, apps)

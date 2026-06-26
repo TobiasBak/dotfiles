@@ -16,12 +16,5 @@
           ./hosts/laptop-server/configuration.nix
         ];
       };
-
-      nixosConfigurations.tobias-serv01 = nixpkgs.lib.nixosSystem {
-        inherit system;
-        modules = [
-          ./hosts/tobias-serv01/configuration.nix
-        ];
-      };
     };
 }

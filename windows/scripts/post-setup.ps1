@@ -191,6 +191,17 @@ if (Test-Path $codexPromptsSource) {
     Link-DotfileConfig $codexPromptsSource $codexPromptsTarget
 }
 
+$weztermConfigSource = Join-Path $ConfigsDir "wezterm\wezterm.lua"
+$weztermConfigTarget = Join-Path $HOME ".wezterm.lua"
+if (Test-Path $weztermConfigSource) {
+    Link-DotfileConfig $weztermConfigSource $weztermConfigTarget
+}
+
+$hackNerdFontInstaller = Join-Path $PSScriptRoot "install-hack-nerd-font.ps1"
+if (Test-Path $hackNerdFontInstaller) {
+    & $hackNerdFontInstaller
+}
+
 # 4. Install agent skills from private skills repo
 $skillsRepo = "https://github.com/TobiasBak/skills.git"
 $skillsDir = Join-Path (Split-Path $RepoRoot -Parent) "skills"

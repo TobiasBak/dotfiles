@@ -11,11 +11,15 @@
   boot.loader.systemd-boot.enable = true;
   boot.loader.efi.canTouchEfiVariables = true;
 
-  virtualisation.docker.enable = true;
-
-  environment.systemPackages = with pkgs; [
-    docker-compose
-  ];
+  services.xserver.enable = true;
+  services.xserver.displayManager.lightdm.enable = true;
+  services.xserver.xkb.layout = "dk";
+  services.xserver.desktopManager.xfce.enable = true;
+  services.xrdp = {
+    enable = true;
+    defaultWindowManager = "xfce4-session";
+    openFirewall = true;
+  };
 
   services.samba = {
     enable = true;
@@ -48,7 +52,8 @@
     openFirewall = true;
   };
 
-  networking.firewall.interfaces.tailscale0.allowedTCPPorts = [ 445 ];
+  networking.firewall.allowedTCPPorts = [ 22 3389 ];
+  networking.firewall.interfaces.tailscale0.allowedTCPPorts = [ 445 3389 ];
 
   systemd.tmpfiles.rules = [
     "d /srv/nas 0755 tobias users -"
@@ -59,10 +64,9 @@
   users.users.tobias = {
     isNormalUser = true;
     description = "tobias";
-    extraGroups = [ "wheel" "networkmanager" "docker" ];
+    extraGroups = [ "wheel" "networkmanager" ];
     openssh.authorizedKeys.keys = [
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFEvr2qCdxh7peyDqmauJKmLiql3e77uo8+IrkmSwRDe tobias@windows"
-      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPwf+bDRHxfll2vHjpPt33kQyFacdcr/wuXqJvUVKNx+ tobias@DESKTOP-LOEC6VP"
     ];
   };
 
@@ -71,7 +75,7 @@
       users = [ "tobias" ];
       commands = [
         {
-          command = "/run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/code/dotfiles/nixos";
+          command = "/run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/dotfiles-nixos";
           options = [ "NOPASSWD" ];
         }
       ];

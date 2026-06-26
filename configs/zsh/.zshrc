@@ -1,5 +1,6 @@
 # If you come from bash you might have to change your $PATH.
 export PATH=$HOME/bin:$HOME/.local/bin:/usr/local/bin:$PATH
+
 if [[ -n "${ZSH_TMUX_FAST:-}" ]]; then
   _c_cyan=$'\e[38;2;151;243;249m'
   _c_pink=$'\e[38;2;255;121;198m'
@@ -98,7 +99,6 @@ if [[ -n "${ZSH_TMUX_FAST:-}" ]]; then
   return
 fi
 
-
 # Path to your Oh My Zsh installation.
 export ZSH="$HOME/.oh-my-zsh"
 
@@ -174,6 +174,7 @@ source $ZSH/oh-my-zsh.sh
 
 # Tab completion: immediately select first match and accept+execute on Enter
 setopt MENU_COMPLETE
+setopt NO_NOMATCH
 bindkey -M menuselect '^M' .accept-line
 
 # User configuration
@@ -207,35 +208,69 @@ bindkey -M menuselect '^M' .accept-line
 
 # Codex
 alias cy='codex --dangerously-bypass-approvals-and-sandbox'
-alias ls='eza --icons --grid --group-directories-first'
+if command -v eza >/dev/null 2>&1; then
+  alias ls='eza --icons --grid --group-directories-first'
+else
+  alias ls='ls --color=auto'
+fi
 
-# Prefer pnpm for interactive package management.
+# nvm
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+_load_nvm() {
+  unfunction node npm npx pnpm pi 2>/dev/null
+  source /usr/share/nvm/init-nvm.sh
+
+  local nvm_node
+  nvm_node="$(nvm which current 2>/dev/null)"
+  if [[ -n "$nvm_node" && -x "$nvm_node" ]]; then
+    local nvm_bin
+    nvm_bin="$(dirname "$nvm_node")"
+    path=("$nvm_bin" ${path:#$nvm_bin})
+    export PATH
+    rehash
+  fi
+}
+
+node() {
+  _load_nvm
+  command node "$@"
+}
+
 npm() {
+  _load_nvm
   print -u2 "npm is blocked in this shell. Use pnpm instead."
   print -u2 "If you really need npm once, run: command npm $*"
   return 1
 }
 
 npx() {
+  _load_nvm
   print -u2 "npx is blocked in this shell. Use pnpm dlx instead."
   print -u2 "If you really need npx once, run: command npx $*"
   return 1
 }
 
-# nvm
-source /usr/share/nvm/init-nvm.sh
+pnpm() {
+  _load_nvm
+  command pnpm "$@"
+}
+
+pi() {
+  _load_nvm
+  command pi "$@"
+}
 
 # Syntax highlighting (must be sourced after Oh My Zsh)
-source /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh 2>/dev/null
-
-# Highlight styles - commands green (#50fa7b), everything else default white
-ZSH_HIGHLIGHT_STYLES[command]='fg=#48d269'
-ZSH_HIGHLIGHT_STYLES[builtin]='fg=#48d269'
-ZSH_HIGHLIGHT_STYLES[alias]='fg=#48d269'
-ZSH_HIGHLIGHT_STYLES[precommand]='fg=#48d269'
-ZSH_HIGHLIGHT_STYLES[path]='none'
-ZSH_HIGHLIGHT_STYLES[default]='none'
-ZSH_HIGHLIGHT_STYLES[unknown-token]='fg=#ff5555'
+if source /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh 2>/dev/null; then
+  # Highlight styles - commands green (#50fa7b), everything else default white
+  ZSH_HIGHLIGHT_STYLES[command]='fg=#48d269'
+  ZSH_HIGHLIGHT_STYLES[builtin]='fg=#48d269'
+  ZSH_HIGHLIGHT_STYLES[alias]='fg=#48d269'
+  ZSH_HIGHLIGHT_STYLES[precommand]='fg=#48d269'
+  ZSH_HIGHLIGHT_STYLES[path]='none'
+  ZSH_HIGHLIGHT_STYLES[default]='none'
+  ZSH_HIGHLIGHT_STYLES[unknown-token]='fg=#ff5555'
+fi
 
 # pnpm
 export PNPM_HOME="/home/tobias/.local/share/pnpm"
