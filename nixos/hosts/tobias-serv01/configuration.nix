@@ -48,6 +48,33 @@
     openFirewall = true;
   };
 
+  fileSystems."/srv/nas" = {
+    device = "/dev/disk/by-uuid/fc63f569-7356-4020-a715-efce9b3ef742";
+    fsType = "ext4";
+  };
+
+  systemd.services.samba-smbd = {
+    requires = [ "srv-nas.mount" "nas-directory-permissions.service" ];
+    after = [ "srv-nas.mount" "nas-directory-permissions.service" ];
+    unitConfig.AssertPathIsMountPoint = "/srv/nas";
+  };
+
+  systemd.services.nas-directory-permissions = {
+    description = "Set NAS directory ownership";
+    requires = [ "srv-nas.mount" ];
+    after = [ "srv-nas.mount" ];
+    before = [ "samba-smbd.service" ];
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+    };
+    script = ''
+      ${pkgs.coreutils}/bin/chown tobias:users /srv/nas
+      ${pkgs.coreutils}/bin/chmod 0755 /srv/nas
+    '';
+  };
+
   networking.firewall.interfaces.tailscale0.allowedTCPPorts = [ 445 ];
 
   systemd.tmpfiles.rules = [
