@@ -5,6 +5,7 @@ This directory contains flake-based NixOS host configs.
 ## Hosts
 
 - `laptop-server`: headless lab server with SSH, Tailscale, Docker/Compose, Samba, firewall, garbage collection, and laptop sleep disabled.
+- `tobias-serv01`: main runner/server with SSH, Tailscale, Docker/Compose, Samba, firewall, garbage collection, and sleep/hibernation disabled.
 
 ## Source of truth
 
@@ -26,6 +27,12 @@ repo:
 
 ```bash
 cp /etc/nixos/hardware-configuration.nix /path/to/dotfiles/nixos/hosts/laptop-server/hardware-configuration.nix
+```
+
+For `tobias-serv01`, copy the generated hardware config to:
+
+```bash
+cp /etc/nixos/hardware-configuration.nix /path/to/dotfiles/nixos/hosts/tobias-serv01/hardware-configuration.nix
 ```
 
 ## Install flow
