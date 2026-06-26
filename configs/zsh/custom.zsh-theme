@@ -9,35 +9,30 @@ _c_green=$'\e[38;2;72;210;105m'    # #48d269 - soft green
 _c_reset=$'\e[0m'
 
 _custom_git_prompt() {
-  command git rev-parse --is-inside-work-tree &>/dev/null || return
+  local status_output
+  status_output=$(command git status --porcelain=v1 --branch 2>/dev/null) || return
 
-  local branch
-  branch=$(command git symbolic-ref --short HEAD 2>/dev/null) || \
-  branch=$(command git describe --tags --exact-match HEAD 2>/dev/null) || \
-  branch=$(command git rev-parse --short HEAD 2>/dev/null)
-  [[ -z "$branch" ]] && return
+  local branch_line="${status_output%%$'\n'*}"
+  local branch="${branch_line#\#\# }"
+  branch="${branch%%...*}"
+  branch="${branch%% \[*}"
 
-  # Nerd Font branch icon
-  local branch_icon=$''
+  if [[ "$branch" == HEAD* ]]; then
+    branch=$(command git rev-parse --short HEAD 2>/dev/null) || return
+  fi
 
-  # Ahead/behind upstream
   local arrows=""
-  local ahead behind
-  ahead=$(command git rev-list --count @{upstream}..HEAD 2>/dev/null)
-  behind=$(command git rev-list --count HEAD..@{upstream} 2>/dev/null)
-  [[ "${ahead:-0}" -gt 0 ]] && arrows+="⇡"
-  [[ "${behind:-0}" -gt 0 ]] && arrows+="⇣"
+  [[ "$branch_line" == *"[ahead "* ]] && arrows+="⇡"
+  [[ "$branch_line" == *"behind "* ]] && arrows+="⇣"
 
+  local indicators=""
+  [[ "$status_output" == *$'\n??'* ]] && indicators+="?"
+  [[ "$status_output" == *$'\n '[MD]* ]] && indicators+="!"
+  [[ "$status_output" == *$'\n'[MADRC]* ]] && indicators+="+"
+
+  local branch_icon=$''
   local prefix=""
   [[ -n "$arrows" ]] && prefix="${arrows} "
-
-  # Working tree indicators
-  local indicators=""
-  local status_output
-  status_output=$(command git status --porcelain 2>/dev/null)
-  [[ -n $(echo "$status_output" | command grep '^??') ]] && indicators+="?"
-  [[ -n $(echo "$status_output" | command grep '^ [MD]') ]] && indicators+="!"
-  [[ -n $(echo "$status_output" | command grep '^[MADRC]') ]] && indicators+="+"
 
   local result="%{${_c_pink}%}[${prefix}${branch_icon} ${branch}]"
   [[ -n "$indicators" ]] && result+="[${indicators}]"
