@@ -16,6 +16,8 @@ config.font = wezterm.font("Hack Nerd Font", { weight = "Regular" })
 config.font_size = 11.0
 config.hide_tab_bar_if_only_one_tab = true
 config.window_decorations = "TITLE|RESIZE"
+config.enable_kitty_keyboard = true
+config.enable_osc52 = true
 config.window_frame = {
   font = wezterm.font("Hack Nerd Font", { weight = "Bold" }),
 }
