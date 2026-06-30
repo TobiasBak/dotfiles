@@ -16,8 +16,15 @@ This repository contains configuration files (dotfiles) for both Windows and Arc
 
 ### Windows
 
-1. **Run the Setup Script:**
-   Run the main setup script as **Administrator**. This will install applications and configure aliases:
+1. **From WSL, launch the Windows setup:**
+   ```bash
+   bash windows/setup-from-wsl.sh
+   ```
+
+   This starts the Windows setup elevated, applies the winget configuration, installs WezTerm, installs Arch WSL, sets `archlinux` as the default WSL distro, and ensures Arch has a canonical checkout at `~/code/dotfiles`.
+
+2. **Or from Windows PowerShell:**
+   Run the main setup script as **Administrator**:
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\windows\setup.ps1
    ```

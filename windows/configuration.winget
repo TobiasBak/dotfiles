@@ -11,9 +11,9 @@ resources:
 
 # Core tools
 - type: Microsoft.WinGet/Package
-  name: Terminal
+  name: WezTerm
   properties:
-    id: Microsoft.WindowsTerminal
+    id: wez.wezterm
     source: winget
     useLatest: true
 
@@ -173,12 +173,11 @@ resources:
       }
       $mouse | ConvertTo-Json -Depth 20 | Set-Content -Path $mousePath -Encoding UTF8
 
-- name: PowerToysCtrlShiftSpacePowerShellTerminal
+- name: PowerToysCtrlShiftSpaceWezTerm
   type: Microsoft.DSC.Transitional/PowerShellScript
   dependsOn:
     - PowerToys
-    - Terminal
-    - PowerShell
+    - WezTerm
   properties:
     getScript: |
       $root = Join-Path $env:LOCALAPPDATA 'Microsoft\PowerToys'
@@ -194,7 +193,7 @@ resources:
         $profile = Get-Content $keyboardPath -Raw | ConvertFrom-Json
         $mappingPresent = [bool]($profile.remapShortcuts.global | Where-Object {
           $_.originalKeys -eq '17;16;32' -and $_.operationType -eq 1 -and
-          $_.runProgramFilePath -match 'wt\.exe$' -and $_.runProgramArgs -eq '-p PowerShell'
+          $_.runProgramFilePath -match 'wezterm(?:-gui)?\.exe$' -and [string]$_.runProgramArgs -eq ''
         })
       }
       return @{ keyboardEnabled = $keyboardEnabled; mappingPresent = $mappingPresent }
@@ -208,7 +207,7 @@ resources:
       $profile = Get-Content $keyboardPath -Raw | ConvertFrom-Json
       return [bool]($profile.remapShortcuts.global | Where-Object {
         $_.originalKeys -eq '17;16;32' -and $_.operationType -eq 1 -and
-        $_.runProgramFilePath -match 'wt\.exe$' -and $_.runProgramArgs -eq '-p PowerShell'
+        $_.runProgramFilePath -match 'wezterm(?:-gui)?\.exe$' -and [string]$_.runProgramArgs -eq ''
       })
     setScript: |
       $root = Join-Path $env:LOCALAPPDATA 'Microsoft\PowerToys'
@@ -274,8 +273,29 @@ resources:
         $profile | Add-Member -NotePropertyName remapShortcutsToText -NotePropertyValue ([pscustomobject]@{ global = @(); appSpecific = @() })
       }
 
-      $wt = Get-Command wt.exe -ErrorAction SilentlyContinue
-      $wtPath = if ($wt) { $wt.Source } else { Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\wt.exe' }
+      $wezterm = Get-Command wezterm-gui.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+      if (-not $wezterm) {
+        $wezterm = Get-Command wezterm.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+      }
+
+      $fallbacks = @()
+      if ($env:ProgramFiles) {
+        $fallbacks += Join-Path $env:ProgramFiles 'WezTerm\wezterm-gui.exe'
+      }
+      if (${env:ProgramFiles(x86)}) {
+        $fallbacks += Join-Path ${env:ProgramFiles(x86)} 'WezTerm\wezterm-gui.exe'
+      }
+      $fallbacks += Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\wezterm-gui.exe'
+
+      $weztermPath = if ($wezterm) {
+        $wezterm.Source
+      } else {
+        $fallbacks | Where-Object { Test-Path $_ } | Select-Object -First 1
+      }
+      if (-not $weztermPath) {
+        $weztermPath = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\wezterm-gui.exe'
+      }
+
       $mapping = [pscustomobject]@{
         originalKeys = '17;16;32'
         operationType = 1
@@ -283,8 +303,8 @@ resources:
         runProgramElevationLevel = 0
         runProgramAlreadyRunningAction = 0
         runProgramStartWindowType = 0
-        runProgramFilePath = $wtPath
-        runProgramArgs = '-p PowerShell'
+        runProgramFilePath = $weztermPath
+        runProgramArgs = ''
         runProgramStartInDir = ''
         unicodeText = '*Unsupported*'
       }
@@ -530,10 +550,121 @@ resources:
   metadata:
     securityContext: elevated
 
-- name: BootstrapArchWslShell
+- name: SetDefaultArchLinux
   type: Microsoft.DSC.Transitional/WindowsPowerShellScript
   dependsOn:
     - InstallArchLinux
+  properties:
+    getScript: |
+      $output = (& wsl --list --verbose 2>$null) -replace "`0", ""
+      $defaultDistro = @($output | Where-Object { $_ -match '^\s*\*\s+(\S+)' } | ForEach-Object { $Matches[1] }) | Select-Object -First 1
+      return @{ defaultDistro = $defaultDistro }
+    testScript: |
+      $output = (& wsl --list --verbose 2>$null) -replace "`0", ""
+      $defaultDistro = @($output | Where-Object { $_ -match '^\s*\*\s+(\S+)' } | ForEach-Object { $Matches[1] }) | Select-Object -First 1
+      return ($defaultDistro -eq 'archlinux')
+    setScript: |
+      Write-Host "SetDefaultArchLinux: setting archlinux as the default WSL distro..."
+      & wsl --set-default archlinux
+      if ($LASTEXITCODE -ne 0) {
+        throw "SetDefaultArchLinux: wsl --set-default archlinux failed with exit code $LASTEXITCODE"
+      }
+  metadata:
+    securityContext: elevated
+
+- name: EnsureArchDotfilesCheckout
+  type: Microsoft.DSC.Transitional/WindowsPowerShellScript
+  dependsOn:
+    - Git
+    - SetDefaultArchLinux
+  properties:
+    getScript: |
+      $marker = (& wsl -d archlinux -- bash -lc 'test -f ~/code/dotfiles/windows/scripts/bootstrap-arch-wsl.sh && echo yes || true' 2>$null) -replace "`0", ""
+      return @{ checkoutPresent = ($marker -contains 'yes') }
+    testScript: |
+      $marker = (& wsl -d archlinux -- bash -lc 'test -f ~/code/dotfiles/windows/scripts/bootstrap-arch-wsl.sh && echo yes || true' 2>$null) -replace "`0", ""
+      return ($marker -contains 'yes')
+    setScript: |
+      $repoRoot = Split-Path "${WinGetConfigRoot}" -Parent
+      $remoteUrl = $null
+
+      $git = Get-Command git.exe -ErrorAction SilentlyContinue
+      if ($git) {
+        $remoteUrl = (& $git.Source -C $repoRoot remote get-url origin 2>$null | Select-Object -First 1)
+      }
+
+      if (-not $remoteUrl) {
+        $gitConfig = Join-Path $repoRoot '.git\config'
+        if (Test-Path $gitConfig) {
+          $inOrigin = $false
+          foreach ($line in Get-Content $gitConfig) {
+            if ($line -match '^\s*\[remote "origin"\]\s*$') {
+              $inOrigin = $true
+              continue
+            }
+            if ($line -match '^\s*\[') {
+              $inOrigin = $false
+            }
+            if ($inOrigin -and $line -match '^\s*url\s*=\s*(.+?)\s*$') {
+              $remoteUrl = $Matches[1]
+              break
+            }
+          }
+        }
+      }
+
+      if ($remoteUrl -match '^git@github\.com:(.+?)(?:\.git)?$') {
+        $remoteUrl = "https://github.com/$($Matches[1]).git"
+      }
+
+      if (-not $remoteUrl) {
+        throw "EnsureArchDotfilesCheckout: could not determine origin remote from $repoRoot"
+      }
+
+      $checkoutScript = @'
+      set -euo pipefail
+
+      target="$HOME/code/dotfiles"
+
+      if ! command -v git >/dev/null 2>&1; then
+        if command -v pacman >/dev/null 2>&1; then
+          if [ "$(id -u)" -eq 0 ]; then
+            pacman -Sy --needed --noconfirm git ca-certificates
+          elif command -v sudo >/dev/null 2>&1; then
+            sudo pacman -Sy --needed --noconfirm git ca-certificates
+          else
+            echo "git is missing and sudo is unavailable in archlinux." >&2
+            exit 1
+          fi
+        else
+          echo "git is missing and pacman is unavailable in archlinux." >&2
+          exit 1
+        fi
+      fi
+
+      if [ -d "$target/.git" ]; then
+        echo "Dotfiles checkout already exists: $target"
+      else
+        mkdir -p "$(dirname "$target")"
+        git clone "$DOTFILES_REMOTE" "$target"
+      fi
+
+      test -f "$target/windows/scripts/bootstrap-arch-wsl.sh"
+      '@
+      $encodedScript = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($checkoutScript))
+
+      Write-Host "EnsureArchDotfilesCheckout: ensuring ~/code/dotfiles exists inside archlinux..."
+      & wsl -d archlinux -- env "DOTFILES_REMOTE=$remoteUrl" "DOTFILES_CHECKOUT_B64=$encodedScript" bash -lc 'printf "%s" "$DOTFILES_CHECKOUT_B64" | base64 -d | bash'
+      if ($LASTEXITCODE -ne 0) {
+        throw "EnsureArchDotfilesCheckout: failed with exit code $LASTEXITCODE"
+      }
+  metadata:
+    securityContext: elevated
+
+- name: BootstrapArchWslShell
+  type: Microsoft.DSC.Transitional/WindowsPowerShellScript
+  dependsOn:
+    - EnsureArchDotfilesCheckout
   properties:
     getScript: |
       $marker = (& wsl -d archlinux -- bash -lc 'test -f ~/.dotfiles-arch-wsl-shell-ok && echo yes || true' 2>$null)
@@ -542,49 +673,25 @@ resources:
       $marker = (& wsl -d archlinux -- bash -lc 'test -f ~/.dotfiles-arch-wsl-shell-ok && echo yes || true' 2>$null)
       return ($marker -contains 'yes')
     setScript: |
-      $bootstrapPath = Join-Path (Split-Path "${WinGetConfigRoot}" -Parent) 'windows\scripts\bootstrap-arch-wsl.sh'
-      if (-not (Test-Path $bootstrapPath)) {
-        throw "BootstrapArchWslShell: not found: $bootstrapPath"
-      }
-
-      $linuxPath = (& wsl -d archlinux -- wslpath -a $bootstrapPath) -replace "`0", ""
-      Write-Host "BootstrapArchWslShell: running $linuxPath inside Arch Linux..."
-      & wsl -d archlinux -- bash -lc "chmod +x '$linuxPath' && '$linuxPath' && touch ~/.dotfiles-arch-wsl-shell-ok"
+      Write-Host "BootstrapArchWslShell: running ~/code/dotfiles/windows/scripts/bootstrap-arch-wsl.sh inside archlinux..."
+      & wsl -d archlinux -- bash -lc 'set -euo pipefail; bootstrap="$HOME/code/dotfiles/windows/scripts/bootstrap-arch-wsl.sh"; test -f "$bootstrap"; chmod +x "$bootstrap"; "$bootstrap"; touch ~/.dotfiles-arch-wsl-shell-ok'
       if ($LASTEXITCODE -ne 0) {
         throw "BootstrapArchWslShell: failed with exit code $LASTEXITCODE"
       }
   metadata:
     securityContext: elevated
 
-- name: ArchZshTerminalProfile
+- name: RemoveLegacyWindowsTerminalProfile
   type: Microsoft.DSC.Transitional/PowerShellScript
-  dependsOn:
-    - Terminal
-    - JetBrainsMonoNerdFont
-    - BootstrapArchWslShell
   properties:
     getScript: |
       $fragmentPath = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows Terminal\Fragments\Dotfiles\arch-zsh.fragment.json'
       return @{ fragmentPresent = (Test-Path $fragmentPath) }
     testScript: |
       $fragmentPath = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows Terminal\Fragments\Dotfiles\arch-zsh.fragment.json'
-      return (Test-Path $fragmentPath)
+      return (-not (Test-Path $fragmentPath))
     setScript: |
-      $fragmentsDir = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows Terminal\Fragments\Dotfiles'
-      New-Item -ItemType Directory -Path $fragmentsDir -Force | Out-Null
-      $fragment = @{
-        profiles = @(
-          @{
-            guid = '{9a6426d2-7c79-45f5-9d84-fef67f3cb1f0}'
-            name = 'Arch zsh'
-            commandline = 'wsl.exe -d archlinux --cd ~ --exec zsh -l'
-            startingDirectory = '%USERPROFILE%'
-            hidden = $false
-            tabTitle = 'Arch zsh'
-            font = @{
-              face = 'JetBrainsMono Nerd Font'
-            }
-          }
-        )
+      $fragmentPath = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows Terminal\Fragments\Dotfiles\arch-zsh.fragment.json'
+      if (Test-Path $fragmentPath) {
+        Remove-Item -Path $fragmentPath -Force
       }
-      $fragment | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $fragmentsDir 'arch-zsh.fragment.json') -Encoding UTF8

@@ -36,11 +36,12 @@ install_missing_packages() {
   fi
 
   log "Installing missing shell packages: ${missing[*]}"
-  $SUDO pacman -Sy --needed --noconfirm "${missing[@]}"
+  $SUDO pacman -Syu --needed --noconfirm "${missing[@]}"
 }
 
 install_missing_packages \
-  zsh git github-cli curl tmux nvm zsh-syntax-highlighting python
+  zsh git github-cli curl tmux nvm zsh-syntax-highlighting python \
+  ripgrep fd bat jq unzip openssh
 
 if [ ! -d "$HOME/.oh-my-zsh" ]; then
   log "Installing Oh My Zsh..."
@@ -122,64 +123,35 @@ install_pi_cli() {
 }
 
 install_agent_skill_links() {
+  local skills_repo="https://github.com/TobiasBak/skills.git"
   local skills_dir
   skills_dir="$(cd "$REPO_DIR/.." && pwd)/skills"
 
-  if [ ! -f "$skills_dir/skills.json" ]; then
-    warn "Skills manifest not found: $skills_dir/skills.json"
+  mkdir -p "$(dirname "$skills_dir")"
+  if [ -d "$skills_dir/.git" ]; then
+    log "Updating skills repo at $skills_dir..."
+    git -C "$skills_dir" pull --ff-only || warn "Could not update skills repo at $skills_dir. Continuing with the existing checkout."
+  elif [ ! -e "$skills_dir" ]; then
+    log "Cloning skills repo into $skills_dir..."
+    git clone "$skills_repo" "$skills_dir" || {
+      warn "Could not clone skills repo into $skills_dir."
+      return
+    }
+  else
+    warn "$skills_dir exists but is not a git repository. Skipping agent skill links."
     return
   fi
 
-  link_skill() {
-    local name="$1"
-    local source="$2"
-    local target="$3/$name"
-
-    if [ ! -f "$source/SKILL.md" ]; then
-      warn "Missing SKILL.md: $source"
-      return
-    fi
-
-    mkdir -p "$(dirname "$target")"
-    if [ -L "$target" ] && [ "$(readlink -f "$target")" = "$(readlink -f "$source")" ]; then
-      log "Already linked: $target"
-      return
-    fi
-
-    if [ -e "$target" ] || [ -L "$target" ]; then
-      rm -rf "$target"
-    fi
-
-    ln -s "$source" "$target"
-    log "Linked $target -> $source"
-  }
-
-  mapfile -t external_skills < <(python - "$skills_dir/skills.json" <<'PY'
-import json, sys
-print(*json.load(open(sys.argv[1]))["external"], sep="\n")
-PY
-)
-  mapfile -t personal_skills < <(python - "$skills_dir/skills.json" <<'PY'
-import json, sys
-print(*json.load(open(sys.argv[1]))["personal"], sep="\n")
-PY
-)
+  if [ ! -f "$skills_dir/scripts/install-links.sh" ]; then
+    warn "Skills installer not found: $skills_dir/scripts/install-links.sh"
+    return
+  fi
 
   log "Linking Pi skills..."
-  for skill in "${external_skills[@]}"; do
-    link_skill "$skill" "$skills_dir/external/mattpocock-skills/$skill" "$HOME/.pi/agent/skills"
-  done
-  for skill in "${personal_skills[@]}"; do
-    link_skill "$skill" "$skills_dir/skills/$skill" "$HOME/.pi/agent/skills"
-  done
+  PI_SKILLS_DIR="$HOME/.pi/agent/skills" bash "$skills_dir/scripts/install-links.sh" --fix
 
   log "Linking Codex CLI skills..."
-  for skill in "${external_skills[@]}"; do
-    link_skill "$skill" "$skills_dir/external/mattpocock-skills/$skill" "$HOME/.agents/skills"
-  done
-  for skill in "${personal_skills[@]}"; do
-    link_skill "$skill" "$skills_dir/skills/$skill" "$HOME/.agents/skills"
-  done
+  PI_SKILLS_DIR="$HOME/.agents/skills" bash "$skills_dir/scripts/install-links.sh" --fix
 }
 
 install_codex_cli

@@ -54,84 +54,11 @@ Set-RegistryDword -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\SearchS
 Set-RegistryDword -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\SearchSettings" -Name "IsDynamicSearchBoxEnabled" -Value 0
 Write-Host "Windows Search web results, cloud content search, and search highlights are disabled for the current user." -ForegroundColor Green
 
-# 2. Set PowerShell 7 as the default profile in Windows Terminal-compatible hosts
-$wtSettingsPaths = @(
-    "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json",
-    "$env:LOCALAPPDATA\Microsoft\WindowsTerminal\settings.json",
-    "$env:LOCALAPPDATA\Packages\Microsoft.IntelligentTerminal_8wekyb3d8bbwe\LocalState\settings.json"
-) | Select-Object -Unique | Where-Object { Test-Path $_ }
-
-if ($wtSettingsPaths.Count -gt 0) {
-    foreach ($wtSettingsPath in $wtSettingsPaths) {
-        Write-Host "Configuring terminal settings at $wtSettingsPath..." -ForegroundColor Yellow
-        try {
-            $settings = Get-Content $wtSettingsPath -Raw | ConvertFrom-Json
-
-            if (-not ($settings.PSObject.Properties.Name -contains "profiles") -or $null -eq $settings.profiles) {
-                $settings | Add-Member -NotePropertyName "profiles" -NotePropertyValue ([ordered]@{})
-            }
-            if (-not ($settings.profiles.PSObject.Properties.Name -contains "defaults") -or $null -eq $settings.profiles.defaults) {
-                $settings.profiles | Add-Member -NotePropertyName "defaults" -NotePropertyValue ([ordered]@{})
-            }
-            if (-not ($settings.profiles.defaults.PSObject.Properties.Name -contains "font") -or $null -eq $settings.profiles.defaults.font) {
-                $settings.profiles.defaults | Add-Member -NotePropertyName "font" -NotePropertyValue ([ordered]@{})
-            }
-            if ($settings.profiles.defaults.font.PSObject.Properties.Name -contains "face") {
-                $settings.profiles.defaults.font.face = "JetBrainsMono Nerd Font"
-            } else {
-                $settings.profiles.defaults.font | Add-Member -NotePropertyName "face" -NotePropertyValue "JetBrainsMono Nerd Font"
-            }
-            Write-Host "Configured Windows Terminal to use JetBrainsMono Nerd Font by default." -ForegroundColor Green
-
-            # Find the PowerShell 7 profile GUID or Name
-            $pwshProfile = $null
-            if ($settings.profiles.PSObject.Properties.Name -contains "list" -and $null -ne $settings.profiles.list) {
-                $pwshProfile = @($settings.profiles.list | Where-Object { $_.name -eq "PowerShell" -or $_.commandline -like "*pwsh.exe*" }) | Select-Object -First 1
-            }
-
-            if ($pwshProfile -and $pwshProfile.guid) {
-                if ($settings.PSObject.Properties.Name -contains "defaultProfile") {
-                    $settings.defaultProfile = $pwshProfile.guid
-                } else {
-                    $settings | Add-Member -NotePropertyName "defaultProfile" -NotePropertyValue $pwshProfile.guid
-                }
-                Write-Host "Successfully set PowerShell 7 as the default profile in Windows Terminal." -ForegroundColor Green
-            } else {
-                Write-Warning "Could not find a PowerShell 7 profile in Windows Terminal settings."
-            }
-
-            $shiftEnterInput = [string]([char]27) + "[13;2u"
-            $legacyActionIds = @()
-
-            if ($settings.PSObject.Properties.Name -contains "actions" -and $null -ne $settings.actions) {
-                $legacyActions = @($settings.actions | Where-Object {
-                    $null -ne $_.command -and $_.command.action -eq "sendInput" -and $_.command.input -eq $shiftEnterInput
-                })
-                $legacyActionIds = @($legacyActions | ForEach-Object { $_.id } | Where-Object { $_ })
-                $settings.actions = @($settings.actions | Where-Object {
-                    -not ($null -ne $_.command -and $_.command.action -eq "sendInput" -and $_.command.input -eq $shiftEnterInput)
-                })
-            }
-
-            if ($settings.PSObject.Properties.Name -contains "keybindings" -and $null -ne $settings.keybindings) {
-                $settings.keybindings = @($settings.keybindings | Where-Object {
-                    $keys = [string]$_.keys
-                    $isShiftEnter = $keys.Equals("shift+enter", [System.StringComparison]::OrdinalIgnoreCase)
-                    $isLegacyCommand = $null -ne $_.command -and $_.command.action -eq "sendInput" -and $_.command.input -eq $shiftEnterInput
-                    $isLegacyActionId = $_.id -and $legacyActionIds -contains $_.id
-                    -not ($isShiftEnter -and ($isLegacyCommand -or $isLegacyActionId))
-                })
-            }
-
-            Write-Host "Removed legacy Shift+Enter raw input binding; PSReadLine and app keymaps handle new lines." -ForegroundColor Green
-
-            $settings | ConvertTo-Json -Depth 10 | Set-Content $wtSettingsPath
-        } catch {
-            Write-Warning "Failed to update Windows Terminal settings: $_"
-        }
-    }
-} else {
-    Write-Host "Windows Terminal settings not found. Skipping default profile configuration." -ForegroundColor Gray
+# 2. Remove the legacy Windows Terminal profile fragment created by older installs
+$legacyWtFragment = Join-Path $env:LOCALAPPDATA "Microsoft\Windows Terminal\Fragments\Dotfiles\arch-zsh.fragment.json"
+if (Test-Path $legacyWtFragment) {
+    Remove-Item -Path $legacyWtFragment -Force
+    Write-Host "Removed legacy Windows Terminal Arch profile fragment." -ForegroundColor Green
 }
 
 # 3. Link shared program configs
