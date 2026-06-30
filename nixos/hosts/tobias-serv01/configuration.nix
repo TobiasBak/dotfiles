@@ -39,6 +39,9 @@
         "force user" = "tobias";
         "create mask" = "0644";
         "directory mask" = "0755";
+        # Windows clients need execute access to launch .bat/.exe files from SMB,
+        # even though the NAS stores normal files without Unix execute bits.
+        "acl allow execute always" = "yes";
       };
     };
   };
