@@ -53,7 +53,8 @@ status_line = ["model-with-reasoning", "current-dir", "context-used", "context-w
 status_line_use_colors = true
 
 [tui.keymap.editor]
-insert_newline = ["shift-enter", "ctrl-enter"]
+# WezTerm maps modified Enter to LF for WSL/tmux reliability; keep ctrl-j as the fallback.
+insert_newline = ["shift-enter", "ctrl-enter", "ctrl-j"]
 
 [tui.model_availability_nux]
 "gpt-5.5" = 4

@@ -1,4 +1,5 @@
 local wezterm = require("wezterm")
+local act = wezterm.action
 
 local config = wezterm.config_builder()
 
@@ -18,6 +19,12 @@ config.hide_tab_bar_if_only_one_tab = true
 config.window_decorations = "TITLE|RESIZE"
 config.enable_kitty_keyboard = true
 config.enable_osc52 = true
+-- Normalize modified Enter to LF so zsh and Codex insert a newline reliably through WSL/tmux.
+config.keys = {
+  { key = "Enter", mods = "SHIFT", action = act.SendString("\x0a") },
+  { key = "Enter", mods = "CTRL", action = act.SendString("\x0a") },
+  { key = "Enter", mods = "CTRL|SHIFT", action = act.SendString("\x0a") },
+}
 config.window_frame = {
   font = wezterm.font("Hack Nerd Font", { weight = "Bold" }),
 }

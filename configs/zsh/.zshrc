@@ -1,6 +1,22 @@
 # If you come from bash you might have to change your $PATH.
 export PATH=$HOME/bin:$HOME/.local/bin:/usr/local/bin:$PATH
 
+# Match WezTerm's modified-Enter LF fallback with multiline shell editing.
+_insert_editor_newline() {
+  LBUFFER+=$'\n'
+}
+zle -N _insert_editor_newline
+
+_bind_modified_enter_keys() {
+  local keymap
+  for keymap in emacs viins; do
+    bindkey -M "$keymap" '^J' _insert_editor_newline 2>/dev/null
+    bindkey -M "$keymap" $'\e[13;2u' _insert_editor_newline 2>/dev/null
+    bindkey -M "$keymap" $'\e[13;5u' _insert_editor_newline 2>/dev/null
+    bindkey -M "$keymap" $'\e[13;6u' _insert_editor_newline 2>/dev/null
+  done
+}
+
 if [[ -n "${ZSH_TMUX_FAST:-}" ]]; then
   _c_cyan=$'\e[38;2;151;243;249m'
   _c_pink=$'\e[38;2;255;121;198m'
@@ -11,6 +27,7 @@ if [[ -n "${ZSH_TMUX_FAST:-}" ]]; then
   setopt NO_NOMATCH
   setopt PROMPT_SUBST
   bindkey -M menuselect '^M' .accept-line 2>/dev/null
+  _bind_modified_enter_keys
 
   alias cy='codex --dangerously-bypass-approvals-and-sandbox'
   if command -v eza >/dev/null 2>&1; then
@@ -176,6 +193,7 @@ source $ZSH/oh-my-zsh.sh
 setopt MENU_COMPLETE
 setopt NO_NOMATCH
 bindkey -M menuselect '^M' .accept-line
+_bind_modified_enter_keys
 
 # User configuration
 
