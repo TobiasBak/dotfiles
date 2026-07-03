@@ -17,6 +17,19 @@ _bind_modified_enter_keys() {
   done
 }
 
+finder() {
+  local path="${1:-.}"
+
+  if command -v explorer.exe >/dev/null 2>&1; then
+    explorer.exe "$path"
+  elif [[ -x /mnt/c/Windows/explorer.exe ]]; then
+    /mnt/c/Windows/explorer.exe "$path"
+  else
+    print -u2 "finder could not find Windows Explorer."
+    return 1
+  fi
+}
+
 if [[ -n "${ZSH_TMUX_FAST:-}" ]]; then
   _c_cyan=$'\e[38;2;151;243;249m'
   _c_pink=$'\e[38;2;255;121;198m'
