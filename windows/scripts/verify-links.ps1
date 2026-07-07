@@ -1,10 +1,39 @@
 $ErrorActionPreference = "Stop"
 
-$RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "../..")
+$RepoRoot = [System.IO.Path]::GetFullPath((Resolve-Path (Join-Path $PSScriptRoot "../..")).ProviderPath)
+$StableRepoRoot = Join-Path $HOME ".dotfiles"
+$ExpectedRepoRoot = $RepoRoot
 $Failures = @()
 
+function Get-NormalizedPath($Path) {
+    $providerPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+    return [System.IO.Path]::GetFullPath($providerPath)
+}
+
+if (Test-Path -LiteralPath $StableRepoRoot) {
+    $StableItem = Get-Item -LiteralPath $StableRepoRoot -Force
+    if ($StableItem.LinkType) {
+        $ActualRepoTarget = Get-NormalizedPath ($StableItem.Target -join ";")
+        $RepoRootPath = Get-NormalizedPath $RepoRoot
+        if ($ActualRepoTarget -eq $RepoRootPath) {
+            $ExpectedRepoRoot = $StableRepoRoot
+            Write-Host "OK: $StableRepoRoot -> $RepoRootPath"
+        } else {
+            $Failures += "Wrong target: $StableRepoRoot -> $ActualRepoTarget (expected -> $RepoRootPath)"
+        }
+    } else {
+        $Failures += "Not link: $StableRepoRoot (expected -> $RepoRoot)"
+    }
+} else {
+    $Failures += "Missing: $StableRepoRoot -> $RepoRoot"
+}
+
 function Test-Link($Path, $ExpectedTarget) {
-    $Expected = (Resolve-Path $ExpectedTarget).Path
+    if (!(Test-Path -LiteralPath $ExpectedTarget)) {
+        $script:Failures += "Missing expected target: $ExpectedTarget"
+        return
+    }
+    $Expected = Get-NormalizedPath $ExpectedTarget
     if (!(Test-Path -LiteralPath $Path)) {
         $script:Failures += "Missing: $Path -> $Expected"
         return
@@ -14,8 +43,8 @@ function Test-Link($Path, $ExpectedTarget) {
         $script:Failures += "Not link: $Path (expected -> $Expected)"
         return
     }
-    $Actual = ($Item.Target -join ";")
-    if ([System.IO.Path]::GetFullPath($Actual) -ne [System.IO.Path]::GetFullPath($Expected)) {
+    $Actual = Get-NormalizedPath ($Item.Target -join ";")
+    if ($Actual -ne $Expected) {
         $script:Failures += "Wrong target: $Path -> $Actual (expected -> $Expected)"
         return
     }
@@ -23,7 +52,11 @@ function Test-Link($Path, $ExpectedTarget) {
 }
 
 function Test-LinkOrHardLink($Path, $ExpectedTarget) {
-    $Expected = (Resolve-Path $ExpectedTarget).Path
+    if (!(Test-Path -LiteralPath $ExpectedTarget)) {
+        $script:Failures += "Missing expected target: $ExpectedTarget"
+        return
+    }
+    $Expected = Get-NormalizedPath $ExpectedTarget
     if (!(Test-Path -LiteralPath $Path)) {
         $script:Failures += "Missing: $Path -> $Expected"
         return
@@ -31,8 +64,8 @@ function Test-LinkOrHardLink($Path, $ExpectedTarget) {
 
     $Item = Get-Item -LiteralPath $Path -Force
     if ($Item.LinkType) {
-        $Actual = ($Item.Target -join ";")
-        if ([System.IO.Path]::GetFullPath($Actual) -ne [System.IO.Path]::GetFullPath($Expected)) {
+        $Actual = Get-NormalizedPath ($Item.Target -join ";")
+        if ($Actual -ne $Expected) {
             $script:Failures += "Wrong target: $Path -> $Actual (expected -> $Expected)"
             return
         }
@@ -52,14 +85,14 @@ function Test-LinkOrHardLink($Path, $ExpectedTarget) {
     $script:Failures += "Not link: $Path (expected -> $Expected)"
 }
 
-Test-LinkOrHardLink (Join-Path $HOME ".pi/agent/settings.json") (Join-Path $RepoRoot "configs/pi/settings.json")
-Test-LinkOrHardLink (Join-Path $HOME ".pi/agent/APPEND_SYSTEM.md") (Join-Path $RepoRoot "configs/pi/APPEND_SYSTEM.md")
-Test-Link (Join-Path $HOME ".pi/agent/extensions") (Join-Path $RepoRoot "configs/pi/extensions")
-Test-Link (Join-Path $HOME ".pi/agent/prompts") (Join-Path $RepoRoot "configs/pi/prompts")
-Test-LinkOrHardLink (Join-Path $HOME ".pi/agent/keybindings.json") (Join-Path $RepoRoot "configs/pi/keybindings.json")
-Test-LinkOrHardLink (Join-Path $HOME ".codex/config.toml") (Join-Path $RepoRoot "configs/codex/config.toml")
-Test-Link (Join-Path $HOME ".codex/prompts") (Join-Path $RepoRoot "configs/codex/prompts")
-Test-LinkOrHardLink (Join-Path $HOME ".wezterm.lua") (Join-Path $RepoRoot "configs/wezterm/wezterm.lua")
+Test-LinkOrHardLink (Join-Path $HOME ".pi/agent/settings.json") (Join-Path $ExpectedRepoRoot "configs/pi/settings.json")
+Test-LinkOrHardLink (Join-Path $HOME ".pi/agent/APPEND_SYSTEM.md") (Join-Path $ExpectedRepoRoot "configs/pi/APPEND_SYSTEM.md")
+Test-Link (Join-Path $HOME ".pi/agent/extensions") (Join-Path $ExpectedRepoRoot "configs/pi/extensions")
+Test-Link (Join-Path $HOME ".pi/agent/prompts") (Join-Path $ExpectedRepoRoot "configs/pi/prompts")
+Test-LinkOrHardLink (Join-Path $HOME ".pi/agent/keybindings.json") (Join-Path $ExpectedRepoRoot "configs/pi/keybindings.json")
+Test-LinkOrHardLink (Join-Path $HOME ".codex/config.toml") (Join-Path $ExpectedRepoRoot "configs/codex/config.toml")
+Test-Link (Join-Path $HOME ".codex/prompts") (Join-Path $ExpectedRepoRoot "configs/codex/prompts")
+Test-LinkOrHardLink (Join-Path $HOME ".wezterm.lua") (Join-Path $ExpectedRepoRoot "configs/wezterm/wezterm.lua")
 
 $SkillsRoot = Join-Path (Split-Path $RepoRoot -Parent) "skills"
 $SkillsVerifier = Join-Path $SkillsRoot "scripts\verify-links.ps1"

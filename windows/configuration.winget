@@ -485,7 +485,8 @@ resources:
     securityContext: elevated
 
 # WSL install. May reboot; setup.ps1 registers post-setup RunOnce before applying this config.
-# Uses the Arch Linux WSL distro name from `wsl --list --online`.
+# NixOS itself is installed from the NixOS-WSL release artifact because it is not
+# a standard `wsl --install -d` online distribution.
 - name: InstallWslComponents
   type: Microsoft.DSC.Transitional/WindowsPowerShellScript
   properties:
@@ -530,153 +531,33 @@ resources:
   metadata:
     securityContext: elevated
 
-- name: InstallArchLinux
-  type: Microsoft.DSC.Transitional/WindowsPowerShellScript
-  dependsOn:
-    - RebootForVmp
-  properties:
-    getScript: |
-      $distros = (& wsl --list --quiet 2>$null) -replace "`0", "" | ForEach-Object { $_.Trim() }
-      return @{ archPresent = [bool]($distros | Where-Object { $_ -eq 'archlinux' }) }
-    testScript: |
-      $distros = (& wsl --list --quiet 2>$null) -replace "`0", "" | ForEach-Object { $_.Trim() }
-      return [bool]($distros | Where-Object { $_ -eq 'archlinux' })
-    setScript: |
-      Write-Host "InstallArchLinux: running wsl --install -d archlinux --no-launch..."
-      $process = Start-Process -FilePath "cmd.exe" -ArgumentList '/c wsl --install -d archlinux --no-launch' -Wait -PassThru
-      if ($process.ExitCode -ne 0) {
-        throw "InstallArchLinux: wsl --install -d archlinux --no-launch failed with exit code $($process.ExitCode)"
-      }
-  metadata:
-    securityContext: elevated
-
-- name: SetDefaultArchLinux
-  type: Microsoft.DSC.Transitional/WindowsPowerShellScript
-  dependsOn:
-    - InstallArchLinux
-  properties:
-    getScript: |
-      $output = (& wsl --list --verbose 2>$null) -replace "`0", ""
-      $defaultDistro = @($output | Where-Object { $_ -match '^\s*\*\s+(\S+)' } | ForEach-Object { $Matches[1] }) | Select-Object -First 1
-      return @{ defaultDistro = $defaultDistro }
-    testScript: |
-      $output = (& wsl --list --verbose 2>$null) -replace "`0", ""
-      $defaultDistro = @($output | Where-Object { $_ -match '^\s*\*\s+(\S+)' } | ForEach-Object { $Matches[1] }) | Select-Object -First 1
-      return ($defaultDistro -eq 'archlinux')
-    setScript: |
-      Write-Host "SetDefaultArchLinux: setting archlinux as the default WSL distro..."
-      & wsl --set-default archlinux
-      if ($LASTEXITCODE -ne 0) {
-        throw "SetDefaultArchLinux: wsl --set-default archlinux failed with exit code $LASTEXITCODE"
-      }
-  metadata:
-    securityContext: elevated
-
-- name: EnsureArchDotfilesCheckout
+- name: ConfigureNixOsWsl
   type: Microsoft.DSC.Transitional/WindowsPowerShellScript
   dependsOn:
     - Git
-    - SetDefaultArchLinux
+    - RebootForVmp
   properties:
     getScript: |
-      $marker = (& wsl -d archlinux -- bash -lc 'test -f ~/code/dotfiles/windows/scripts/bootstrap-arch-wsl.sh && echo yes || true' 2>$null) -replace "`0", ""
-      return @{ checkoutPresent = ($marker -contains 'yes') }
+      $repoRoot = Split-Path "${WinGetConfigRoot}" -Parent
+      $script = Join-Path $repoRoot 'windows\scripts\install-nixos-wsl.ps1'
+      if (-not (Test-Path -LiteralPath $script)) {
+        return @{ installed = $false; error = "Missing $script" }
+      }
+      return & $script -Mode Get
     testScript: |
-      $marker = (& wsl -d archlinux -- bash -lc 'test -f ~/code/dotfiles/windows/scripts/bootstrap-arch-wsl.sh && echo yes || true' 2>$null) -replace "`0", ""
-      return ($marker -contains 'yes')
+      $repoRoot = Split-Path "${WinGetConfigRoot}" -Parent
+      $script = Join-Path $repoRoot 'windows\scripts\install-nixos-wsl.ps1'
+      if (-not (Test-Path -LiteralPath $script)) { return $false }
+      return [bool](& $script -Mode Test)
     setScript: |
       $repoRoot = Split-Path "${WinGetConfigRoot}" -Parent
-      $remoteUrl = $null
-
-      $git = Get-Command git.exe -ErrorAction SilentlyContinue
-      if ($git) {
-        $remoteUrl = (& $git.Source -C $repoRoot remote get-url origin 2>$null | Select-Object -First 1)
+      $script = Join-Path $repoRoot 'windows\scripts\install-nixos-wsl.ps1'
+      if (-not (Test-Path -LiteralPath $script)) {
+        throw "ConfigureNixOsWsl: missing $script"
       }
-
-      if (-not $remoteUrl) {
-        $gitConfig = Join-Path $repoRoot '.git\config'
-        if (Test-Path $gitConfig) {
-          $inOrigin = $false
-          foreach ($line in Get-Content $gitConfig) {
-            if ($line -match '^\s*\[remote "origin"\]\s*$') {
-              $inOrigin = $true
-              continue
-            }
-            if ($line -match '^\s*\[') {
-              $inOrigin = $false
-            }
-            if ($inOrigin -and $line -match '^\s*url\s*=\s*(.+?)\s*$') {
-              $remoteUrl = $Matches[1]
-              break
-            }
-          }
-        }
-      }
-
-      if ($remoteUrl -match '^git@github\.com:(.+?)(?:\.git)?$') {
-        $remoteUrl = "https://github.com/$($Matches[1]).git"
-      }
-
-      if (-not $remoteUrl) {
-        throw "EnsureArchDotfilesCheckout: could not determine origin remote from $repoRoot"
-      }
-
-      $checkoutScript = @'
-      set -euo pipefail
-
-      target="$HOME/code/dotfiles"
-
-      if ! command -v git >/dev/null 2>&1; then
-        if command -v pacman >/dev/null 2>&1; then
-          if [ "$(id -u)" -eq 0 ]; then
-            pacman -Sy --needed --noconfirm git ca-certificates
-          elif command -v sudo >/dev/null 2>&1; then
-            sudo pacman -Sy --needed --noconfirm git ca-certificates
-          else
-            echo "git is missing and sudo is unavailable in archlinux." >&2
-            exit 1
-          fi
-        else
-          echo "git is missing and pacman is unavailable in archlinux." >&2
-          exit 1
-        fi
-      fi
-
-      if [ -d "$target/.git" ]; then
-        echo "Dotfiles checkout already exists: $target"
-      else
-        mkdir -p "$(dirname "$target")"
-        git clone "$DOTFILES_REMOTE" "$target"
-      fi
-
-      test -f "$target/windows/scripts/bootstrap-arch-wsl.sh"
-      '@
-      $encodedScript = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($checkoutScript))
-
-      Write-Host "EnsureArchDotfilesCheckout: ensuring ~/code/dotfiles exists inside archlinux..."
-      & wsl -d archlinux -- env "DOTFILES_REMOTE=$remoteUrl" "DOTFILES_CHECKOUT_B64=$encodedScript" bash -lc 'printf "%s" "$DOTFILES_CHECKOUT_B64" | base64 -d | bash'
+      & $script -Mode Set
       if ($LASTEXITCODE -ne 0) {
-        throw "EnsureArchDotfilesCheckout: failed with exit code $LASTEXITCODE"
-      }
-  metadata:
-    securityContext: elevated
-
-- name: BootstrapArchWslShell
-  type: Microsoft.DSC.Transitional/WindowsPowerShellScript
-  dependsOn:
-    - EnsureArchDotfilesCheckout
-  properties:
-    getScript: |
-      $marker = (& wsl -d archlinux -- bash -lc 'test -f ~/.dotfiles-arch-wsl-shell-ok && echo yes || true' 2>$null)
-      return @{ bootstrapped = ($marker -contains 'yes') }
-    testScript: |
-      $marker = (& wsl -d archlinux -- bash -lc 'test -f ~/.dotfiles-arch-wsl-shell-ok && echo yes || true' 2>$null)
-      return ($marker -contains 'yes')
-    setScript: |
-      Write-Host "BootstrapArchWslShell: running ~/code/dotfiles/windows/scripts/bootstrap-arch-wsl.sh inside archlinux..."
-      & wsl -d archlinux -- bash -lc 'set -euo pipefail; bootstrap="$HOME/code/dotfiles/windows/scripts/bootstrap-arch-wsl.sh"; test -f "$bootstrap"; chmod +x "$bootstrap"; "$bootstrap"; touch ~/.dotfiles-arch-wsl-shell-ok'
-      if ($LASTEXITCODE -ne 0) {
-        throw "BootstrapArchWslShell: failed with exit code $LASTEXITCODE"
+        throw "ConfigureNixOsWsl: failed with exit code $LASTEXITCODE"
       }
   metadata:
     securityContext: elevated

@@ -4,6 +4,7 @@ This directory contains flake-based NixOS host configs.
 
 ## Hosts
 
+- `wsl`: NixOS-WSL developer environment used as the default Windows WSL distro.
 - `laptop-server`: lightweight laptop server with XFCE, xrdp, SSH, Tailscale, firewall, garbage collection, and laptop sleep disabled.
 
 ## Source of truth
@@ -29,6 +30,47 @@ cp /etc/nixos/hardware-configuration.nix /path/to/dotfiles/nixos/hosts/laptop-se
 ```
 
 ## Install flow
+
+### NixOS WSL
+
+Windows setup installs NixOS WSL from the latest NixOS-WSL `.wsl` release,
+sets the distro name/default to `NixOS`, applies this flake host:
+
+```bash
+sudo nixos-rebuild switch --flake ~/.dotfiles/nixos#wsl
+```
+
+The setup then bootstraps the `tobias` home with:
+
+```text
+~/.dotfiles -> <actual dotfiles checkout>
+```
+
+Keep Linux config links pointed through `~/.dotfiles` where possible. That
+lets each machine place the real Git checkout wherever it wants without
+rewriting every symlink.
+
+Manual Windows-side repair:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\windows\scripts\install-nixos-wsl.ps1
+```
+
+Manual in-distro rebuild:
+
+```bash
+sudo nixos-rebuild switch --flake ~/.dotfiles/nixos#wsl
+```
+
+After changing flake inputs, update and commit the lock file from a machine
+with Nix installed:
+
+```bash
+cd ~/.dotfiles/nixos
+nix flake lock
+```
+
+### Server / Bare Metal
 
 From the NixOS installer:
 

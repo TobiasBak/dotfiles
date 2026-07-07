@@ -4,7 +4,9 @@ set -euo pipefail
 
 # --- Configuration ---
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-REPO_DIR="$( cd "$SCRIPT_DIR/.." && pwd )"
+REAL_REPO_DIR="$( cd "$SCRIPT_DIR/.." && pwd )"
+STABLE_REPO_DIR="$HOME/.dotfiles"
+REPO_DIR="$REAL_REPO_DIR"
 CONFIGS_DIR="$REPO_DIR/configs"
 BACKUP_DIR="$HOME/dotfiles_backup_$(date +%Y%m%d_%H%M%S)"
 
@@ -50,6 +52,29 @@ log_success() {
 
 log_warning() {
     echo -e "\033[0;33m[WARNING]\033[0m $1"
+}
+
+ensure_dotfiles_link() {
+    if [ -L "$STABLE_REPO_DIR" ] && [ "$(readlink -f "$STABLE_REPO_DIR")" = "$REAL_REPO_DIR" ]; then
+        return
+    fi
+
+    if [ -e "$STABLE_REPO_DIR" ] && [ ! -L "$STABLE_REPO_DIR" ]; then
+        log_warning "$STABLE_REPO_DIR exists and is not a symlink. Config links will use $REAL_REPO_DIR."
+        return
+    fi
+
+    rm -f "$STABLE_REPO_DIR"
+    ln -s "$REAL_REPO_DIR" "$STABLE_REPO_DIR"
+    log_success "Linked $STABLE_REPO_DIR -> $REAL_REPO_DIR"
+}
+
+repo_dir() {
+    if [ -L "$STABLE_REPO_DIR" ] && [ "$(readlink -f "$STABLE_REPO_DIR")" = "$REAL_REPO_DIR" ]; then
+        printf '%s\n' "$STABLE_REPO_DIR"
+    else
+        printf '%s\n' "$REAL_REPO_DIR"
+    fi
 }
 
 check_dependencies() {
@@ -267,7 +292,8 @@ install_node() {
 
 install_pi_skills() {
     local skills_repo="https://github.com/TobiasBak/skills.git"
-    local skills_dir="$HOME/code/skills"
+    local skills_dir
+    skills_dir="$(cd "$REAL_REPO_DIR/.." && pwd)/skills"
     local target_dir="$HOME/.pi/agent/skills"
 
     log_info "Installing Pi skills from $skills_dir..."
@@ -293,6 +319,10 @@ install_pi_skills() {
 }
 
 # --- Main Script ---
+
+ensure_dotfiles_link
+REPO_DIR="$(repo_dir)"
+CONFIGS_DIR="$REPO_DIR/configs"
 
 check_dependencies
 enable_multilib_repository

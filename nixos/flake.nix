@@ -3,13 +3,22 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixos-wsl.url = "github:nix-community/NixOS-WSL/main";
   };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, nixos-wsl }:
     let
       system = "x86_64-linux";
     in
     {
+      nixosConfigurations.wsl = nixpkgs.lib.nixosSystem {
+        inherit system;
+        modules = [
+          nixos-wsl.nixosModules.default
+          ./hosts/wsl/configuration.nix
+        ];
+      };
+
       nixosConfigurations.laptop-server = nixpkgs.lib.nixosSystem {
         inherit system;
         modules = [

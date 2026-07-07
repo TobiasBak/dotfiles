@@ -2,9 +2,49 @@
 
 Write-Host "Running post-setup configurations..." -ForegroundColor Cyan
 
-$RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
-$ConfigsDir = Join-Path $RepoRoot "configs"
+$RepoRoot = [System.IO.Path]::GetFullPath((Resolve-Path (Join-Path $PSScriptRoot "..\..")).ProviderPath)
+$StableRepoRoot = Join-Path $HOME ".dotfiles"
 $BackupDir = Join-Path $HOME ("dotfiles_backup_" + (Get-Date -Format "yyyyMMdd_HHmmss"))
+
+function Get-NormalizedPath {
+    param([Parameter(Mandatory=$true)][string]$Path)
+
+    $providerPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+    return [System.IO.Path]::GetFullPath($providerPath)
+}
+
+function Ensure-DotfilesLink {
+    $repoRootPath = (Resolve-Path $RepoRoot).ProviderPath
+
+    if (Test-Path -LiteralPath $StableRepoRoot) {
+        $item = Get-Item -LiteralPath $StableRepoRoot -Force
+        if ($item.LinkType) {
+            $actual = Get-NormalizedPath ($item.Target -join ";")
+            $expected = Get-NormalizedPath $repoRootPath
+            if ($actual -eq $expected) {
+                Write-Host "Already linked: $StableRepoRoot" -ForegroundColor Cyan
+                return $StableRepoRoot
+            }
+
+            Remove-Item -LiteralPath $StableRepoRoot -Force
+        } else {
+            Write-Warning "$StableRepoRoot exists and is not a link. Config links will use $repoRootPath."
+            return $repoRootPath
+        }
+    }
+
+    try {
+        New-Item -ItemType SymbolicLink -Path $StableRepoRoot -Target $repoRootPath | Out-Null
+    } catch {
+        New-Item -ItemType Junction -Path $StableRepoRoot -Target $repoRootPath | Out-Null
+    }
+
+    Write-Host "Linked $StableRepoRoot -> $repoRootPath" -ForegroundColor Green
+    return $StableRepoRoot
+}
+
+$EffectiveRepoRoot = Ensure-DotfilesLink
+$ConfigsDir = Join-Path $EffectiveRepoRoot "configs"
 
 function Link-DotfileConfig {
     param(
@@ -12,7 +52,10 @@ function Link-DotfileConfig {
         [Parameter(Mandatory=$true)][string]$Target
     )
 
-    $Source = (Resolve-Path $Source).Path
+    if (-not (Test-Path -LiteralPath $Source)) {
+        throw "Source does not exist: $Source"
+    }
+    $Source = Get-NormalizedPath $Source
     $TargetParent = Split-Path $Target -Parent
     New-Item -ItemType Directory -Force -Path $TargetParent | Out-Null
 

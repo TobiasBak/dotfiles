@@ -53,7 +53,17 @@ if [[ -n "${ZSH_TMUX_FAST:-}" ]]; then
   export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
   _load_nvm() {
     unfunction node npm npx pnpm pi 2>/dev/null
-    source /usr/share/nvm/init-nvm.sh
+    if [[ -r /usr/share/nvm/init-nvm.sh ]]; then
+      source /usr/share/nvm/init-nvm.sh
+    elif [[ -r "$NVM_DIR/nvm.sh" ]]; then
+      source "$NVM_DIR/nvm.sh"
+    elif command -v node >/dev/null 2>&1; then
+      rehash
+      return 0
+    else
+      print -u2 "nvm init script not found and no system node is available."
+      return 1
+    fi
 
     local nvm_node
     nvm_node="$(nvm which current 2>/dev/null)"
@@ -96,14 +106,16 @@ if [[ -n "${ZSH_TMUX_FAST:-}" ]]; then
   }
 
   # pnpm
-  export PNPM_HOME="/home/tobias/.local/share/pnpm"
+  export PNPM_HOME="$HOME/.local/share/pnpm"
   path=("$PNPM_HOME" ${path:#$PNPM_HOME})
   export PATH
 
   autoload -Uz compinit
   compinit -C -d "${ZDOTDIR:-$HOME}/.zcompdump-fast-${ZSH_VERSION}"
 
-  if source /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh 2>/dev/null; then
+  if source /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh 2>/dev/null ||
+     source /run/current-system/sw/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh 2>/dev/null ||
+     source "$HOME/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" 2>/dev/null; then
     ZSH_HIGHLIGHT_STYLES[command]='fg=#48d269'
     ZSH_HIGHLIGHT_STYLES[builtin]='fg=#48d269'
     ZSH_HIGHLIGHT_STYLES[alias]='fg=#48d269'
@@ -249,7 +261,17 @@ fi
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 _load_nvm() {
   unfunction node npm npx pnpm pi 2>/dev/null
-  source /usr/share/nvm/init-nvm.sh
+  if [[ -r /usr/share/nvm/init-nvm.sh ]]; then
+    source /usr/share/nvm/init-nvm.sh
+  elif [[ -r "$NVM_DIR/nvm.sh" ]]; then
+    source "$NVM_DIR/nvm.sh"
+  elif command -v node >/dev/null 2>&1; then
+    rehash
+    return 0
+  else
+    print -u2 "nvm init script not found and no system node is available."
+    return 1
+  fi
 
   local nvm_node
   nvm_node="$(nvm which current 2>/dev/null)"
@@ -292,7 +314,9 @@ pi() {
 }
 
 # Syntax highlighting (must be sourced after Oh My Zsh)
-if source /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh 2>/dev/null; then
+if source /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh 2>/dev/null ||
+   source /run/current-system/sw/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh 2>/dev/null ||
+   source "$HOME/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" 2>/dev/null; then
   # Highlight styles - commands green (#50fa7b), everything else default white
   ZSH_HIGHLIGHT_STYLES[command]='fg=#48d269'
   ZSH_HIGHLIGHT_STYLES[builtin]='fg=#48d269'
@@ -304,7 +328,7 @@ if source /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting
 fi
 
 # pnpm
-export PNPM_HOME="/home/tobias/.local/share/pnpm"
+export PNPM_HOME="$HOME/.local/share/pnpm"
 path=("$PNPM_HOME" ${path:#$PNPM_HOME})
 export PATH
 # pnpm end

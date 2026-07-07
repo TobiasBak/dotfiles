@@ -40,7 +40,7 @@ if is_windows then
   config.default_prog = {
     "wsl.exe",
     "-d",
-    "archlinux",
+    "NixOS",
     "--cd",
     "~",
     "--exec",
