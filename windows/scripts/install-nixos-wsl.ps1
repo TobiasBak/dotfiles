@@ -8,6 +8,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# This script checks native exit codes explicitly. DSC hosts can otherwise
+# promote expected non-zero wsl/git exits before the script handles them.
+$PSNativeCommandUseErrorActionPreference = $false
 
 function Get-WslDistroNames {
     $output = (& wsl --list --quiet 2>$null) -replace "`0", ""
@@ -49,8 +52,14 @@ function Test-WslBash {
         return $false
     }
 
-    & wsl -d $DistroName -u $User -- bash -lc $Script *> $null
-    return ($LASTEXITCODE -eq 0)
+    try {
+        $ErrorActionPreference = "Continue"
+        $PSNativeCommandUseErrorActionPreference = $false
+        & wsl -d $DistroName -u $User -- bash -lc $Script *> $null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
 }
 
 function Get-NixOsWslState {
@@ -182,6 +191,8 @@ function Invoke-WslBashScript {
     }
     $envArgs += "DOTFILES_SCRIPT_B64=$encodedScript"
 
+    $ErrorActionPreference = "Continue"
+    $PSNativeCommandUseErrorActionPreference = $false
     & wsl -d $DistroName -u $User -- env @envArgs bash -lc 'printf "%s" "$DOTFILES_SCRIPT_B64" | base64 -d | bash'
     if ($LASTEXITCODE -ne 0) {
         throw "$StepName failed with exit code $LASTEXITCODE"
