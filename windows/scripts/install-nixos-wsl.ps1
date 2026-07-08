@@ -267,15 +267,30 @@ run_git() {
   fi
 }
 
+run_with_git() {
+  if command -v git >/dev/null 2>&1; then
+    "$@"
+  else
+    nix --extra-experimental-features "nix-command flakes" shell "$nixpkgs_ref#git" "$nixpkgs_ref#cacert" -c "$@"
+  fi
+}
+
 rm -rf "$repo"
 run_git clone "$DOTFILES_REMOTE" "$repo"
 test -f "$repo/nixos/flake.nix"
 test -f "$repo/nixos/hosts/wsl/configuration.nix"
 
-nix --extra-experimental-features "nix-command flakes" build "$repo/nixos#nixosConfigurations.wsl.config.system.build.toplevel"
-nixos-rebuild switch --flake "$repo/nixos#wsl"
-getent passwd "$DOTFILES_LINUX_USER" >/dev/null
-touch /etc/dotfiles-nixos-wsl-system-ok
+built_system="$(run_with_git nix --extra-experimental-features "nix-command flakes" build --no-link --print-out-paths "$repo/nixos#nixosConfigurations.wsl.config.system.build.toplevel")"
+switch_status=0
+run_with_git nixos-rebuild switch --flake "$repo/nixos#wsl" || switch_status=$?
+current_system="$(readlink -f /run/current-system)"
+
+if [ "$current_system" = "$built_system" ] && getent passwd "$DOTFILES_LINUX_USER" >/dev/null; then
+  touch /etc/dotfiles-nixos-wsl-system-ok
+  exit 0
+fi
+
+exit "$switch_status"
 '@
 
     Write-Host "Applying NixOS WSL system config from $remoteUrl..." -ForegroundColor Yellow
