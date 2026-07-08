@@ -19,6 +19,12 @@ config.hide_tab_bar_if_only_one_tab = true
 config.window_decorations = "TITLE|RESIZE"
 config.enable_kitty_keyboard = true
 config.enable_osc52 = true
+config.window_padding = {
+  left = 0,
+  right = 0,
+  top = 0,
+  bottom = 0,
+}
 -- Normalize modified Enter to LF so zsh and Codex insert a newline reliably through WSL/tmux.
 config.keys = {
   { key = "Enter", mods = "SHIFT", action = act.SendString("\x0a") },
@@ -32,7 +38,6 @@ config.inactive_pane_hsb = {
   saturation = 0.0,
   brightness = 0.5,
 }
-
 if is_windows then
   config.win32_system_backdrop = "Acrylic"
   config.window_background_opacity = 0.7

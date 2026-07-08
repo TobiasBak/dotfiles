@@ -114,16 +114,27 @@ resources:
     getScript: |
       $repoRoot = Split-Path "${WinGetConfigRoot}" -Parent
       $stableRepoRoot = Join-Path $HOME '.dotfiles'
-      $codeTarget = Join-Path $env:APPDATA 'Code\User\settings.json'
-      $weztermTarget = Join-Path $HOME '.wezterm.lua'
+      $targets = @(
+        @{ name = 'codeSettings'; path = Join-Path $env:APPDATA 'Code\User\settings.json' }
+        @{ name = 'weztermConfig'; path = Join-Path $HOME '.wezterm.lua' }
+        @{ name = 'piSettings'; path = Join-Path $HOME '.pi\agent\settings.json' }
+        @{ name = 'piAppendSystem'; path = Join-Path $HOME '.pi\agent\APPEND_SYSTEM.md' }
+        @{ name = 'piExtensions'; path = Join-Path $HOME '.pi\agent\extensions' }
+        @{ name = 'piPrompts'; path = Join-Path $HOME '.pi\agent\prompts' }
+        @{ name = 'piKeybindings'; path = Join-Path $HOME '.pi\agent\keybindings.json' }
+        @{ name = 'codexAgents'; path = Join-Path $HOME '.codex\AGENTS.md' }
+        @{ name = 'codexConfig'; path = Join-Path $HOME '.codex\config.toml' }
+        @{ name = 'codexPrompts'; path = Join-Path $HOME '.codex\prompts' }
+      )
+      $present = @{}
+      foreach ($target in $targets) {
+        $present[$target.name] = Test-Path -LiteralPath $target.path
+      }
       return @{
         repoRoot = $repoRoot
         stableRepoRoot = $stableRepoRoot
         stablePresent = Test-Path -LiteralPath $stableRepoRoot
-        codeTarget = $codeTarget
-        codePresent = Test-Path -LiteralPath $codeTarget
-        weztermTarget = $weztermTarget
-        weztermPresent = Test-Path -LiteralPath $weztermTarget
+        targets = $present
       }
     testScript: |
       function Get-NormalizedPath {
@@ -144,11 +155,20 @@ resources:
       $repoRoot = Split-Path "${WinGetConfigRoot}" -Parent
       $stableRepoRoot = Join-Path $HOME '.dotfiles'
       $effectiveRepoRoot = if (Test-LinkTarget $stableRepoRoot $repoRoot) { $stableRepoRoot } else { $repoRoot }
-      return (
-        (Test-LinkTarget $stableRepoRoot $repoRoot) -and
-        (Test-LinkTarget (Join-Path $env:APPDATA 'Code\User\settings.json') (Join-Path $effectiveRepoRoot 'configs\Code\User\settings.json')) -and
-        (Test-LinkTarget (Join-Path $HOME '.wezterm.lua') (Join-Path $effectiveRepoRoot 'configs\wezterm\wezterm.lua'))
+      $expectedLinks = @(
+        @{ path = Join-Path $env:APPDATA 'Code\User\settings.json'; target = Join-Path $effectiveRepoRoot 'configs\Code\User\settings.json' }
+        @{ path = Join-Path $HOME '.wezterm.lua'; target = Join-Path $effectiveRepoRoot 'configs\wezterm\wezterm.lua' }
+        @{ path = Join-Path $HOME '.pi\agent\settings.json'; target = Join-Path $effectiveRepoRoot 'configs\pi\settings.json' }
+        @{ path = Join-Path $HOME '.pi\agent\APPEND_SYSTEM.md'; target = Join-Path $effectiveRepoRoot 'configs\pi\APPEND_SYSTEM.md' }
+        @{ path = Join-Path $HOME '.pi\agent\extensions'; target = Join-Path $effectiveRepoRoot 'configs\pi\extensions' }
+        @{ path = Join-Path $HOME '.pi\agent\prompts'; target = Join-Path $effectiveRepoRoot 'configs\pi\prompts' }
+        @{ path = Join-Path $HOME '.pi\agent\keybindings.json'; target = Join-Path $effectiveRepoRoot 'configs\pi\keybindings.json' }
+        @{ path = Join-Path $HOME '.codex\AGENTS.md'; target = Join-Path $effectiveRepoRoot 'configs\codex\AGENTS.md' }
+        @{ path = Join-Path $HOME '.codex\config.toml'; target = Join-Path $effectiveRepoRoot 'configs\codex\config.toml' }
+        @{ path = Join-Path $HOME '.codex\prompts'; target = Join-Path $effectiveRepoRoot 'configs\codex\prompts' }
       )
+      $missingLinks = @($expectedLinks | Where-Object { -not (Test-LinkTarget $_.path $_.target) })
+      return ((Test-LinkTarget $stableRepoRoot $repoRoot) -and $missingLinks.Count -eq 0)
     setScript: |
       $repoRoot = [System.IO.Path]::GetFullPath((Split-Path "${WinGetConfigRoot}" -Parent))
       $stableRepoRoot = Join-Path $HOME '.dotfiles'
@@ -201,6 +221,88 @@ resources:
       $configsDir = Join-Path $effectiveRepoRoot 'configs'
       Link-DotfileConfig (Join-Path $configsDir 'Code\User\settings.json') (Join-Path $env:APPDATA 'Code\User\settings.json')
       Link-DotfileConfig (Join-Path $configsDir 'wezterm\wezterm.lua') (Join-Path $HOME '.wezterm.lua')
+      Link-DotfileConfig (Join-Path $configsDir 'pi\settings.json') (Join-Path $HOME '.pi\agent\settings.json')
+      Link-DotfileConfig (Join-Path $configsDir 'pi\APPEND_SYSTEM.md') (Join-Path $HOME '.pi\agent\APPEND_SYSTEM.md')
+      Link-DotfileConfig (Join-Path $configsDir 'pi\extensions') (Join-Path $HOME '.pi\agent\extensions')
+      Link-DotfileConfig (Join-Path $configsDir 'pi\prompts') (Join-Path $HOME '.pi\agent\prompts')
+      Link-DotfileConfig (Join-Path $configsDir 'pi\keybindings.json') (Join-Path $HOME '.pi\agent\keybindings.json')
+      Link-DotfileConfig (Join-Path $configsDir 'codex\AGENTS.md') (Join-Path $HOME '.codex\AGENTS.md')
+      Link-DotfileConfig (Join-Path $configsDir 'codex\config.toml') (Join-Path $HOME '.codex\config.toml')
+      Link-DotfileConfig (Join-Path $configsDir 'codex\prompts') (Join-Path $HOME '.codex\prompts')
+
+- name: RemoveLegacyPowerShellProfileDotfilesHooks
+  type: Microsoft.DSC.Transitional/PowerShellScript
+  properties:
+    getScript: |
+      $profilePaths = @(
+        $PROFILE.CurrentUserCurrentHost
+        (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'PowerShell\Microsoft.PowerShell_profile.ps1')
+        (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell\Microsoft.PowerShell_profile.ps1')
+      ) | Select-Object -Unique
+      $stalePatterns = @(
+        '^\s*\.\s+"[^"]*\\configs\\powershell\\aliases\.ps1"\s*$'
+        "^\s*oh-my-posh\s+init\s+pwsh\s+--config\s+'[^']*\\configs\\oh-my-posh\\custom-zsh\.omp\.json'\s+\|\s+Invoke-Expression\s*$"
+      )
+      $staleLines = @()
+      foreach ($profilePath in $profilePaths) {
+        if (-not (Test-Path -LiteralPath $profilePath)) { continue }
+        foreach ($line in Get-Content -LiteralPath $profilePath) {
+          foreach ($pattern in $stalePatterns) {
+            if ($line -match $pattern) {
+              $staleLines += "$profilePath`: $line"
+              break
+            }
+          }
+        }
+      }
+      return @{ profilePaths = $profilePaths; staleLines = $staleLines }
+    testScript: |
+      $profilePaths = @(
+        $PROFILE.CurrentUserCurrentHost
+        (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'PowerShell\Microsoft.PowerShell_profile.ps1')
+        (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell\Microsoft.PowerShell_profile.ps1')
+      ) | Select-Object -Unique
+      $stalePatterns = @(
+        '^\s*\.\s+"[^"]*\\configs\\powershell\\aliases\.ps1"\s*$'
+        "^\s*oh-my-posh\s+init\s+pwsh\s+--config\s+'[^']*\\configs\\oh-my-posh\\custom-zsh\.omp\.json'\s+\|\s+Invoke-Expression\s*$"
+      )
+      foreach ($profilePath in $profilePaths) {
+        if (-not (Test-Path -LiteralPath $profilePath)) { continue }
+        foreach ($line in Get-Content -LiteralPath $profilePath) {
+          foreach ($pattern in $stalePatterns) {
+            if ($line -match $pattern) { return $false }
+          }
+        }
+      }
+      return $true
+    setScript: |
+      $profilePaths = @(
+        $PROFILE.CurrentUserCurrentHost
+        (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'PowerShell\Microsoft.PowerShell_profile.ps1')
+        (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell\Microsoft.PowerShell_profile.ps1')
+      ) | Select-Object -Unique
+      $stalePatterns = @(
+        '^\s*\.\s+"[^"]*\\configs\\powershell\\aliases\.ps1"\s*$'
+        "^\s*oh-my-posh\s+init\s+pwsh\s+--config\s+'[^']*\\configs\\oh-my-posh\\custom-zsh\.omp\.json'\s+\|\s+Invoke-Expression\s*$"
+      )
+      foreach ($profilePath in $profilePaths) {
+        if (-not (Test-Path -LiteralPath $profilePath)) { continue }
+        $lines = @(Get-Content -LiteralPath $profilePath)
+        $filtered = @()
+        foreach ($line in $lines) {
+          $stale = $false
+          foreach ($pattern in $stalePatterns) {
+            if ($line -match $pattern) {
+              $stale = $true
+              break
+            }
+          }
+          if (-not $stale) { $filtered += $line }
+        }
+        if ($filtered.Count -ne $lines.Count) {
+          Set-Content -LiteralPath $profilePath -Value $filtered -Encoding UTF8
+        }
+      }
 
 # Windows settings
 - type: Microsoft.Windows/Registry
