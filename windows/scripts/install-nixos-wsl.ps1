@@ -2,6 +2,7 @@ param(
     [ValidateSet("Get", "Test", "Set")]
     [string]$Mode = "Set",
     [string]$DistroName = "NixOS",
+    [ValidatePattern('^[a-z_][a-z0-9_-]*[$]?$')]
     [string]$LinuxUser = "tobias",
     [string]$InstallerUrl = "https://github.com/nix-community/NixOS-WSL/releases/latest/download/nixos.wsl",
     [string]$RepoRoot = [System.IO.Path]::GetFullPath((Resolve-Path (Join-Path $PSScriptRoot "..\..")).ProviderPath)
@@ -42,6 +43,10 @@ function Test-WslDistro {
     return [bool](Get-WslDistroNames | Where-Object { $_ -eq $Name })
 }
 
+function Test-WslLinuxUser {
+    return (Test-WslBash -User "root" -Script "getent passwd $LinuxUser >/dev/null")
+}
+
 function Test-WslBash {
     param(
         [Parameter(Mandatory=$true)][string]$User,
@@ -65,12 +70,16 @@ function Test-WslBash {
 function Get-NixOsWslState {
     $installed = Test-WslDistro $DistroName
     $defaultDistro = Get-DefaultWslDistro
+    $linuxUserExists = $false
     $systemConfigured = $false
     $userBootstrapped = $false
 
     if ($installed) {
-        $systemConfigured = Test-WslBash -User "root" -Script "test -f /etc/dotfiles-nixos-wsl-system-ok"
-        $userBootstrapped = Test-WslBash -User $LinuxUser -Script "test -f ~/.dotfiles-nixos-wsl-shell-ok -a -f ~/.dotfiles/windows/scripts/bootstrap-nixos-wsl.sh"
+        $linuxUserExists = Test-WslLinuxUser
+        $systemConfigured = $linuxUserExists -and (Test-WslBash -User "root" -Script "test -f /etc/dotfiles-nixos-wsl-system-ok")
+        if ($linuxUserExists) {
+            $userBootstrapped = Test-WslBash -User $LinuxUser -Script "test -f ~/.dotfiles-nixos-wsl-shell-ok -a -f ~/.dotfiles/windows/scripts/bootstrap-nixos-wsl.sh"
+        }
     }
 
     return @{
@@ -78,6 +87,8 @@ function Get-NixOsWslState {
         installed = $installed
         defaultDistro = $defaultDistro
         default = ($defaultDistro -eq $DistroName)
+        linuxUser = $LinuxUser
+        linuxUserExists = $linuxUserExists
         systemConfigured = $systemConfigured
         userBootstrapped = $userBootstrapped
     }
@@ -209,6 +220,7 @@ experimental-features = nix-command flakes"
 
 repo="/root/dotfiles"
 nixpkgs_ref="github:NixOS/nixpkgs/nixos-25.11"
+rm -f /etc/dotfiles-nixos-wsl-system-ok
 
 run_git() {
   if command -v git >/dev/null 2>&1; then
@@ -225,11 +237,15 @@ test -f "$repo/nixos/hosts/wsl/configuration.nix"
 
 nix --extra-experimental-features "nix-command flakes" build "$repo/nixos#nixosConfigurations.wsl.config.system.build.toplevel"
 nixos-rebuild switch --flake "$repo/nixos#wsl"
+getent passwd "$DOTFILES_LINUX_USER" >/dev/null
 touch /etc/dotfiles-nixos-wsl-system-ok
 '@
 
     Write-Host "Applying NixOS WSL system config from $remoteUrl..." -ForegroundColor Yellow
-    Invoke-WslBashScript -User "root" -Script $systemScript -Environment @{ DOTFILES_REMOTE = $remoteUrl } -StepName "NixOS WSL system configuration"
+    Invoke-WslBashScript -User "root" -Script $systemScript -Environment @{
+        DOTFILES_REMOTE = $remoteUrl
+        DOTFILES_LINUX_USER = $LinuxUser
+    } -StepName "NixOS WSL system configuration"
 }
 
 function Install-NixOsUserBootstrap {
@@ -287,6 +303,10 @@ function Set-NixOsWslInstall {
     }
 
     $state = Get-NixOsWslState
+    if (-not $state.systemConfigured) {
+        throw "NixOS WSL system configuration did not create Linux user '$LinuxUser' and marker /etc/dotfiles-nixos-wsl-system-ok."
+    }
+
     if (-not $state.userBootstrapped) {
         Install-NixOsUserBootstrap
     }
@@ -298,7 +318,7 @@ switch ($Mode) {
     }
     "Test" {
         $state = Get-NixOsWslState
-        return ($state.installed -and $state.default -and $state.systemConfigured -and $state.userBootstrapped)
+        return ($state.installed -and $state.default -and $state.linuxUserExists -and $state.systemConfigured -and $state.userBootstrapped)
     }
     "Set" {
         Set-NixOsWslInstall
