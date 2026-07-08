@@ -155,6 +155,12 @@ if (Test-Path $codexConfigSource) {
     Link-DotfileConfig $codexConfigSource $codexConfigTarget
 }
 
+$codexAgentsSource = Join-Path $ConfigsDir "codex\AGENTS.md"
+$codexAgentsTarget = Join-Path $HOME ".codex\AGENTS.md"
+if (Test-Path $codexAgentsSource) {
+    Link-DotfileConfig $codexAgentsSource $codexAgentsTarget
+}
+
 $codexPromptsSource = Join-Path $ConfigsDir "codex\prompts"
 $codexPromptsTarget = Join-Path $HOME ".codex\prompts"
 if (Test-Path $codexPromptsSource) {

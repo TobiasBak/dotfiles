@@ -14,6 +14,7 @@ Check relevant links before or after config edits:
   - `~/.pi/agent/extensions` -> `configs/pi/extensions`
   - `~/.pi/agent/prompts` -> `configs/pi/prompts`
 - Windows Codex CLI config:
+  - `~/.codex/AGENTS.md` -> `configs/codex/AGENTS.md`
   - `~/.codex/config.toml` -> `configs/codex/config.toml`
   - `~/.codex/prompts` -> `configs/codex/prompts`
 - Windows app configs installed by `windows/scripts/post-setup.ps1`.

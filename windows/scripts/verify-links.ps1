@@ -90,6 +90,7 @@ Test-LinkOrHardLink (Join-Path $HOME ".pi/agent/APPEND_SYSTEM.md") (Join-Path $E
 Test-Link (Join-Path $HOME ".pi/agent/extensions") (Join-Path $ExpectedRepoRoot "configs/pi/extensions")
 Test-Link (Join-Path $HOME ".pi/agent/prompts") (Join-Path $ExpectedRepoRoot "configs/pi/prompts")
 Test-LinkOrHardLink (Join-Path $HOME ".pi/agent/keybindings.json") (Join-Path $ExpectedRepoRoot "configs/pi/keybindings.json")
+Test-LinkOrHardLink (Join-Path $HOME ".codex/AGENTS.md") (Join-Path $ExpectedRepoRoot "configs/codex/AGENTS.md")
 Test-LinkOrHardLink (Join-Path $HOME ".codex/config.toml") (Join-Path $ExpectedRepoRoot "configs/codex/config.toml")
 Test-Link (Join-Path $HOME ".codex/prompts") (Join-Path $ExpectedRepoRoot "configs/codex/prompts")
 Test-LinkOrHardLink (Join-Path $HOME ".wezterm.lua") (Join-Path $ExpectedRepoRoot "configs/wezterm/wezterm.lua")
