@@ -17,7 +17,7 @@ Check relevant links before or after config edits:
   - `~/.codex/AGENTS.md` -> `configs/codex/AGENTS.md`
   - `~/.codex/config.toml` -> `configs/codex/config.toml`
   - `~/.codex/prompts` -> `configs/codex/prompts`
-- Windows app configs installed by `windows/scripts/post-setup.ps1`.
+- Windows host configs are managed by `windows/configuration.winget`.
 - Linux configs installed by `arch-linux/install.sh` into `$HOME`, Oh My Zsh, and `$HOME/.config`.
 
 If a target is a real file/dir instead of a link, report it and recommend rerunning the installer or replacing it with the correct symlink/junction. On Windows, directory symlinks may require admin/dev mode; junctions are acceptable for directories.
@@ -28,23 +28,23 @@ Pi and Codex CLI personal skills are managed by separate sibling repo `../skills
 
 Expected links:
 
-- `~/.pi/agent/skills/<skill>` -> `../skills/skills/<skill>` for personal skills listed in `../skills/skills.json`.
-- `~/.pi/agent/skills/<skill>` -> `../skills/external/mattpocock-skills/<skill>` for external skills listed in `../skills/skills.json`.
-- `~/.agents/skills/<skill>` -> `../skills/skills/<skill>` for Codex personal skills listed in `../skills/skills.json`.
-- `~/.agents/skills/<skill>` -> `../skills/external/mattpocock-skills/<skill>` for Codex external skills listed in `../skills/skills.json`.
+- NixOS WSL `~/.pi/agent/skills/<skill>` -> `../skills/skills/<skill>` for personal skills listed in `../skills/skills.json`.
+- NixOS WSL `~/.pi/agent/skills/<skill>` -> `../skills/external/mattpocock-skills/<skill>` for external skills listed in `../skills/skills.json`.
+- NixOS WSL `~/.agents/skills/<skill>` -> `../skills/skills/<skill>` for Codex personal skills listed in `../skills/skills.json`.
+- NixOS WSL `~/.agents/skills/<skill>` -> `../skills/external/mattpocock-skills/<skill>` for Codex external skills listed in `../skills/skills.json`.
 
 Use PowerShell on Windows. Git Bash `ln -s` can create links that native Windows/Pi does not see correctly.
 
-- Install/fix all agent skills: `powershell -ExecutionPolicy Bypass -File .\windows\scripts\sync-agent.ps1`
-- Verify all agent links: `powershell -ExecutionPolicy Bypass -File .\windows\scripts\verify-links.ps1`
+- Install/fix all WSL agent skills: `./rebuild-wsl.sh`
+- Verify Windows host links: `winget configure -f .\windows\configuration.winget --accept-configuration-agreements --disable-interactivity`
 - Install/fix one target manually: set `PI_SKILLS_DIR` to the target skill directory, then run `powershell -ExecutionPolicy Bypass -File ..\skills\scripts\install-links.ps1 -Fix`.
 
 When adding a new personal skill, add its name to `..\skills\skills.json`, then run installer/verifier.
 
 ## Agent sync and verification
 
-- Verify Pi/Codex config + skills: `powershell -ExecutionPolicy Bypass -File .\windows\scripts\verify-links.ps1`
-- Sync/fix Pi/Codex skills and verify all agent links: `powershell -ExecutionPolicy Bypass -File .\windows\scripts\sync-agent.ps1`
+- Verify Windows host config links: `winget configure -f .\windows\configuration.winget --accept-configuration-agreements --disable-interactivity`
+- Sync/fix WSL Pi/Codex config + skills: `./rebuild-wsl.sh`
 
 ## NixOS servers
 
@@ -52,9 +52,9 @@ Before changing or remotely rebuilding NixOS servers, read `nixos/README.md`, es
 
 ## Installers
 
-- Windows setup: `powershell -ExecutionPolicy Bypass -File .\windows\setup.ps1` from elevated PowerShell.
-- Windows winget configuration only: `powershell -ExecutionPolicy Bypass -File .\windows\scripts\install-apps.ps1` from elevated PowerShell.
-- Windows Codex/Pi CLI repair only: `powershell -ExecutionPolicy Bypass -File .\windows\scripts\install-agent-clis.ps1`.
+- Windows setup: `powershell -ExecutionPolicy Bypass -File .\rebuild-windows.ps1` from PowerShell. The script elevates when needed.
+- Windows winget configuration only: `winget configure -f .\windows\configuration.winget --accept-configuration-agreements --disable-interactivity` from elevated PowerShell.
+- NixOS WSL rebuild and agent repair: `./rebuild-wsl.sh`.
 - Linux setup: `./arch-linux/install.sh`.
 
 Avoid running installers without user approval because they install packages and mutate user config.

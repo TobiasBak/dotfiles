@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$SCRIPT_DIR"
+STABLE_REPO_DIR="$HOME/.dotfiles"
+BOOTSTRAP_SCRIPT="$REPO_DIR/windows/scripts/bootstrap-nixos-wsl.sh"
+
+log() { printf '\033[0;36m[rebuild-wsl]\033[0m %s\n' "$*"; }
+warn() { printf '\033[0;33m[rebuild-wsl]\033[0m %s\n' "$*"; }
+
+if [ ! -f /etc/NIXOS ]; then
+  echo "rebuild-wsl.sh must be run inside NixOS WSL." >&2
+  exit 1
+fi
+
+if ! grep -qiE "microsoft|wsl" /proc/sys/kernel/osrelease 2>/dev/null; then
+  echo "rebuild-wsl.sh must be run inside WSL." >&2
+  exit 1
+fi
+
+if [ "$(id -u)" -eq 0 ]; then
+  echo "Run rebuild-wsl.sh as your normal WSL user, not root." >&2
+  exit 1
+fi
+
+if [ ! -f "$REPO_DIR/nixos/flake.nix" ]; then
+  echo "Missing NixOS flake: $REPO_DIR/nixos/flake.nix" >&2
+  exit 1
+fi
+
+if [ ! -f "$BOOTSTRAP_SCRIPT" ]; then
+  echo "Missing WSL bootstrap script: $BOOTSTRAP_SCRIPT" >&2
+  exit 1
+fi
+
+if [ -L "$STABLE_REPO_DIR" ] || [ ! -e "$STABLE_REPO_DIR" ]; then
+  ln -sfn "$REPO_DIR" "$STABLE_REPO_DIR"
+  log "Linked $STABLE_REPO_DIR -> $REPO_DIR"
+elif [ "$(readlink -f "$STABLE_REPO_DIR")" != "$(readlink -f "$REPO_DIR")" ]; then
+  echo "$STABLE_REPO_DIR exists and does not point at $REPO_DIR. Move it aside or fix the link before rebuilding." >&2
+  exit 1
+else
+  warn "$STABLE_REPO_DIR is not a symlink, but it resolves to this checkout."
+fi
+
+export NIX_CONFIG="${NIX_CONFIG:-}
+experimental-features = nix-command flakes"
+
+log "Applying NixOS WSL flake..."
+sudo nixos-rebuild switch --flake "$REPO_DIR/nixos#wsl"
+
+log "Refreshing WSL user config links and agent tools..."
+bash "$BOOTSTRAP_SCRIPT"
+
+log "NixOS WSL rebuild complete."

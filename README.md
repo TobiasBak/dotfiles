@@ -6,7 +6,7 @@ This repository contains configuration files (dotfiles) for Windows, NixOS, NixO
 
 - `configs/`: Shared program configs used by both OS installers where applicable.
   - Linux installers symlink XDG configs from here into `~/.config` plus zsh files into `$HOME` / Oh My Zsh.
-  - Windows installers symlink supported shared configs (PowerShell aliases, VS Code, Discord, Pi config/extensions/prompts, and Codex CLI config/prompts) into their Windows locations and install Pi skills from sibling skills repo `../skills` relative to this dotfiles repo.
+  - Windows installers symlink host configs like WezTerm and VS Code into their Windows locations.
 - `arch-linux/`: Arch Linux installer and Linux-only assets (for example wallpapers).
 - `nixos/`: Flake-based NixOS host configs, including NixOS WSL and server profiles.
 - `windows/`: Windows setup scripts.
@@ -16,18 +16,15 @@ This repository contains configuration files (dotfiles) for Windows, NixOS, NixO
 
 ### Windows
 
-1. **From WSL, launch the Windows setup:**
-   ```bash
-   bash windows/setup-from-wsl.sh
-   ```
+Run the root rebuild script from Windows PowerShell:
 
-   This starts the Windows setup elevated, applies the winget configuration, installs WezTerm, installs NixOS WSL via NixOS-WSL, sets `NixOS` as the default WSL distro, and bootstraps config links through `~/.dotfiles`.
+```powershell
+powershell -ExecutionPolicy Bypass -File .\rebuild-windows.ps1
+```
 
-2. **Or from Windows PowerShell:**
-   Run the main setup script as **Administrator**:
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\windows\setup.ps1
-   ```
+This elevates when needed, applies the winget configuration, installs WezTerm,
+installs or repairs NixOS WSL, refreshes Windows host config links, and verifies
+links. Dev shells, agent CLIs, and agent skills are refreshed inside NixOS WSL.
 
 ### NixOS WSL
 
@@ -39,16 +36,10 @@ Windows setup creates a stable `%USERPROFILE%\.dotfiles` link for Windows config
 
 That stable path means config symlinks do not need to know whether the real checkout lives in `~/code/dotfiles`, somewhere under `/mnt/c`, or another machine-specific path.
 
-Manual repair or reapply:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\windows\scripts\install-nixos-wsl.ps1
-```
-
-Inside NixOS WSL, rebuild the system profile with:
+Inside NixOS WSL, refresh the system profile and user config links with:
 
 ```bash
-sudo nixos-rebuild switch --flake ~/.dotfiles/nixos#wsl
+./rebuild-wsl.sh
 ```
 
 ### Arch Linux

@@ -9,7 +9,7 @@ metadata:
       identifier: dscv3
 resources:
 
-# Core tools
+# Windows host tools
 - type: Microsoft.WinGet/Package
   name: WezTerm
   properties:
@@ -17,17 +17,12 @@ resources:
     source: winget
     useLatest: true
 
+# WinGet has regular Hack, but not Hack Nerd Font in the public package index.
+# HackNerdFont below installs the Nerd-patched font that WezTerm uses.
 - type: Microsoft.WinGet/Package
-  name: JetBrainsMonoNerdFont
+  name: HackFont
   properties:
-    id: DEVCOM.JetBrainsMonoNerdFont
-    source: winget
-    useLatest: true
-
-- type: Microsoft.WinGet/Package
-  name: PowerShell
-  properties:
-    id: Microsoft.PowerShell
+    id: SourceFoundry.HackFonts
     source: winget
     useLatest: true
 
@@ -39,331 +34,173 @@ resources:
     useLatest: true
 
 - type: Microsoft.WinGet/Package
-  name: GitHubCLI
-  dependsOn:
-    - Git
-  properties:
-    id: GitHub.cli
-    source: winget
-    useLatest: true
-
-- type: Microsoft.WinGet/Package
   name: VSCode
   properties:
     id: Microsoft.VisualStudioCode
     source: winget
     useLatest: true
 
-- type: Microsoft.WinGet/Package
-  name: NvmForWindows
-  properties:
-    id: CoreyButler.NVMforWindows
-    source: winget
-    useLatest: true
-
-- type: Microsoft.WinGet/Package
-  name: UV
-  properties:
-    id: astral-sh.uv
-    source: winget
-    useLatest: true
-
-- type: Microsoft.WinGet/Package
-  name: Eza
-  properties:
-    id: eza-community.eza
-    source: winget
-    useLatest: true
-
-- type: Microsoft.WinGet/Package
-  name: Coreutils
-  properties:
-    id: Microsoft.Coreutils
-    source: winget
-    useLatest: true
-
-- type: Microsoft.WinGet/Package
-  name: PowerToys
-  properties:
-    id: Microsoft.PowerToys
-    source: winget
-    useLatest: true
-
-- name: PowerToysDisableFindMyMouseDoubleCtrl
+- name: HackNerdFont
   type: Microsoft.DSC.Transitional/PowerShellScript
   dependsOn:
-    - PowerToys
+    - HackFont
   properties:
     getScript: |
-      $settingsPath = Join-Path $env:LOCALAPPDATA 'Microsoft\PowerToys\settings.json'
-      $mousePath = Join-Path $env:LOCALAPPDATA 'Microsoft\PowerToys\MouseUtils\settings.json'
-      $findMyMouseEnabled = $null
-      $activationMethod = $null
-      if (Test-Path $settingsPath) {
-        $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
-        $findMyMouseEnabled = $settings.enabled.FindMyMouse
-      }
-      if (Test-Path $mousePath) {
-        $mouse = Get-Content $mousePath -Raw | ConvertFrom-Json
-        $activationMethod = $mouse.properties.activation_method.value
-      }
-      return @{ findMyMouseEnabled = $findMyMouseEnabled; activationMethod = $activationMethod }
+      $fontName = 'Hack Nerd Font'
+      $registryPaths = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts',
+        'HKCU:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts'
+      )
+      $installed = @($registryPaths | Where-Object { Test-Path $_ } | ForEach-Object {
+        $key = Get-Item $_
+        $key.GetValueNames() | Where-Object { $_ -like "$fontName*" }
+      })
+      return @{ installed = [bool]$installed; fonts = $installed }
     testScript: |
-      $settingsPath = Join-Path $env:LOCALAPPDATA 'Microsoft\PowerToys\settings.json'
-      $mousePath = Join-Path $env:LOCALAPPDATA 'Microsoft\PowerToys\MouseUtils\settings.json'
-      if (-not (Test-Path $settingsPath)) { return $false }
-      $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
-      $disabled = $settings.enabled.FindMyMouse -eq $false
-      $shortcut = $false
-      if (Test-Path $mousePath) {
-        $mouse = Get-Content $mousePath -Raw | ConvertFrom-Json
-        $shortcut = $mouse.properties.activation_method.value -eq 3
-      }
-      return ($disabled -and $shortcut)
+      $fontName = 'Hack Nerd Font'
+      $registryPaths = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts',
+        'HKCU:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts'
+      )
+      $installed = @($registryPaths | Where-Object { Test-Path $_ } | ForEach-Object {
+        $key = Get-Item $_
+        $key.GetValueNames() | Where-Object { $_ -like "$fontName*" }
+      })
+      return [bool]$installed
     setScript: |
-      $root = Join-Path $env:LOCALAPPDATA 'Microsoft\PowerToys'
-      $settingsPath = Join-Path $root 'settings.json'
-      $mouseDir = Join-Path $root 'MouseUtils'
-      $mousePath = Join-Path $mouseDir 'settings.json'
-      New-Item -ItemType Directory -Force -Path $root, $mouseDir | Out-Null
+      $fontName = 'Hack Nerd Font'
+      $downloadUrl = 'https://github.com/ryanoasis/nerd-fonts/releases/latest/download/Hack.zip'
+      $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ('hack-nerd-font-' + [System.Guid]::NewGuid())
+      $zipPath = Join-Path $tempDir 'Hack.zip'
+      $extractDir = Join-Path $tempDir 'extract'
+      $fontsDir = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\Fonts'
+      $registryPath = 'HKCU:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts'
 
-      if (Test-Path $settingsPath) {
-        $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
-      } else {
-        $settings = [pscustomobject]@{ enabled = [pscustomobject]@{} }
-      }
-      if (-not $settings.PSObject.Properties['enabled']) {
-        $settings | Add-Member -NotePropertyName enabled -NotePropertyValue ([pscustomobject]@{})
-      }
-      if ($settings.enabled.PSObject.Properties['FindMyMouse']) {
-        $settings.enabled.FindMyMouse = $false
-      } else {
-        $settings.enabled | Add-Member -NotePropertyName FindMyMouse -NotePropertyValue $false
-      }
-      $settings | ConvertTo-Json -Depth 20 | Set-Content -Path $settingsPath -Encoding UTF8
+      New-Item -ItemType Directory -Force -Path $tempDir, $extractDir, $fontsDir | Out-Null
+      try {
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath
+        Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+        $fontFiles = Get-ChildItem -Path $extractDir -Recurse -File -Include '*.ttf' |
+          Where-Object { $_.Name -like 'HackNerdFont-*.ttf' -and $_.Name -notlike '*Mono*' -and $_.Name -notlike '*Propo*' }
+        if (-not $fontFiles) { throw "No $fontName TTF files found in the downloaded archive." }
 
-      if (Test-Path $mousePath) {
-        $mouse = Get-Content $mousePath -Raw | ConvertFrom-Json
-      } else {
-        $mouse = [pscustomobject]@{
-          name = 'FindMyMouse'
-          version = '1.1'
-          properties = [pscustomobject]@{
-            activation_method = [pscustomobject]@{ value = 3 }
-            include_win_key = [pscustomobject]@{ value = $false }
-            activation_shortcut = [pscustomobject]@{ win = $true; ctrl = $false; alt = $false; shift = $true; code = 70 }
-            do_not_activate_on_game_mode = [pscustomobject]@{ value = $true }
-            background_color = [pscustomobject]@{ value = '#80000000' }
-            spotlight_color = [pscustomobject]@{ value = '#80FFFFFF' }
-            spotlight_radius = [pscustomobject]@{ value = 100 }
-            animation_duration_ms = [pscustomobject]@{ value = 500 }
-            spotlight_initial_zoom = [pscustomobject]@{ value = 9 }
-            excluded_apps = [pscustomobject]@{ value = '' }
-            shaking_minimum_distance = [pscustomobject]@{ value = 1000 }
-            shaking_interval_ms = [pscustomobject]@{ value = 1000 }
-            shaking_factor = [pscustomobject]@{ value = 400 }
+        New-Item -Path $registryPath -Force | Out-Null
+        foreach ($fontFile in $fontFiles) {
+          $targetPath = Join-Path $fontsDir $fontFile.Name
+          Copy-Item -LiteralPath $fontFile.FullName -Destination $targetPath -Force
+          $registryName = switch -Wildcard ($fontFile.BaseName) {
+            'HackNerdFont-Regular' { 'Hack Nerd Font Regular (TrueType)' }
+            'HackNerdFont-Bold' { 'Hack Nerd Font Bold (TrueType)' }
+            'HackNerdFont-Italic' { 'Hack Nerd Font Italic (TrueType)' }
+            'HackNerdFont-BoldItalic' { 'Hack Nerd Font Bold Italic (TrueType)' }
+            default { "$($fontFile.BaseName) (TrueType)" }
           }
+          New-ItemProperty -Path $registryPath -Name $registryName -Value $fontFile.Name -PropertyType String -Force | Out-Null
         }
-      }
-      if (-not $mouse.PSObject.Properties['properties']) { $mouse | Add-Member -NotePropertyName properties -NotePropertyValue ([pscustomobject]@{}) }
-      if ($mouse.properties.PSObject.Properties['activation_method']) {
-        $mouse.properties.activation_method.value = 3
-      } else {
-        $mouse.properties | Add-Member -NotePropertyName activation_method -NotePropertyValue ([pscustomobject]@{ value = 3 })
-      }
-      $mouse | ConvertTo-Json -Depth 20 | Set-Content -Path $mousePath -Encoding UTF8
 
-- name: PowerToysCtrlShiftSpaceWezTerm
+        Add-Type -Namespace Win32 -Name NativeMethods -MemberDefinition '[System.Runtime.InteropServices.DllImport("user32.dll", SetLastError=true, CharSet=System.Runtime.InteropServices.CharSet.Auto)] public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, uint Msg, System.IntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out System.IntPtr lpdwResult);'
+        $result = [IntPtr]::Zero
+        [Win32.NativeMethods]::SendMessageTimeout([IntPtr]0xffff, 0x001D, [IntPtr]::Zero, 'Fonts', 0x0002, 5000, [ref]$result) | Out-Null
+      } finally {
+        Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+      }
+
+- name: WindowsHostConfigLinks
   type: Microsoft.DSC.Transitional/PowerShellScript
   dependsOn:
-    - PowerToys
+    - VSCode
     - WezTerm
   properties:
     getScript: |
-      $root = Join-Path $env:LOCALAPPDATA 'Microsoft\PowerToys'
-      $settingsPath = Join-Path $root 'settings.json'
-      $keyboardPath = Join-Path $root 'Keyboard Manager\default.json'
-      $keyboardEnabled = $null
-      $mappingPresent = $false
-      if (Test-Path $settingsPath) {
-        $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
-        $keyboardEnabled = $settings.enabled.'Keyboard Manager'
+      $repoRoot = Split-Path "${WinGetConfigRoot}" -Parent
+      $stableRepoRoot = Join-Path $HOME '.dotfiles'
+      $codeTarget = Join-Path $env:APPDATA 'Code\User\settings.json'
+      $weztermTarget = Join-Path $HOME '.wezterm.lua'
+      return @{
+        repoRoot = $repoRoot
+        stableRepoRoot = $stableRepoRoot
+        stablePresent = Test-Path -LiteralPath $stableRepoRoot
+        codeTarget = $codeTarget
+        codePresent = Test-Path -LiteralPath $codeTarget
+        weztermTarget = $weztermTarget
+        weztermPresent = Test-Path -LiteralPath $weztermTarget
       }
-      if (Test-Path $keyboardPath) {
-        $profile = Get-Content $keyboardPath -Raw | ConvertFrom-Json
-        $mappingPresent = [bool]($profile.remapShortcuts.global | Where-Object {
-          $_.originalKeys -eq '17;16;32' -and $_.operationType -eq 1 -and
-          $_.runProgramFilePath -match 'wezterm(?:-gui)?\.exe$' -and [string]$_.runProgramArgs -eq ''
-        })
-      }
-      return @{ keyboardEnabled = $keyboardEnabled; mappingPresent = $mappingPresent }
     testScript: |
-      $root = Join-Path $env:LOCALAPPDATA 'Microsoft\PowerToys'
-      $settingsPath = Join-Path $root 'settings.json'
-      $keyboardPath = Join-Path $root 'Keyboard Manager\default.json'
-      if (-not (Test-Path $settingsPath) -or -not (Test-Path $keyboardPath)) { return $false }
-      $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
-      if ($settings.enabled.'Keyboard Manager' -ne $true) { return $false }
-      $profile = Get-Content $keyboardPath -Raw | ConvertFrom-Json
-      return [bool]($profile.remapShortcuts.global | Where-Object {
-        $_.originalKeys -eq '17;16;32' -and $_.operationType -eq 1 -and
-        $_.runProgramFilePath -match 'wezterm(?:-gui)?\.exe$' -and [string]$_.runProgramArgs -eq ''
-      })
+      function Get-NormalizedPath {
+        param([Parameter(Mandatory=$true)][string]$Path)
+        return [System.IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path))
+      }
+      function Test-LinkTarget {
+        param(
+          [Parameter(Mandatory=$true)][string]$Path,
+          [Parameter(Mandatory=$true)][string]$ExpectedTarget
+        )
+        if (-not (Test-Path -LiteralPath $Path) -or -not (Test-Path -LiteralPath $ExpectedTarget)) { return $false }
+        $item = Get-Item -LiteralPath $Path -Force
+        if (-not $item.LinkType) { return $false }
+        return ((Get-NormalizedPath ($item.Target -join ';')) -eq (Get-NormalizedPath $ExpectedTarget))
+      }
+
+      $repoRoot = Split-Path "${WinGetConfigRoot}" -Parent
+      $stableRepoRoot = Join-Path $HOME '.dotfiles'
+      $effectiveRepoRoot = if (Test-LinkTarget $stableRepoRoot $repoRoot) { $stableRepoRoot } else { $repoRoot }
+      return (
+        (Test-LinkTarget $stableRepoRoot $repoRoot) -and
+        (Test-LinkTarget (Join-Path $env:APPDATA 'Code\User\settings.json') (Join-Path $effectiveRepoRoot 'configs\Code\User\settings.json')) -and
+        (Test-LinkTarget (Join-Path $HOME '.wezterm.lua') (Join-Path $effectiveRepoRoot 'configs\wezterm\wezterm.lua'))
+      )
     setScript: |
-      $root = Join-Path $env:LOCALAPPDATA 'Microsoft\PowerToys'
-      $settingsPath = Join-Path $root 'settings.json'
-      $keyboardDir = Join-Path $root 'Keyboard Manager'
-      $keyboardSettingsPath = Join-Path $keyboardDir 'settings.json'
-      $keyboardProfilePath = Join-Path $keyboardDir 'default.json'
-      New-Item -ItemType Directory -Force -Path $root, $keyboardDir | Out-Null
+      $repoRoot = [System.IO.Path]::GetFullPath((Split-Path "${WinGetConfigRoot}" -Parent))
+      $stableRepoRoot = Join-Path $HOME '.dotfiles'
+      $backupDir = Join-Path $HOME ('dotfiles_backup_' + (Get-Date -Format 'yyyyMMdd_HHmmss'))
 
-      if (Test-Path $settingsPath) {
-        $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
-      } else {
-        $settings = [pscustomobject]@{ enabled = [pscustomobject]@{} }
+      function Get-NormalizedPath {
+        param([Parameter(Mandatory=$true)][string]$Path)
+        return [System.IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path))
       }
-      if (-not $settings.PSObject.Properties['enabled']) {
-        $settings | Add-Member -NotePropertyName enabled -NotePropertyValue ([pscustomobject]@{})
-      }
-      if ($settings.enabled.PSObject.Properties['Keyboard Manager']) {
-        $settings.enabled.'Keyboard Manager' = $true
-      } else {
-        $settings.enabled | Add-Member -NotePropertyName 'Keyboard Manager' -NotePropertyValue $true
-      }
-      $settings | ConvertTo-Json -Depth 20 | Set-Content -Path $settingsPath -Encoding UTF8
-
-      if (Test-Path $keyboardSettingsPath) {
-        $keyboardSettings = Get-Content $keyboardSettingsPath -Raw | ConvertFrom-Json
-      } else {
-        $keyboardSettings = [pscustomobject]@{
-          properties = [pscustomobject]@{
-            activeConfiguration = [pscustomobject]@{ value = 'default' }
-            keyboardConfigurations = [pscustomobject]@{ value = @('default') }
-            DefaultEditorShortcut = [pscustomobject]@{ win = $true; ctrl = $false; alt = $false; shift = $true; code = 81; key = '' }
-            EditorShortcut = [pscustomobject]@{ win = $true; ctrl = $false; alt = $false; shift = $true; code = 81; key = '' }
-            useNewEditor = $false
+      function Ensure-DotfilesLink {
+        if (Test-Path -LiteralPath $stableRepoRoot) {
+          $item = Get-Item -LiteralPath $stableRepoRoot -Force
+          if ($item.LinkType) {
+            if ((Get-NormalizedPath ($item.Target -join ';')) -eq (Get-NormalizedPath $repoRoot)) {
+              return $stableRepoRoot
+            }
+            Remove-Item -LiteralPath $stableRepoRoot -Force
+          } else {
+            Write-Warning "$stableRepoRoot exists and is not a link. Config links will use $repoRoot."
+            return $repoRoot
           }
-          name = 'Keyboard Manager'
-          version = '1'
         }
+        try {
+          New-Item -ItemType SymbolicLink -Path $stableRepoRoot -Target $repoRoot | Out-Null
+        } catch {
+          New-Item -ItemType Junction -Path $stableRepoRoot -Target $repoRoot | Out-Null
+        }
+        return $stableRepoRoot
       }
-      $keyboardSettings | ConvertTo-Json -Depth 20 | Set-Content -Path $keyboardSettingsPath -Encoding UTF8
+      function Link-DotfileConfig {
+        param(
+          [Parameter(Mandatory=$true)][string]$Source,
+          [Parameter(Mandatory=$true)][string]$Target
+        )
+        if (-not (Test-Path -LiteralPath $Source)) { throw "Source does not exist: $Source" }
+        $sourcePath = Get-NormalizedPath $Source
+        New-Item -ItemType Directory -Force -Path (Split-Path $Target -Parent) | Out-Null
 
-      if (Test-Path $keyboardProfilePath) {
-        $profile = Get-Content $keyboardProfilePath -Raw | ConvertFrom-Json
-      } else {
-        $profile = [pscustomobject]@{}
-      }
-      if (-not $profile.PSObject.Properties['remapKeys']) {
-        $profile | Add-Member -NotePropertyName remapKeys -NotePropertyValue ([pscustomobject]@{ inProcess = @() })
-      }
-      if (-not $profile.PSObject.Properties['remapKeysToText']) {
-        $profile | Add-Member -NotePropertyName remapKeysToText -NotePropertyValue ([pscustomobject]@{ inProcess = @() })
-      }
-      if (-not $profile.PSObject.Properties['remapShortcuts']) {
-        $profile | Add-Member -NotePropertyName remapShortcuts -NotePropertyValue ([pscustomobject]@{ global = @(); appSpecific = @() })
-      }
-      if (-not $profile.remapShortcuts.PSObject.Properties['global']) {
-        $profile.remapShortcuts | Add-Member -NotePropertyName global -NotePropertyValue @()
-      }
-      if (-not $profile.remapShortcuts.PSObject.Properties['appSpecific']) {
-        $profile.remapShortcuts | Add-Member -NotePropertyName appSpecific -NotePropertyValue @()
-      }
-      if (-not $profile.PSObject.Properties['remapShortcutsToText']) {
-        $profile | Add-Member -NotePropertyName remapShortcutsToText -NotePropertyValue ([pscustomobject]@{ global = @(); appSpecific = @() })
-      }
+        if (Test-Path -LiteralPath $Target) {
+          $item = Get-Item -LiteralPath $Target -Force
+          if ($item.LinkType -and (Get-NormalizedPath ($item.Target -join ';')) -eq $sourcePath) { return }
+          New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
+          Move-Item -LiteralPath $Target -Destination $backupDir -Force
+        }
 
-      $wezterm = Get-Command wezterm-gui.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-      if (-not $wezterm) {
-        $wezterm = Get-Command wezterm.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+        New-Item -ItemType SymbolicLink -Path $Target -Target $sourcePath | Out-Null
       }
 
-      $fallbacks = @()
-      if ($env:ProgramFiles) {
-        $fallbacks += Join-Path $env:ProgramFiles 'WezTerm\wezterm-gui.exe'
-      }
-      if (${env:ProgramFiles(x86)}) {
-        $fallbacks += Join-Path ${env:ProgramFiles(x86)} 'WezTerm\wezterm-gui.exe'
-      }
-      $fallbacks += Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\wezterm-gui.exe'
-
-      $weztermPath = if ($wezterm) {
-        $wezterm.Source
-      } else {
-        $fallbacks | Where-Object { Test-Path $_ } | Select-Object -First 1
-      }
-      if (-not $weztermPath) {
-        $weztermPath = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\wezterm-gui.exe'
-      }
-
-      $mapping = [pscustomobject]@{
-        originalKeys = '17;16;32'
-        operationType = 1
-        secondKeyOfChord = 0
-        runProgramElevationLevel = 0
-        runProgramAlreadyRunningAction = 0
-        runProgramStartWindowType = 0
-        runProgramFilePath = $weztermPath
-        runProgramArgs = ''
-        runProgramStartInDir = ''
-        unicodeText = '*Unsupported*'
-      }
-
-      $profile.remapShortcuts.global = @($profile.remapShortcuts.global | Where-Object { $_.originalKeys -notin @('91;32', '17;16;32') })
-      $profile.remapShortcuts.global = @($profile.remapShortcuts.global) + $mapping
-      $profile | ConvertTo-Json -Depth 20 | Set-Content -Path $keyboardProfilePath -Encoding UTF8
-
-- type: Microsoft.WinGet/Package
-  name: OhMyPosh
-  properties:
-    id: JanDeDobbeleer.OhMyPosh
-    source: winget
-    useLatest: true
-
-- name: PowerShellZshLikePrompt
-  type: Microsoft.DSC.Transitional/PowerShellScript
-  dependsOn:
-    - OhMyPosh
-  properties:
-    getScript: |
-      $profilePath = Join-Path $HOME 'Documents\PowerShell\Microsoft.PowerShell_profile.ps1'
-      $repoRoot = Split-Path "${WinGetConfigRoot}" -Parent
-      $themePath = Join-Path $repoRoot 'configs\oh-my-posh\custom-zsh.omp.json'
-      $line = "oh-my-posh init pwsh --config '$themePath' | Invoke-Expression"
-      $present = (Test-Path $profilePath) -and ((Get-Content $profilePath -Raw) -match [regex]::Escape($line))
-      return @{ profile = $profilePath; theme = $themePath; configured = $present }
-    testScript: |
-      $profilePath = Join-Path $HOME 'Documents\PowerShell\Microsoft.PowerShell_profile.ps1'
-      $repoRoot = Split-Path "${WinGetConfigRoot}" -Parent
-      $themePath = Join-Path $repoRoot 'configs\oh-my-posh\custom-zsh.omp.json'
-      $line = "oh-my-posh init pwsh --config '$themePath' | Invoke-Expression"
-      return ((Test-Path $themePath) -and (Test-Path $profilePath) -and ((Get-Content $profilePath -Raw) -match [regex]::Escape($line)))
-    setScript: |
-      $profilePath = Join-Path $HOME 'Documents\PowerShell\Microsoft.PowerShell_profile.ps1'
-      $repoRoot = Split-Path "${WinGetConfigRoot}" -Parent
-      $themePath = Join-Path $repoRoot 'configs\oh-my-posh\custom-zsh.omp.json'
-      if (-not (Test-Path $themePath)) { throw "Oh My Posh theme not found: $themePath" }
-      New-Item -ItemType Directory -Force -Path (Split-Path $profilePath -Parent) | Out-Null
-      if (-not (Test-Path $profilePath)) { New-Item -ItemType File -Force -Path $profilePath | Out-Null }
-      $line = "oh-my-posh init pwsh --config '$themePath' | Invoke-Expression"
-      $content = Get-Content $profilePath -Raw
-      if ($content -notmatch [regex]::Escape($line)) {
-        Add-Content -Path $profilePath -Value "`n$line"
-      }
-
-- name: UvManagedPython
-  type: Microsoft.DSC.Transitional/PowerShellScript
-  dependsOn:
-    - UV
-  properties:
-    getScript: |
-      $python = uv python find 3.14 2>$null
-      return @{ python = $python }
-    testScript: |
-      $python = uv python find 3.14 2>$null
-      return [bool]$python
-    setScript: |
-      uv python install 3.14
+      $effectiveRepoRoot = Ensure-DotfilesLink
+      $configsDir = Join-Path $effectiveRepoRoot 'configs'
+      Link-DotfileConfig (Join-Path $configsDir 'Code\User\settings.json') (Join-Path $env:APPDATA 'Code\User\settings.json')
+      Link-DotfileConfig (Join-Path $configsDir 'wezterm\wezterm.lua') (Join-Path $HOME '.wezterm.lua')
 
 # Windows settings
 - type: Microsoft.Windows/Registry
@@ -484,7 +321,7 @@ resources:
   metadata:
     securityContext: elevated
 
-# WSL install. May reboot; setup.ps1 registers post-setup RunOnce before applying this config.
+# WSL install. May reboot; this config registers its own winget resume RunOnce.
 # NixOS itself is installed from the NixOS-WSL release artifact because it is not
 # a standard `wsl --install -d` online distribution.
 - name: InstallWslComponents

@@ -3,7 +3,7 @@
     "workbench.colorTheme": "One Dark Pro Darker",
     "workbench.iconTheme": "material-icon-theme",
     // --- Font Settings ---
-    "editor.fontFamily": "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
+    "editor.fontFamily": "'Hack Nerd Font', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
     "editor.fontSize": 14,
     "editor.lineHeight": 1.6,
     "editor.fontLigatures": true,
@@ -34,7 +34,7 @@
     "window.menuBarVisibility": "compact",
     "window.commandCenter": true,
     // --- Terminal ---
-    "terminal.integrated.fontFamily": "'JetBrains Mono', monospace",
+    "terminal.integrated.fontFamily": "'Hack Nerd Font', 'JetBrains Mono', monospace",
     "terminal.integrated.fontSize": 13,
     "terminal.integrated.cursorBlinking": true,
     "terminal.integrated.smoothScrolling": true,

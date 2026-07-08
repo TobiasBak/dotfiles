@@ -34,10 +34,10 @@ cp /etc/nixos/hardware-configuration.nix /path/to/dotfiles/nixos/hosts/laptop-se
 ### NixOS WSL
 
 Windows setup installs NixOS WSL from the latest NixOS-WSL `.wsl` release,
-sets the distro name/default to `NixOS`, applies this flake host:
+sets the distro name/default to `NixOS`, and applies the WSL rebuild:
 
 ```bash
-sudo nixos-rebuild switch --flake ~/.dotfiles/nixos#wsl
+~/.dotfiles/rebuild-wsl.sh
 ```
 
 The setup then bootstraps the `tobias` home with:
@@ -53,13 +53,13 @@ rewriting every symlink.
 Manual Windows-side repair:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\windows\scripts\install-nixos-wsl.ps1
+powershell -ExecutionPolicy Bypass -File .\rebuild-windows.ps1
 ```
 
 Manual in-distro rebuild:
 
 ```bash
-sudo nixos-rebuild switch --flake ~/.dotfiles/nixos#wsl
+~/.dotfiles/rebuild-wsl.sh
 ```
 
 After changing flake inputs, update and commit the lock file from a machine
