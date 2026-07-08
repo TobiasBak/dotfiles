@@ -107,6 +107,30 @@ function Invoke-CheckedNative {
     }
 }
 
+function ConvertTo-WslPath {
+    param([Parameter(Mandatory=$true)][string]$Path)
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $root = [System.IO.Path]::GetPathRoot($fullPath)
+    if ($root -notmatch '^([A-Za-z]):\\$') {
+        throw "Cannot convert non-drive path to WSL path: $Path"
+    }
+
+    $drive = $Matches[1].ToLowerInvariant()
+    $relativePath = $fullPath.Substring($root.Length).Replace('\', '/')
+    return "/mnt/$drive/$relativePath"
+}
+
+function ConvertTo-ShellSingleQuotedString {
+    param([AllowNull()][string]$Value)
+
+    if ($null -eq $Value) {
+        return "''"
+    }
+
+    return "'" + $Value.Replace("'", "'\''") + "'"
+}
+
 function Install-NixOsWslDistro {
     if (Test-WslDistro $DistroName) {
         Write-Host "$DistroName WSL distro already installed." -ForegroundColor Cyan
@@ -195,18 +219,31 @@ function Invoke-WslBashScript {
         [string]$StepName = "WSL script"
     )
 
-    $encodedScript = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Script))
-    $envArgs = @()
+    $exports = @()
     foreach ($key in $Environment.Keys) {
-        $envArgs += "$key=$($Environment[$key])"
+        if ($key -notmatch '^[A-Z_][A-Z0-9_]*$') {
+            throw "Invalid WSL script environment variable name: $key"
+        }
+
+        $exports += "export $key=$(ConvertTo-ShellSingleQuotedString ([string]$Environment[$key]))"
     }
-    $envArgs += "DOTFILES_SCRIPT_B64=$encodedScript"
+
+    $normalizedScript = $Script -replace "`r`n", "`n"
+    $normalizedScript = $normalizedScript -replace "`r", "`n"
+    $scriptText = (@("#!/usr/bin/env bash") + $exports + "" + $normalizedScript) -join "`n"
+    $tempScript = Join-Path ([IO.Path]::GetTempPath()) ("dotfiles-wsl-script-" + [Guid]::NewGuid() + ".sh")
 
     $ErrorActionPreference = "Continue"
     $PSNativeCommandUseErrorActionPreference = $false
-    & wsl -d $DistroName -u $User -- env @envArgs bash -lc 'printf "%s" "$DOTFILES_SCRIPT_B64" | base64 -d | bash'
-    if ($LASTEXITCODE -ne 0) {
-        throw "$StepName failed with exit code $LASTEXITCODE"
+    try {
+        [IO.File]::WriteAllText($tempScript, $scriptText, [Text.UTF8Encoding]::new($false))
+        $wslScript = ConvertTo-WslPath $tempScript
+        & wsl -d $DistroName -u $User -- bash $wslScript
+        if ($LASTEXITCODE -ne 0) {
+            throw "$StepName failed with exit code $LASTEXITCODE"
+        }
+    } finally {
+        Remove-Item -LiteralPath $tempScript -Force -ErrorAction SilentlyContinue
     }
 }
 
