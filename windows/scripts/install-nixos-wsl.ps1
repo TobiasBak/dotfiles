@@ -78,7 +78,7 @@ function Get-NixOsWslState {
         $linuxUserExists = Test-WslLinuxUser
         $systemConfigured = $linuxUserExists -and (Test-WslBash -User "root" -Script "test -f /etc/dotfiles-nixos-wsl-system-ok")
         if ($linuxUserExists) {
-            $userBootstrapped = Test-WslBash -User $LinuxUser -Script "test -f ~/.dotfiles-nixos-wsl-shell-ok -a -f ~/.dotfiles/windows/scripts/bootstrap-nixos-wsl.sh"
+            $userBootstrapped = Test-WslBash -User $LinuxUser -Script 'test -f ~/.dotfiles-nixos-wsl-shell-ok && test -f ~/code/dotfiles/windows/scripts/bootstrap-nixos-wsl.sh && test "$(readlink -f ~/.dotfiles 2>/dev/null)" = "$(readlink -f ~/code/dotfiles 2>/dev/null)"'
         }
     }
 
@@ -317,6 +317,10 @@ run_git() {
   fi
 }
 
+resolve_path() {
+  readlink -f "$1" 2>/dev/null || true
+}
+
 if [ -d "$target/.git" ]; then
   run_git -C "$target" pull --ff-only || echo "Could not fast-forward $target; continuing with the existing checkout." >&2
 elif [ ! -e "$target" ]; then
@@ -327,14 +331,33 @@ else
   exit 1
 fi
 
-if [ -L "$stable" ] || [ ! -e "$stable" ]; then
-  ln -sfnT "$target" "$stable"
-elif [ "$(readlink -f "$stable")" != "$(readlink -f "$target")" ]; then
+target_resolved="$(resolve_path "$target")"
+stable_resolved="$(resolve_path "$stable")"
+
+if [ -z "$target_resolved" ]; then
+  echo "Could not resolve dotfiles checkout: $target" >&2
+  exit 1
+fi
+
+if [ -L "$stable" ]; then
+  if [ "$stable_resolved" != "$target_resolved" ]; then
+    rm -f "$stable"
+    ln -s "$target_resolved" "$stable"
+  fi
+elif [ ! -e "$stable" ]; then
+  ln -s "$target_resolved" "$stable"
+elif [ "$stable_resolved" != "$target_resolved" ]; then
   echo "$stable exists and is not the dotfiles link. Move it aside and rerun setup." >&2
   exit 1
 fi
 
-bootstrap="$stable/windows/scripts/bootstrap-nixos-wsl.sh"
+stable_resolved="$(resolve_path "$stable")"
+if [ "$stable_resolved" != "$target_resolved" ]; then
+  echo "$stable did not resolve to $target_resolved after link repair." >&2
+  exit 1
+fi
+
+bootstrap="$target_resolved/windows/scripts/bootstrap-nixos-wsl.sh"
 test -f "$bootstrap"
 chmod +x "$bootstrap"
 "$bootstrap"

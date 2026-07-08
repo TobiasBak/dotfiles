@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REAL_REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REAL_REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 STABLE_REPO_DIR="$HOME/.dotfiles"
 BACKUP_DIR="$HOME/dotfiles_backup_$(date +%Y%m%d_%H%M%S)"
 
 log() { printf '\033[0;36m[nixos-wsl]\033[0m %s\n' "$*"; }
 warn() { printf '\033[0;33m[nixos-wsl]\033[0m %s\n' "$*"; }
 
+resolve_path() {
+  readlink -f "$1" 2>/dev/null || true
+}
+
 ensure_dotfiles_link() {
-  if [ -L "$STABLE_REPO_DIR" ] && [ "$(readlink -f "$STABLE_REPO_DIR")" = "$REAL_REPO_DIR" ]; then
+  local stable_resolved
+  stable_resolved="$(resolve_path "$STABLE_REPO_DIR")"
+
+  if [ -L "$STABLE_REPO_DIR" ] && [ "$stable_resolved" = "$REAL_REPO_DIR" ]; then
     return
   fi
 
@@ -25,7 +32,7 @@ ensure_dotfiles_link() {
 }
 
 repo_dir() {
-  if [ -L "$STABLE_REPO_DIR" ] && [ "$(readlink -f "$STABLE_REPO_DIR")" = "$REAL_REPO_DIR" ]; then
+  if [ -L "$STABLE_REPO_DIR" ] && [ "$(resolve_path "$STABLE_REPO_DIR")" = "$REAL_REPO_DIR" ]; then
     printf '%s\n' "$STABLE_REPO_DIR"
   else
     printf '%s\n' "$REAL_REPO_DIR"
@@ -85,9 +92,13 @@ ensure_parent_dir() {
 link_config() {
   local source="$1"
   local target="$2"
+  local source_resolved target_resolved
   ensure_parent_dir "$target"
 
-  if [ -L "$target" ] && [ "$(readlink -f "$target")" = "$(readlink -f "$source")" ]; then
+  source_resolved="$(resolve_path "$source")"
+  target_resolved="$(resolve_path "$target")"
+
+  if [ -L "$target" ] && [ -n "$target_resolved" ] && [ "$target_resolved" = "$source_resolved" ]; then
     log "Already linked: $target"
     return
   fi

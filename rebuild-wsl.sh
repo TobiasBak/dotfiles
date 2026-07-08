@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_DIR="$SCRIPT_DIR"
 STABLE_REPO_DIR="$HOME/.dotfiles"
 BOOTSTRAP_SCRIPT="$REPO_DIR/windows/scripts/bootstrap-nixos-wsl.sh"
 
 log() { printf '\033[0;36m[rebuild-wsl]\033[0m %s\n' "$*"; }
 warn() { printf '\033[0;33m[rebuild-wsl]\033[0m %s\n' "$*"; }
+
+resolve_path() {
+  readlink -f "$1" 2>/dev/null || true
+}
 
 if [ ! -f /etc/NIXOS ]; then
   echo "rebuild-wsl.sh must be run inside NixOS WSL." >&2
@@ -34,10 +38,24 @@ if [ ! -f "$BOOTSTRAP_SCRIPT" ]; then
   exit 1
 fi
 
-if [ -L "$STABLE_REPO_DIR" ] || [ ! -e "$STABLE_REPO_DIR" ]; then
-  ln -sfnT "$REPO_DIR" "$STABLE_REPO_DIR"
-  log "Linked $STABLE_REPO_DIR -> $REPO_DIR"
-elif [ "$(readlink -f "$STABLE_REPO_DIR")" != "$(readlink -f "$REPO_DIR")" ]; then
+repo_resolved="$(resolve_path "$REPO_DIR")"
+stable_resolved="$(resolve_path "$STABLE_REPO_DIR")"
+
+if [ -z "$repo_resolved" ]; then
+  echo "Could not resolve dotfiles checkout: $REPO_DIR" >&2
+  exit 1
+fi
+
+if [ -L "$STABLE_REPO_DIR" ]; then
+  if [ "$stable_resolved" != "$repo_resolved" ]; then
+    rm -f "$STABLE_REPO_DIR"
+    ln -s "$repo_resolved" "$STABLE_REPO_DIR"
+    log "Linked $STABLE_REPO_DIR -> $repo_resolved"
+  fi
+elif [ ! -e "$STABLE_REPO_DIR" ]; then
+  ln -s "$repo_resolved" "$STABLE_REPO_DIR"
+  log "Linked $STABLE_REPO_DIR -> $repo_resolved"
+elif [ "$stable_resolved" != "$repo_resolved" ]; then
   echo "$STABLE_REPO_DIR exists and does not point at $REPO_DIR. Move it aside or fix the link before rebuilding." >&2
   exit 1
 else
