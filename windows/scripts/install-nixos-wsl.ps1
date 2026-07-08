@@ -328,7 +328,7 @@ else
 fi
 
 if [ -L "$stable" ] || [ ! -e "$stable" ]; then
-  ln -sfn "$target" "$stable"
+  ln -sfnT "$target" "$stable"
 elif [ "$(readlink -f "$stable")" != "$(readlink -f "$target")" ]; then
   echo "$stable exists and is not the dotfiles link. Move it aside and rerun setup." >&2
   exit 1

@@ -35,7 +35,7 @@ if [ ! -f "$BOOTSTRAP_SCRIPT" ]; then
 fi
 
 if [ -L "$STABLE_REPO_DIR" ] || [ ! -e "$STABLE_REPO_DIR" ]; then
-  ln -sfn "$REPO_DIR" "$STABLE_REPO_DIR"
+  ln -sfnT "$REPO_DIR" "$STABLE_REPO_DIR"
   log "Linked $STABLE_REPO_DIR -> $REPO_DIR"
 elif [ "$(readlink -f "$STABLE_REPO_DIR")" != "$(readlink -f "$REPO_DIR")" ]; then
   echo "$STABLE_REPO_DIR exists and does not point at $REPO_DIR. Move it aside or fix the link before rebuilding." >&2
