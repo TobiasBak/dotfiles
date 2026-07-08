@@ -211,7 +211,15 @@ resources:
           $item = Get-Item -LiteralPath $Target -Force
           if ($item.LinkType -and (Get-NormalizedPath ($item.Target -join ';')) -eq $sourcePath) { return }
           New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
-          Move-Item -LiteralPath $Target -Destination $backupDir -Force
+          $backupName = (Get-NormalizedPath $Target) -replace '[:\\/]', '__'
+          $backupTarget = Join-Path $backupDir $backupName
+          $baseBackupTarget = $backupTarget
+          $counter = 1
+          while (Test-Path -LiteralPath $backupTarget) {
+            $backupTarget = "$baseBackupTarget.$counter"
+            $counter++
+          }
+          Move-Item -LiteralPath $Target -Destination $backupTarget -Force
         }
 
         New-Item -ItemType SymbolicLink -Path $Target -Target $sourcePath | Out-Null

@@ -43,9 +43,23 @@ fi
 backup_file() {
   local target="$1"
   if [ -e "$target" ] && [ ! -L "$target" ]; then
+    local target_path backup_name backup_target base_backup_target counter
+    target_path="$(readlink -f "$target")"
+    backup_name="${target_path#/}"
+    backup_name="${backup_name//\//__}"
+    backup_name="${backup_name//:/__}"
+    backup_target="$BACKUP_DIR/$backup_name"
+    base_backup_target="$backup_target"
+    counter=1
+
+    while [ -e "$backup_target" ]; do
+      backup_target="$base_backup_target.$counter"
+      counter=$((counter + 1))
+    done
+
     mkdir -p "$BACKUP_DIR"
-    mv "$target" "$BACKUP_DIR/"
-    warn "Backed up existing $target to $BACKUP_DIR"
+    mv "$target" "$backup_target"
+    warn "Backed up existing $target to $backup_target"
   fi
 }
 
