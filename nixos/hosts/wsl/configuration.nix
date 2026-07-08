@@ -11,7 +11,10 @@
   networking.hostName = "nixos-wsl";
   time.timeZone = "Europe/Copenhagen";
 
-  nix.settings.experimental-features = [ "nix-command" "flakes" ];
+  nix.settings.experimental-features = [
+    "nix-command"
+    "flakes"
+  ];
 
   nix.gc = {
     automatic = true;
@@ -39,6 +42,11 @@
   # depend on an interactive password prompt.
   security.sudo.wheelNeedsPassword = false;
 
+  environment.sessionVariables = {
+    BROWSER = "wslview";
+    GH_BROWSER = "wslview";
+  };
+
   environment.systemPackages = with pkgs; [
     bat
     cacert
@@ -59,6 +67,8 @@
     tmux
     unzip
     vim
+    wslu
+    xdg-utils
     zsh
     zsh-syntax-highlighting
   ];
