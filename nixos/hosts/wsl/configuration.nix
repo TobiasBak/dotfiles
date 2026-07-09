@@ -6,6 +6,7 @@
     defaultUser = "tobias";
     startMenuLaunchers = true;
     useWindowsDriver = true;
+    interop.includePath = false;
   };
 
   networking.hostName = "nixos-wsl";
@@ -50,6 +51,7 @@
   environment.systemPackages = with pkgs; [
     bat
     cacert
+    codex
     coreutils
     curl
     eza

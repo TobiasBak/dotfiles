@@ -9,9 +9,41 @@ BACKUP_DIR="$HOME/dotfiles_backup_$(date +%Y%m%d_%H%M%S)"
 log() { printf '\033[0;36m[nixos-wsl]\033[0m %s\n' "$*"; }
 warn() { printf '\033[0;33m[nixos-wsl]\033[0m %s\n' "$*"; }
 
+is_wsl_windows_path() {
+  case "$1" in
+    /mnt/[A-Za-z]/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+remove_wsl_windows_path() {
+  local old_ifs entry filtered_path
+  old_ifs="$IFS"
+  filtered_path=""
+  IFS=:
+
+  for entry in $PATH; do
+    if [ -z "$entry" ] || is_wsl_windows_path "$entry"; then
+      continue
+    fi
+
+    if [ -n "$filtered_path" ]; then
+      filtered_path="$filtered_path:$entry"
+    else
+      filtered_path="$entry"
+    fi
+  done
+
+  IFS="$old_ifs"
+  PATH="$HOME/.local/bin:$HOME/bin:$filtered_path"
+  export PATH
+}
+
 resolve_path() {
   readlink -f "$1" 2>/dev/null || true
 }
+
+remove_wsl_windows_path
 
 ensure_dotfiles_link() {
   local stable_resolved
@@ -143,14 +175,28 @@ setup_symlinks() {
 }
 
 install_codex_cli() {
-  if command -v codex >/dev/null 2>&1; then
-    log "Codex CLI already installed: $(command -v codex)"
+  local codex_path
+  codex_path="$(command -v codex 2>/dev/null || true)"
+
+  if [ -n "$codex_path" ] && ! is_wsl_windows_path "$codex_path"; then
+    log "Codex CLI already installed: $codex_path"
     return
+  fi
+
+  if [ -n "$codex_path" ]; then
+    warn "Ignoring Windows Codex on WSL PATH: $codex_path"
   fi
 
   require_command curl || return
   log "Installing Codex CLI..."
-  curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh
+  if curl --connect-timeout 10 --max-time 120 -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh; then
+    return
+  fi
+
+  warn "Codex installer failed. Falling back to npm."
+  require_command npm || return
+  mkdir -p "$HOME/.local"
+  NPM_CONFIG_PREFIX="$HOME/.local" command npm install -g "@openai/codex@latest"
 }
 
 install_pi_cli() {

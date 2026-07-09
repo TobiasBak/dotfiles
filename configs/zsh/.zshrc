@@ -1,6 +1,29 @@
 # If you come from bash you might have to change your $PATH.
 export PATH=$HOME/bin:$HOME/.local/bin:/usr/local/bin:$PATH
 
+_is_wsl_shell() {
+  [[ -n "${WSL_DISTRO_NAME:-}" ]] || grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease 2>/dev/null
+}
+
+_remove_wsl_windows_path() {
+  local -a filtered_path
+  local entry
+  filtered_path=()
+
+  for entry in "${path[@]}"; do
+    [[ "${entry[1,5]}" == "/mnt/" ]] && continue
+    filtered_path+=("$entry")
+  done
+
+  path=("${filtered_path[@]}")
+  export PATH
+  rehash 2>/dev/null || true
+}
+
+if _is_wsl_shell; then
+  _remove_wsl_windows_path
+fi
+
 # Match WezTerm's modified-Enter LF fallback with multiline shell editing.
 _insert_editor_newline() {
   LBUFFER+=$'\n'
@@ -30,6 +53,29 @@ finder() {
   fi
 }
 
+_codex_path_is_windows() {
+  [[ "${1[1,5]}" == "/mnt/" ]]
+}
+
+unalias cy 2>/dev/null
+cy() {
+  local codex_path
+  codex_path="$(command -v codex 2>/dev/null || true)"
+
+  if [[ -z "$codex_path" ]]; then
+    print -u2 "codex CLI is not installed for this Linux environment. Run ~/.dotfiles/windows/scripts/bootstrap-nixos-wsl.sh."
+    return 127
+  fi
+
+  if _codex_path_is_windows "$codex_path"; then
+    print -u2 "Refusing to run Windows Codex from WSL: $codex_path"
+    print -u2 "Run ~/.dotfiles/windows/scripts/bootstrap-nixos-wsl.sh to install native Linux Codex."
+    return 127
+  fi
+
+  command codex --dangerously-bypass-approvals-and-sandbox "$@"
+}
+
 if [[ -n "${ZSH_TMUX_FAST:-}" ]]; then
   _c_cyan=$'\e[38;2;151;243;249m'
   _c_pink=$'\e[38;2;255;121;198m'
@@ -42,7 +88,6 @@ if [[ -n "${ZSH_TMUX_FAST:-}" ]]; then
   bindkey -M menuselect '^M' .accept-line 2>/dev/null
   _bind_modified_enter_keys
 
-  alias cy='codex --dangerously-bypass-approvals-and-sandbox'
   if command -v eza >/dev/null 2>&1; then
     alias ls='eza --icons --grid --group-directories-first'
   else
@@ -249,8 +294,6 @@ _bind_modified_enter_keys
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
 
-# Codex
-alias cy='codex --dangerously-bypass-approvals-and-sandbox'
 if command -v eza >/dev/null 2>&1; then
   alias ls='eza --icons --grid --group-directories-first'
 else
