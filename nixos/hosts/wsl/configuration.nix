@@ -50,7 +50,10 @@ in
   programs.zsh.enable = true;
   programs.nix-ld.enable = true;
   programs.nix-ld.libraries = with pkgs; [
+    expat
+    libGL
     stdenv.cc.cc.lib
+    xorg.libX11
   ];
   services.tailscale.enable = true;
 
