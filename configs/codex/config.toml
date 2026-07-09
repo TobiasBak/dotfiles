@@ -45,6 +45,9 @@ trust_level = "trusted"
 [projects.'c:\users\tobias\code\cv']
 trust_level = "trusted"
 
+[projects.'c:\users\tobias\code']
+trust_level = "trusted"
+
 [windows]
 sandbox = "elevated"
 
@@ -139,3 +142,7 @@ BROWSER_USE_CODEX_APP_VERSION = "26.616.81150"
 SKY_CUA_NATIVE_PIPE = "1"
 SKY_CUA_NATIVE_PIPE_DIRECTORY = '\\.\pipe\codex-computer-use-dfa70949-9681-454a-81be-dca3ce860acf'
 CODEX_CLI_PATH = 'C:\Users\tobias\AppData\Local\OpenAI\Codex\bin\38dff8711e296435\codex.exe'
+
+[desktop]
+conversationDetailMode = "STEPS_COMMANDS"
+followUpQueueMode = "queue"
