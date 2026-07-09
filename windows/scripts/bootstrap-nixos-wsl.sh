@@ -178,25 +178,28 @@ install_codex_cli() {
   local codex_path
   codex_path="$(command -v codex 2>/dev/null || true)"
 
-  if [ -n "$codex_path" ] && ! is_wsl_windows_path "$codex_path"; then
-    log "Codex CLI already installed: $codex_path"
-    return
-  fi
-
   if [ -n "$codex_path" ]; then
-    warn "Ignoring Windows Codex on WSL PATH: $codex_path"
+    if is_wsl_windows_path "$codex_path"; then
+      warn "Ignoring Windows Codex on WSL PATH: $codex_path"
+    else
+      log "Existing Codex CLI: $codex_path"
+    fi
   fi
 
-  require_command curl || return
-  log "Installing Codex CLI..."
-  if curl --connect-timeout 10 --max-time 120 -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh; then
-    return
-  fi
-
-  warn "Codex installer failed. Falling back to npm."
   require_command npm || return
   mkdir -p "$HOME/.local"
-  NPM_CONFIG_PREFIX="$HOME/.local" command npm install -g "@openai/codex@latest"
+  log "Installing/updating Codex CLI..."
+  if NPM_CONFIG_PREFIX="$HOME/.local" command npm install -g "@openai/codex@latest"; then
+    log "Codex CLI ready: $(command -v codex 2>/dev/null || printf '%s' "$HOME/.local/bin/codex")"
+    return
+  fi
+
+  if [ -n "$codex_path" ] && ! is_wsl_windows_path "$codex_path"; then
+    warn "Codex update failed. Keeping existing native Codex: $codex_path"
+    return
+  fi
+
+  return 1
 }
 
 install_pi_cli() {

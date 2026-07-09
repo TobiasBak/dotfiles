@@ -51,7 +51,6 @@
   environment.systemPackages = with pkgs; [
     bat
     cacert
-    codex
     coreutils
     curl
     eza
