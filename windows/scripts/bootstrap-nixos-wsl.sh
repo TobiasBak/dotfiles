@@ -149,6 +149,31 @@ require_command() {
   fi
 }
 
+run_git_noninteractive() {
+  if command -v timeout >/dev/null 2>&1; then
+    GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never SSH_ASKPASS=/bin/false timeout 120 git "$@"
+  else
+    GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never SSH_ASKPASS=/bin/false git "$@"
+  fi
+}
+
+ensure_github_auth() {
+  require_command gh || return 1
+
+  if gh auth status --hostname github.com >/dev/null 2>&1; then
+    gh auth setup-git --hostname github.com >/dev/null 2>&1 || true
+    return 0
+  fi
+
+  log "GitHub auth is needed for private repos. Follow the GitHub CLI login prompts."
+  if ! gh auth login --hostname github.com --git-protocol https --web; then
+    warn "GitHub login did not complete."
+    return 1
+  fi
+
+  gh auth setup-git --hostname github.com >/dev/null 2>&1 || true
+}
+
 install_oh_my_zsh() {
   if [ ! -d "$HOME/.oh-my-zsh" ]; then
     require_command curl || return
@@ -220,11 +245,17 @@ install_agent_skill_links() {
   mkdir -p "$(dirname "$skills_dir")"
   if [ -d "$skills_dir/.git" ]; then
     log "Updating skills repo at $skills_dir..."
-    git -C "$skills_dir" pull --ff-only || warn "Could not update skills repo at $skills_dir. Continuing with the existing checkout."
+    run_git_noninteractive -C "$skills_dir" pull --ff-only ||
+      { ensure_github_auth && git -C "$skills_dir" pull --ff-only; } ||
+      warn "Could not update skills repo at $skills_dir. Continuing with the existing checkout."
   elif [ ! -e "$skills_dir" ]; then
     log "Cloning skills repo into $skills_dir..."
-    git clone "$skills_repo" "$skills_dir" || {
+    run_git_noninteractive clone "$skills_repo" "$skills_dir" ||
+      { ensure_github_auth && git clone "$skills_repo" "$skills_dir"; } || {
       warn "Could not clone skills repo into $skills_dir."
+      if [ -d "$skills_dir" ] && [ ! -d "$skills_dir/.git" ]; then
+        rm -rf "$skills_dir"
+      fi
       return
     }
   else

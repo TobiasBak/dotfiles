@@ -294,10 +294,41 @@ exit "$switch_status"
 '@
 
     Write-Host "Applying NixOS WSL system config from $remoteUrl..." -ForegroundColor Yellow
-    Invoke-WslBashScript -User "root" -Script $systemScript -Environment @{
-        DOTFILES_REMOTE = $remoteUrl
-        DOTFILES_LINUX_USER = $LinuxUser
-    } -StepName "NixOS WSL system configuration"
+    try {
+        Invoke-WslBashScript -User "root" -Script $systemScript -Environment @{
+            DOTFILES_REMOTE = $remoteUrl
+            DOTFILES_LINUX_USER = $LinuxUser
+        } -StepName "NixOS WSL system configuration"
+    } catch {
+        if (Repair-NixOsSystemMarkerAfterSwitch) {
+            Write-Warning "NixOS WSL switch reported an error, but the system and user are present. Continuing after writing the setup marker."
+            return
+        }
+
+        throw
+    }
+}
+
+function Repair-NixOsSystemMarkerAfterSwitch {
+    $repairScript = @"
+set -euo pipefail
+
+if getent passwd '$LinuxUser' >/dev/null &&
+   test -L /run/current-system &&
+   readlink -f /run/current-system | grep -q '/nixos-system-nixos-wsl-'; then
+  touch /etc/dotfiles-nixos-wsl-system-ok
+  exit 0
+fi
+
+exit 1
+"@
+
+    try {
+        Invoke-WslBashScript -User "root" -Script $repairScript -StepName "NixOS WSL post-switch marker repair"
+        return $true
+    } catch {
+        return $false
+    }
 }
 
 function Install-NixOsUserBootstrap {
