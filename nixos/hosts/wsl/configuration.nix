@@ -6,7 +6,7 @@
     defaultUser = "tobias";
     startMenuLaunchers = true;
     useWindowsDriver = true;
-    interop.includePath = false;
+    wslConf.interop.appendWindowsPath = false;
   };
 
   networking.hostName = "nixos-wsl";

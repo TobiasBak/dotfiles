@@ -13,6 +13,40 @@ resolve_path() {
   readlink -f "$1" 2>/dev/null || true
 }
 
+prepend_path_once() {
+  case ":$PATH:" in
+    *":$1:"*) ;;
+    *) PATH="$1:$PATH" ;;
+  esac
+}
+
+remove_wsl_windows_path() {
+  local old_ifs entry filtered_path
+  old_ifs="$IFS"
+  filtered_path=""
+  IFS=:
+
+  for entry in $PATH; do
+    case "$entry" in
+      "" | /mnt/[A-Za-z]/*) continue ;;
+    esac
+
+    if [ -n "$filtered_path" ]; then
+      filtered_path="$filtered_path:$entry"
+    else
+      filtered_path="$entry"
+    fi
+  done
+
+  IFS="$old_ifs"
+  PATH="$filtered_path"
+}
+
+remove_wsl_windows_path
+prepend_path_once /run/current-system/sw/bin
+prepend_path_once /run/wrappers/bin
+export PATH
+
 if [ ! -f /etc/NIXOS ]; then
   echo "rebuild-wsl.sh must be run inside NixOS WSL." >&2
   exit 1
@@ -65,8 +99,18 @@ fi
 export NIX_CONFIG="${NIX_CONFIG:-}
 experimental-features = nix-command flakes"
 
+sudo_bin="/run/wrappers/bin/sudo"
+if [ ! -x "$sudo_bin" ]; then
+  sudo_bin="$(command -v sudo || true)"
+fi
+
+if [ -z "$sudo_bin" ]; then
+  echo "Could not find sudo. Expected /run/wrappers/bin/sudo in NixOS WSL." >&2
+  exit 1
+fi
+
 log "Applying NixOS WSL flake..."
-sudo nixos-rebuild switch --flake "$REPO_DIR/nixos#wsl"
+"$sudo_bin" env "PATH=$PATH" nixos-rebuild switch --flake "$REPO_DIR/nixos#wsl"
 
 log "Refreshing WSL user config links and agent tools..."
 bash "$BOOTSTRAP_SCRIPT"
