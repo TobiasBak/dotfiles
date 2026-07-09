@@ -22,6 +22,17 @@ _remove_wsl_windows_path() {
 
 if _is_wsl_shell; then
   _remove_wsl_windows_path
+
+  # Repair stale tmux/session environments after NixOS rebuilds. Old sessions
+  # can keep __NIXOS_SET_ENVIRONMENT_DONE without the current nix-ld library path.
+  _nix_ld_lib_path="${NIX_LD_LIBRARY_PATH:-/run/current-system/sw/share/nix-ld/lib}"
+  if [[ -r "$_nix_ld_lib_path/libstdc++.so.6" ]]; then
+    case ":${LD_LIBRARY_PATH:-}:" in
+      *":$_nix_ld_lib_path:"*) ;;
+      *) export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$_nix_ld_lib_path" ;;
+    esac
+  fi
+  unset _nix_ld_lib_path
 fi
 
 # Match WezTerm's modified-Enter LF fallback with multiline shell editing.
@@ -42,11 +53,27 @@ _bind_modified_enter_keys() {
 
 finder() {
   local path="${1:-.}"
+  local windows_path
+  local wslpath_bin
+
+  wslpath_bin="$(command -v wslpath 2>/dev/null || true)"
+  if [[ -z "$wslpath_bin" && -x /bin/wslpath ]]; then
+    wslpath_bin=/bin/wslpath
+  elif [[ -z "$wslpath_bin" && -x /sbin/wslpath ]]; then
+    wslpath_bin=/sbin/wslpath
+  fi
+
+  if [[ -z "$wslpath_bin" ]]; then
+    print -u2 "finder could not find wslpath."
+    return 1
+  fi
+
+  windows_path="$("$wslpath_bin" -w "$path")" || return
 
   if command -v explorer.exe >/dev/null 2>&1; then
-    explorer.exe "$path"
+    explorer.exe "$windows_path"
   elif [[ -x /mnt/c/Windows/explorer.exe ]]; then
-    /mnt/c/Windows/explorer.exe "$path"
+    /mnt/c/Windows/explorer.exe "$windows_path"
   else
     print -u2 "finder could not find Windows Explorer."
     return 1

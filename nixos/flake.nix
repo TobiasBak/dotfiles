@@ -6,7 +6,12 @@
     nixos-wsl.url = "github:nix-community/NixOS-WSL/main";
   };
 
-  outputs = { self, nixpkgs, nixos-wsl }:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      nixos-wsl,
+    }:
     let
       system = "x86_64-linux";
     in

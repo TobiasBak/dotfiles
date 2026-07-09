@@ -5,9 +5,41 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_DIR="$SCRIPT_DIR"
 STABLE_REPO_DIR="$HOME/.dotfiles"
 BOOTSTRAP_SCRIPT="$REPO_DIR/windows/scripts/bootstrap-nixos-wsl.sh"
+NIXOS_ONLY=false
 
 log() { printf '\033[0;36m[rebuild-wsl]\033[0m %s\n' "$*"; }
 warn() { printf '\033[0;33m[rebuild-wsl]\033[0m %s\n' "$*"; }
+
+usage() {
+  cat <<'EOF'
+Usage: ./rebuild-wsl.sh [--nixos-only]
+
+Applies the NixOS WSL flake, then refreshes user config links and agent tools.
+
+Options:
+  --nixos-only  Apply only the NixOS WSL flake. Skip user config links,
+                Codex/Pi agent npm installs, and skill link refresh.
+  -h, --help    Show this help.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --nixos-only)
+      NIXOS_ONLY=true
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
 
 resolve_path() {
   readlink -f "$1" 2>/dev/null || true
@@ -67,7 +99,7 @@ if [ ! -f "$REPO_DIR/nixos/flake.nix" ]; then
   exit 1
 fi
 
-if [ ! -f "$BOOTSTRAP_SCRIPT" ]; then
+if [ "$NIXOS_ONLY" = false ] && [ ! -f "$BOOTSTRAP_SCRIPT" ]; then
   echo "Missing WSL bootstrap script: $BOOTSTRAP_SCRIPT" >&2
   exit 1
 fi
@@ -111,6 +143,12 @@ fi
 
 log "Applying NixOS WSL flake..."
 "$sudo_bin" env "PATH=$PATH" nixos-rebuild switch --flake "$REPO_DIR/nixos#wsl"
+
+if [ "$NIXOS_ONLY" = true ]; then
+  log "Skipping WSL user config links and agent tools (--nixos-only)."
+  log "NixOS WSL rebuild complete."
+  exit 0
+fi
 
 log "Refreshing WSL user config links and agent tools..."
 bash "$BOOTSTRAP_SCRIPT"

@@ -45,6 +45,7 @@ When adding a new personal skill, add its name to `..\skills\skills.json`, then 
 
 - Verify Windows host config links: `winget configure -f .\windows\configuration.winget --accept-configuration-agreements --disable-interactivity`
 - Sync/fix WSL Pi/Codex config + skills: `./rebuild-wsl.sh`
+- Apply only NixOS WSL config/packages: `./rebuild-wsl.sh --nixos-only`
 
 ## NixOS servers
 
@@ -55,6 +56,7 @@ Before changing or remotely rebuilding NixOS servers, read `nixos/README.md`, es
 - Windows setup: `powershell -ExecutionPolicy Bypass -File .\rebuild-windows.ps1` from PowerShell. The script elevates when needed.
 - Windows winget configuration only: `winget configure -f .\windows\configuration.winget --accept-configuration-agreements --disable-interactivity` from elevated PowerShell.
 - NixOS WSL rebuild and agent repair: `./rebuild-wsl.sh`.
+- NixOS WSL rebuild only: `./rebuild-wsl.sh --nixos-only`.
 - Linux setup: `./arch-linux/install.sh`.
 
 Avoid running installers without user approval because they install packages and mutate user config.
