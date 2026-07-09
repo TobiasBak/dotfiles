@@ -51,6 +51,7 @@ in
   programs.nix-ld.enable = true;
   programs.nix-ld.libraries = with pkgs; [
     expat
+    glib
     libGL
     stdenv.cc.cc.lib
     xorg.libX11
@@ -89,6 +90,7 @@ in
     nixd
     nixfmt-rfc-style
     nodejs
+    openssl
     openssh
     pnpm
     python3
