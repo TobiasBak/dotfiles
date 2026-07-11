@@ -243,7 +243,7 @@ setup_symlinks() {
             local dirname=$(basename "$config_dir")
 
             # Skip configs that are not XDG app config directories on Linux.
-            if [ "$dirname" = "zsh" ] || [ "$dirname" = "powershell" ] || [ "$dirname" = "pi" ]; then
+            if [ "$dirname" = "zsh" ] || [ "$dirname" = "powershell" ] || [ "$dirname" = "pi" ] || [ "$dirname" = "codex" ]; then
                 continue
             fi
 

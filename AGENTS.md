@@ -8,14 +8,13 @@ When changing anything under `configs/`, ensure the machine uses the repo versio
 
 Check relevant links before or after config edits:
 
-- Windows Pi config:
+- NixOS WSL Pi config:
   - `~/.pi/agent/settings.json` -> `configs/pi/settings.json`
   - `~/.pi/agent/APPEND_SYSTEM.md` -> `configs/pi/APPEND_SYSTEM.md`
   - `~/.pi/agent/extensions` -> `configs/pi/extensions`
   - `~/.pi/agent/prompts` -> `configs/pi/prompts`
-- Windows Codex CLI config:
+- NixOS WSL Codex CLI config:
   - `~/.codex/AGENTS.md` -> `configs/codex/AGENTS.md`
-  - `~/.codex/config.toml` -> `configs/codex/config.toml`
   - `~/.codex/prompts` -> `configs/codex/prompts`
 - NixOS WSL npm config:
   - `~/.npmrc` -> `configs/npm/npmrc`
@@ -26,7 +25,7 @@ If a target is a real file/dir instead of a link, report it and recommend rerunn
 
 ## Agent skills repo
 
-Pi and Codex CLI personal skills are managed by separate sibling repo `../skills` relative to this dotfiles repo (for example `C:\Users\tobias\code\skills` when dotfiles is `C:\Users\tobias\code\dotfiles`).
+Pi and Codex CLI personal skills are managed by separate sibling repo `../skills` relative to this dotfiles repo.
 
 Expected links:
 
@@ -35,13 +34,9 @@ Expected links:
 - NixOS WSL `~/.agents/skills/<skill>` -> `../skills/skills/<skill>` for Codex personal skills listed in `../skills/skills.json`.
 - NixOS WSL `~/.agents/skills/<skill>` -> `../skills/external/mattpocock-skills/<skill>` for Codex external skills listed in `../skills/skills.json`.
 
-Use PowerShell on Windows. Git Bash `ln -s` can create links that native Windows/Pi does not see correctly.
-
 - Install/fix all WSL agent skills: `./rebuild-wsl.sh`
-- Verify Windows host links: `winget configure -f .\windows\configuration.winget --accept-configuration-agreements --disable-interactivity`
-- Install/fix one target manually: set `PI_SKILLS_DIR` to the target skill directory, then run `powershell -ExecutionPolicy Bypass -File ..\skills\scripts\install-links.ps1 -Fix`.
 
-When adding a new personal skill, add its name to `..\skills\skills.json`, then run installer/verifier.
+When adding a new personal skill, add its name to `../skills/skills.json`, then run the installer/verifier.
 
 ## Agent sync and verification
 
