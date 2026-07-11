@@ -30,19 +30,20 @@ Pi and Codex CLI personal skills are managed by separate sibling repo `../skills
 
 Expected links:
 
-- NixOS WSL `~/.pi/agent/skills/<skill>` -> `../skills/skills/<skill>` for personal skills listed in `nixos/hosts/wsl/skills.nix`.
-- NixOS WSL `~/.pi/agent/skills/<skill>` -> `../skills/external/mattpocock-skills/<skill>` for external skills listed in `nixos/hosts/wsl/skills.nix`.
-- NixOS WSL `~/.agents/skills/<skill>` -> `../skills/skills/<skill>` for Codex personal skills listed in `nixos/hosts/wsl/skills.nix`.
-- NixOS WSL `~/.agents/skills/<skill>` -> `../skills/external/mattpocock-skills/<skill>` for Codex external skills listed in `nixos/hosts/wsl/skills.nix`.
+- NixOS WSL `~/.pi/agent/skills/<skill>` -> `../skills/skills/<skill>` for personal skills listed in `../skills/skills.json`.
+- NixOS WSL `~/.pi/agent/skills/<skill>` -> `../skills/external/mattpocock-skills/<skill>` for external skills listed in `../skills/skills.json`.
+- NixOS WSL `~/.agents/skills/<skill>` -> `../skills/skills/<skill>` for Codex personal skills listed in `../skills/skills.json`.
+- NixOS WSL `~/.agents/skills/<skill>` -> `../skills/external/mattpocock-skills/<skill>` for Codex external skills listed in `../skills/skills.json`.
 
-- Install/fix all WSL agent skills: `./rebuild.sh`
+- Install/fix all WSL agent skills: `./rebuild-wsl.sh`
 
-When adding a WSL skill link, add its name to `nixos/hosts/wsl/skills.nix`, then run the rebuild. Arch remains separate and uses the inventory and installer from `../skills`.
+When adding a new personal skill, add its name to `../skills/skills.json`, then run the installer/verifier.
 
 ## Agent sync and verification
 
 - Verify Windows host config links: `winget configure -f .\windows\configuration.winget --accept-configuration-agreements --disable-interactivity`
-- Rebuild NixOS WSL, Home Manager, agent CLIs, and skill links: `./rebuild.sh`
+- Sync/fix WSL Pi/Codex config + skills: `./rebuild-wsl.sh`
+- Apply only NixOS WSL config/packages: `./rebuild-wsl.sh --nixos-only`
 
 ## NixOS servers
 
@@ -52,7 +53,8 @@ Before changing or remotely rebuilding NixOS servers, read `nixos/README.md`, es
 
 - Windows setup: `powershell -ExecutionPolicy Bypass -File .\rebuild-windows.ps1` from PowerShell. The script elevates when needed.
 - Windows winget configuration only: `winget configure -f .\windows\configuration.winget --accept-configuration-agreements --disable-interactivity` from elevated PowerShell.
-- NixOS WSL rebuild and agent repair: `./rebuild.sh`.
+- NixOS WSL rebuild and agent repair: `./rebuild-wsl.sh`.
+- NixOS WSL rebuild only: `./rebuild-wsl.sh --nixos-only`.
 - Linux setup: `./arch-linux/install.sh`.
 
 Avoid running installers without user approval because they install packages and mutate user config.

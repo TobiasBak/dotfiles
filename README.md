@@ -25,8 +25,7 @@ powershell -ExecutionPolicy Bypass -File .\rebuild-windows.ps1
 
 This elevates when needed, applies the winget configuration, installs WezTerm,
 installs or repairs NixOS WSL, refreshes Windows host config links, and verifies
-links. NixOS and Home Manager declaratively install the WSL shell, agent CLIs,
-and agent skill links.
+links. Dev shells, agent CLIs, and agent skills are refreshed inside NixOS WSL.
 
 ### NixOS WSL
 
@@ -41,7 +40,7 @@ That stable path means config symlinks do not need to know whether the real chec
 Inside NixOS WSL, refresh the system profile and Home Manager user config with:
 
 ```bash
-./rebuild.sh
+./rebuild-wsl.sh
 ```
 
 ### Arch Linux
@@ -61,6 +60,5 @@ See `nixos/README.md` for the flake-based laptop server config and install notes
 - Use NixOS WSL as the default Windows developer shell.
 - Keep machine/system packages in `nixos/hosts/<host>/configuration.nix` instead of shell bootstrap scripts.
 - Keep user-level NixOS WSL configuration in Home Manager and system-level configuration in the host module.
-- Package WSL tools with Nix. Keep `rebuild.sh` as the single Linux operational entrypoint.
 - Add project-level `flake.nix` dev shells where reproducible tooling matters.
 - Use standalone Nix on non-NixOS Linux machines when replacing the OS is not worth it.
