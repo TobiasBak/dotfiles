@@ -234,8 +234,10 @@ setup_symlinks() {
     link_config "$CONFIGS_DIR/pi/extensions" "$HOME/.pi/agent/extensions"
     link_config "$CONFIGS_DIR/pi/prompts" "$HOME/.pi/agent/prompts"
 
-    # Codex CLI global instructions
+    # Codex CLI configuration
     link_config "$CONFIGS_DIR/codex/AGENTS.md" "$HOME/.codex/AGENTS.md"
+    link_config "$CONFIGS_DIR/codex/config.toml" "$HOME/.codex/config.toml"
+    link_config "$CONFIGS_DIR/codex/prompts" "$HOME/.codex/prompts"
 
     # Config folders
     for config_dir in "$CONFIGS_DIR"/*; do

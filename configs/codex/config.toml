@@ -1,0 +1,24 @@
+model = "gpt-5.6-sol"
+model_reasoning_effort = "high"
+model_context_window = 272000
+model_auto_compact_token_limit = 250000
+model_auto_compact_token_limit_scope = "total"
+
+[projects."/home/tobias/code/order-integration-platform"]
+trust_level = "trusted"
+
+[projects."/home/tobias/code/dotfiles"]
+trust_level = "trusted"
+
+[projects."/home/tobias/code"]
+trust_level = "trusted"
+
+[notice]
+hide_rate_limit_model_nudge = true
+
+[mcp_servers.openaiDeveloperDocs]
+url = "https://developers.openai.com/mcp"
+
+[tui]
+status_line = ["model-with-reasoning", "current-dir", "context-used", "context-window-size"]
+status_line_use_colors = true

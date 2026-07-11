@@ -197,6 +197,7 @@ setup_symlinks() {
   link_config "$CONFIGS_DIR/pi/prompts" "$HOME/.pi/agent/prompts"
   link_config "$CONFIGS_DIR/pi/keybindings.json" "$HOME/.pi/agent/keybindings.json"
   link_config "$CONFIGS_DIR/codex/AGENTS.md" "$HOME/.codex/AGENTS.md"
+  link_config "$CONFIGS_DIR/codex/config.toml" "$HOME/.codex/config.toml"
   link_config "$CONFIGS_DIR/codex/prompts" "$HOME/.codex/prompts"
 }
 

@@ -15,6 +15,7 @@ Check relevant links before or after config edits:
   - `~/.pi/agent/prompts` -> `configs/pi/prompts`
 - NixOS WSL Codex CLI config:
   - `~/.codex/AGENTS.md` -> `configs/codex/AGENTS.md`
+  - `~/.codex/config.toml` -> `configs/codex/config.toml`
   - `~/.codex/prompts` -> `configs/codex/prompts`
 - NixOS WSL npm config:
   - `~/.npmrc` -> `configs/npm/npmrc`
