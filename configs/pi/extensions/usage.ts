@@ -85,6 +85,9 @@ function formatUsage(data: UsagePayload, modelName: string): string {
   if (secondary) lines.push(secondary);
 
   for (const item of data.additional_rate_limits ?? []) {
+    const identifiers = [item.limit_name, item.metered_feature].filter((value): value is string => typeof value === "string");
+    if (identifiers.some((value) => value.toLowerCase().includes("spark"))) continue;
+
     const name = item.limit_name ?? item.metered_feature ?? "additional";
     const p = fmtWindow(`${name} ${fmtDuration(item.rate_limit?.primary_window?.limit_window_seconds)}`, item.rate_limit?.primary_window);
     const s = fmtWindow(`${name} ${fmtDuration(item.rate_limit?.secondary_window?.limit_window_seconds)}`, item.rate_limit?.secondary_window);

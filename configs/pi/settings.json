@@ -3,7 +3,7 @@
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.6-sol",
   "defaultThinkingLevel": "low",
-  "collapseChangelog": false,
+  "collapseChangelog": true,
   "compaction": {
     "reserveTokens": 22000
   },
@@ -11,5 +11,7 @@
     "npm:@hypabolic/pi-hypa",
     "npm:pi-web-access",
     "npm:pi-subagents"
-  ]
+  ],
+  "defaultProjectTrust": "always",
+  "enableInstallTelemetry": true
 }
