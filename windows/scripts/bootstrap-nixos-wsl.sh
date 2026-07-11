@@ -190,6 +190,7 @@ setup_symlinks() {
   mkdir -p "$HOME/.oh-my-zsh/custom/themes"
   link_config "$CONFIGS_DIR/zsh/custom.zsh-theme" "$HOME/.oh-my-zsh/custom/themes/custom.zsh-theme"
   link_config "$CONFIGS_DIR/tmux" "$HOME/.config/tmux"
+  link_config "$CONFIGS_DIR/npm/npmrc" "$HOME/.npmrc"
   link_config "$CONFIGS_DIR/pi/settings.json" "$HOME/.pi/agent/settings.json"
   link_config "$CONFIGS_DIR/pi/APPEND_SYSTEM.md" "$HOME/.pi/agent/APPEND_SYSTEM.md"
   link_config "$CONFIGS_DIR/pi/extensions" "$HOME/.pi/agent/extensions"
