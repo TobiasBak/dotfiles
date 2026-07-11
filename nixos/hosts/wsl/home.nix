@@ -22,6 +22,7 @@ in
       ".npmrc" = linkFromDotfiles "configs/npm/npmrc";
 
       ".pi/agent/settings.json" = linkFromDotfiles "configs/pi/settings.json";
+      ".pi/agent/models.json" = linkFromDotfiles "configs/pi/models.json";
       ".pi/agent/APPEND_SYSTEM.md" = linkFromDotfiles "configs/pi/APPEND_SYSTEM.md";
       ".pi/agent/extensions" = linkFromDotfiles "configs/pi/extensions";
       ".pi/agent/prompts" = linkFromDotfiles "configs/pi/prompts";
