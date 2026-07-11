@@ -16,9 +16,6 @@ trust_level = "trusted"
 [notice]
 hide_rate_limit_model_nudge = true
 
-[mcp_servers.openaiDeveloperDocs]
-url = "https://developers.openai.com/mcp"
-
 [tui]
-status_line = ["model-with-reasoning", "current-dir", "context-used", "context-window-size"]
+status_line = ["model-with-reasoning", "current-dir", "context-used", "context-window-size", "git-branch"]
 status_line_use_colors = true
