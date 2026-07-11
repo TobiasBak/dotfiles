@@ -82,11 +82,10 @@ export default function (pi: ExtensionAPI) {
     name: "web_search",
     label: "Web Search",
     description: "Search the web through Exa or Parallel hosted MCP search providers.",
-    promptSnippet: "Search web for current/discovery info. Use web_fetch for known URL retrieval.",
+    promptSnippet: "Search the web for current information and source discovery.",
     promptGuidelines: [
       "Use web_search for discovery, recent info, or facts beyond model cutoff.",
       "Include current year in query for latest/current-event searches.",
-      "Use web_fetch after web_search when specific result URL needs deeper reading.",
     ],
     parameters: Type.Object({
       query: Type.String({ description: "Web search query." }),
