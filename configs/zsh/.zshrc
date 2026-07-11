@@ -51,6 +51,14 @@ _bind_modified_enter_keys() {
   done
 }
 
+_bind_word_navigation_keys() {
+  local keymap
+  for keymap in emacs viins; do
+    bindkey -M "$keymap" $'\e[1;5D' backward-word 2>/dev/null
+    bindkey -M "$keymap" $'\e[1;5C' forward-word 2>/dev/null
+  done
+}
+
 finder() {
   local path="${1:-.}"
   local windows_path
@@ -114,6 +122,7 @@ if [[ -n "${ZSH_TMUX_FAST:-}" ]]; then
   setopt PROMPT_SUBST
   bindkey -M menuselect '^M' .accept-line 2>/dev/null
   _bind_modified_enter_keys
+  _bind_word_navigation_keys
 
   if command -v eza >/dev/null 2>&1; then
     alias ls='eza --icons --grid --group-directories-first'
@@ -291,6 +300,7 @@ setopt MENU_COMPLETE
 setopt NO_NOMATCH
 bindkey -M menuselect '^M' .accept-line
 _bind_modified_enter_keys
+_bind_word_navigation_keys
 
 # User configuration
 
