@@ -1,6 +1,11 @@
-{ pkgs, ... }:
+{
+  pkgs,
+  ...
+}:
 
 let
+  codexCli = pkgs.callPackage ../../packages/codex-cli { };
+  piCodingAgent = pkgs.callPackage ../../packages/pi-coding-agent { };
   vitePlus = pkgs.callPackage ../../packages/vite-plus { };
 
   windowsCode = pkgs.writeShellScriptBin "code" ''
@@ -78,6 +83,10 @@ in
     LD_LIBRARY_PATH = "/run/current-system/sw/share/nix-ld/lib";
   };
 
+  environment.etc."dotfiles-nixos-wsl-system-ok".text = ''
+    This NixOS WSL system is managed by the dotfiles flake.
+  '';
+
   home-manager = {
     useGlobalPkgs = true;
     useUserPackages = true;
@@ -87,6 +96,7 @@ in
   environment.systemPackages = with pkgs; [
     bat
     cacert
+    codexCli
     coreutils
     curl
     eza
@@ -101,6 +111,7 @@ in
     openssl
     openssh
     pnpm
+    piCodingAgent
     python3
     ripgrep
     tailscale

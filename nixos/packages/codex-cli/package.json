@@ -1,0 +1,8 @@
+{
+  "name": "dotfiles-codex-cli",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@openai/codex": "0.144.1"
+  }
+}

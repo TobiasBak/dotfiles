@@ -37,7 +37,7 @@ Windows setup installs NixOS WSL from the latest NixOS-WSL `.wsl` release,
 sets the distro name/default to `NixOS`, and applies the WSL rebuild:
 
 ```bash
-~/.dotfiles/rebuild-wsl.sh
+~/.dotfiles/rebuild.sh
 ```
 
 The setup then bootstraps the `tobias` home with:
@@ -52,8 +52,8 @@ rewriting every symlink.
 
 The WSL host imports Home Manager for user-level configuration. System state
 stays in `hosts/wsl/configuration.nix`, while `hosts/wsl/home.nix` owns user
-config links and other home-scoped state. The bootstrap remains responsible
-for cloning repositories and updating tools that are not packaged by Nix.
+config links and other home-scoped state. The single `rebuild.sh` entrypoint
+updates the private skills checkout before building and switching the system.
 
 Manual Windows-side repair:
 
@@ -64,7 +64,7 @@ powershell -ExecutionPolicy Bypass -File .\rebuild-windows.ps1
 Manual in-distro rebuild:
 
 ```bash
-~/.dotfiles/rebuild-wsl.sh
+~/.dotfiles/rebuild.sh
 ```
 
 After changing flake inputs, update and commit the lock file from a machine

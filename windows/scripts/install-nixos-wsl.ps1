@@ -78,7 +78,7 @@ function Get-NixOsWslState {
         $linuxUserExists = Test-WslLinuxUser
         $systemConfigured = $linuxUserExists -and (Test-WslBash -User "root" -Script "test -f /etc/dotfiles-nixos-wsl-system-ok")
         if ($linuxUserExists) {
-            $userBootstrapped = Test-WslBash -User $LinuxUser -Script 'test -f ~/.dotfiles-nixos-wsl-shell-ok && test -f ~/code/dotfiles/windows/scripts/bootstrap-nixos-wsl.sh && test "$(readlink -f ~/.dotfiles 2>/dev/null)" = "$(readlink -f ~/code/dotfiles 2>/dev/null)"'
+            $userBootstrapped = Test-WslBash -User $LinuxUser -Script 'test -x ~/code/dotfiles/rebuild.sh && test "$(readlink -f ~/.dotfiles 2>/dev/null)" = "$(readlink -f ~/code/dotfiles 2>/dev/null)" && command -v codex >/dev/null && command -v pi >/dev/null && manifest=~/.local/state/dotfiles-wsl-links && test -s "$manifest" && while IFS="$(printf "\t")" read -r target source; do test -n "$target" && test "$(readlink -e "$HOME/$target" 2>/dev/null)" = "$(readlink -e "$source" 2>/dev/null)" && test -n "$(readlink -e "$source" 2>/dev/null)" || exit 1; done < "$manifest"'
         }
     }
 
@@ -257,7 +257,6 @@ experimental-features = nix-command flakes"
 
 repo="/root/dotfiles"
 nixpkgs_ref="github:NixOS/nixpkgs/nixos-25.11"
-rm -f /etc/dotfiles-nixos-wsl-system-ok
 
 run_git() {
   if command -v git >/dev/null 2>&1; then
@@ -286,49 +285,18 @@ run_with_git nixos-rebuild switch --flake "$repo/nixos#wsl" || switch_status=$?
 current_system="$(readlink -f /run/current-system)"
 
 if [ "$current_system" = "$built_system" ] && getent passwd "$DOTFILES_LINUX_USER" >/dev/null; then
-  touch /etc/dotfiles-nixos-wsl-system-ok
-  exit 0
+  test -f /etc/dotfiles-nixos-wsl-system-ok
+  exit $?
 fi
 
 exit "$switch_status"
 '@
 
     Write-Host "Applying NixOS WSL system config from $remoteUrl..." -ForegroundColor Yellow
-    try {
-        Invoke-WslBashScript -User "root" -Script $systemScript -Environment @{
-            DOTFILES_REMOTE = $remoteUrl
-            DOTFILES_LINUX_USER = $LinuxUser
-        } -StepName "NixOS WSL system configuration"
-    } catch {
-        if (Repair-NixOsSystemMarkerAfterSwitch) {
-            Write-Warning "NixOS WSL switch reported an error, but the system and user are present. Continuing after writing the setup marker."
-            return
-        }
-
-        throw
-    }
-}
-
-function Repair-NixOsSystemMarkerAfterSwitch {
-    $repairScript = @"
-set -euo pipefail
-
-if getent passwd '$LinuxUser' >/dev/null &&
-   test -L /run/current-system &&
-   readlink -f /run/current-system | grep -q '/nixos-system-nixos-wsl-'; then
-  touch /etc/dotfiles-nixos-wsl-system-ok
-  exit 0
-fi
-
-exit 1
-"@
-
-    try {
-        Invoke-WslBashScript -User "root" -Script $repairScript -StepName "NixOS WSL post-switch marker repair"
-        return $true
-    } catch {
-        return $false
-    }
+    Invoke-WslBashScript -User "root" -Script $systemScript -Environment @{
+        DOTFILES_REMOTE = $remoteUrl
+        DOTFILES_LINUX_USER = $LinuxUser
+    } -StepName "NixOS WSL system configuration"
 }
 
 function Install-NixOsUserBootstrap {
@@ -338,25 +306,16 @@ set -euo pipefail
 
 target="$HOME/code/dotfiles"
 stable="$HOME/.dotfiles"
-nixpkgs_ref="github:NixOS/nixpkgs/nixos-25.11"
-
-run_git() {
-  if command -v git >/dev/null 2>&1; then
-    git "$@"
-  else
-    nix --extra-experimental-features "nix-command flakes" shell "$nixpkgs_ref#git" "$nixpkgs_ref#cacert" -c git "$@"
-  fi
-}
 
 resolve_path() {
   readlink -f "$1" 2>/dev/null || true
 }
 
 if [ -d "$target/.git" ]; then
-  run_git -C "$target" pull --ff-only || echo "Could not fast-forward $target; continuing with the existing checkout." >&2
+  git -C "$target" pull --ff-only || echo "Could not fast-forward $target; continuing with the existing checkout." >&2
 elif [ ! -e "$target" ]; then
   mkdir -p "$(dirname "$target")"
-  run_git clone "$DOTFILES_REMOTE" "$target"
+  git clone "$DOTFILES_REMOTE" "$target"
 else
   echo "$target exists but is not a git repository." >&2
   exit 1
@@ -388,11 +347,10 @@ if [ "$stable_resolved" != "$target_resolved" ]; then
   exit 1
 fi
 
-bootstrap="$target_resolved/windows/scripts/bootstrap-nixos-wsl.sh"
-test -f "$bootstrap"
-chmod +x "$bootstrap"
-"$bootstrap"
-touch "$HOME/.dotfiles-nixos-wsl-shell-ok"
+rebuild="$target_resolved/rebuild.sh"
+test -f "$rebuild"
+chmod +x "$rebuild"
+"$rebuild"
 '@
 
     Write-Host "Bootstrapping $LinuxUser home in $DistroName..." -ForegroundColor Yellow
@@ -416,6 +374,13 @@ function Set-NixOsWslInstall {
     if (-not $state.userBootstrapped) {
         Install-NixOsUserBootstrap
     }
+
+    $state = Get-NixOsWslState
+    if (-not $state.userBootstrapped) {
+        throw "NixOS WSL user configuration did not reach its declared state."
+    }
+
+    Invoke-WslBashScript -User "root" -Script 'rm -rf /root/dotfiles' -StepName "NixOS WSL bootstrap checkout cleanup"
 }
 
 switch ($Mode) {
