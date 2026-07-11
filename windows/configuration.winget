@@ -116,15 +116,8 @@ resources:
       $stableRepoRoot = Join-Path $HOME '.dotfiles'
       $targets = @(
         @{ name = 'codeSettings'; path = Join-Path $env:APPDATA 'Code\User\settings.json' }
+        @{ name = 'codeKeybindings'; path = Join-Path $env:APPDATA 'Code\User\keybindings.json' }
         @{ name = 'weztermConfig'; path = Join-Path $HOME '.wezterm.lua' }
-        @{ name = 'piSettings'; path = Join-Path $HOME '.pi\agent\settings.json' }
-        @{ name = 'piAppendSystem'; path = Join-Path $HOME '.pi\agent\APPEND_SYSTEM.md' }
-        @{ name = 'piExtensions'; path = Join-Path $HOME '.pi\agent\extensions' }
-        @{ name = 'piPrompts'; path = Join-Path $HOME '.pi\agent\prompts' }
-        @{ name = 'piKeybindings'; path = Join-Path $HOME '.pi\agent\keybindings.json' }
-        @{ name = 'codexAgents'; path = Join-Path $HOME '.codex\AGENTS.md' }
-        @{ name = 'codexConfig'; path = Join-Path $HOME '.codex\config.toml' }
-        @{ name = 'codexPrompts'; path = Join-Path $HOME '.codex\prompts' }
       )
       $present = @{}
       foreach ($target in $targets) {
@@ -157,15 +150,8 @@ resources:
       $effectiveRepoRoot = if (Test-LinkTarget $stableRepoRoot $repoRoot) { $stableRepoRoot } else { $repoRoot }
       $expectedLinks = @(
         @{ path = Join-Path $env:APPDATA 'Code\User\settings.json'; target = Join-Path $effectiveRepoRoot 'configs\Code\User\settings.json' }
+        @{ path = Join-Path $env:APPDATA 'Code\User\keybindings.json'; target = Join-Path $effectiveRepoRoot 'configs\Code\User\keybindings.json' }
         @{ path = Join-Path $HOME '.wezterm.lua'; target = Join-Path $effectiveRepoRoot 'configs\wezterm\wezterm.lua' }
-        @{ path = Join-Path $HOME '.pi\agent\settings.json'; target = Join-Path $effectiveRepoRoot 'configs\pi\settings.json' }
-        @{ path = Join-Path $HOME '.pi\agent\APPEND_SYSTEM.md'; target = Join-Path $effectiveRepoRoot 'configs\pi\APPEND_SYSTEM.md' }
-        @{ path = Join-Path $HOME '.pi\agent\extensions'; target = Join-Path $effectiveRepoRoot 'configs\pi\extensions' }
-        @{ path = Join-Path $HOME '.pi\agent\prompts'; target = Join-Path $effectiveRepoRoot 'configs\pi\prompts' }
-        @{ path = Join-Path $HOME '.pi\agent\keybindings.json'; target = Join-Path $effectiveRepoRoot 'configs\pi\keybindings.json' }
-        @{ path = Join-Path $HOME '.codex\AGENTS.md'; target = Join-Path $effectiveRepoRoot 'configs\codex\AGENTS.md' }
-        @{ path = Join-Path $HOME '.codex\config.toml'; target = Join-Path $effectiveRepoRoot 'configs\codex\config.toml' }
-        @{ path = Join-Path $HOME '.codex\prompts'; target = Join-Path $effectiveRepoRoot 'configs\codex\prompts' }
       )
       $missingLinks = @($expectedLinks | Where-Object { -not (Test-LinkTarget $_.path $_.target) })
       return ((Test-LinkTarget $stableRepoRoot $repoRoot) -and $missingLinks.Count -eq 0)
@@ -228,15 +214,8 @@ resources:
       $effectiveRepoRoot = Ensure-DotfilesLink
       $configsDir = Join-Path $effectiveRepoRoot 'configs'
       Link-DotfileConfig (Join-Path $configsDir 'Code\User\settings.json') (Join-Path $env:APPDATA 'Code\User\settings.json')
+      Link-DotfileConfig (Join-Path $configsDir 'Code\User\keybindings.json') (Join-Path $env:APPDATA 'Code\User\keybindings.json')
       Link-DotfileConfig (Join-Path $configsDir 'wezterm\wezterm.lua') (Join-Path $HOME '.wezterm.lua')
-      Link-DotfileConfig (Join-Path $configsDir 'pi\settings.json') (Join-Path $HOME '.pi\agent\settings.json')
-      Link-DotfileConfig (Join-Path $configsDir 'pi\APPEND_SYSTEM.md') (Join-Path $HOME '.pi\agent\APPEND_SYSTEM.md')
-      Link-DotfileConfig (Join-Path $configsDir 'pi\extensions') (Join-Path $HOME '.pi\agent\extensions')
-      Link-DotfileConfig (Join-Path $configsDir 'pi\prompts') (Join-Path $HOME '.pi\agent\prompts')
-      Link-DotfileConfig (Join-Path $configsDir 'pi\keybindings.json') (Join-Path $HOME '.pi\agent\keybindings.json')
-      Link-DotfileConfig (Join-Path $configsDir 'codex\AGENTS.md') (Join-Path $HOME '.codex\AGENTS.md')
-      Link-DotfileConfig (Join-Path $configsDir 'codex\config.toml') (Join-Path $HOME '.codex\config.toml')
-      Link-DotfileConfig (Join-Path $configsDir 'codex\prompts') (Join-Path $HOME '.codex\prompts')
 
 - name: RemoveLegacyPowerShellProfileDotfilesHooks
   type: Microsoft.DSC.Transitional/PowerShellScript
