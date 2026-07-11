@@ -222,8 +222,10 @@ if [[ -n "${ZSH_TMUX_FAST:-}" ]]; then
   return
 fi
 
-# Path to your Oh My Zsh installation.
-export ZSH="$HOME/.oh-my-zsh"
+# NixOS supplies ZSH through the session environment. Other installers keep
+# using the traditional per-user Oh My Zsh location.
+export ZSH="${ZSH:-$HOME/.oh-my-zsh}"
+export ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
 
 # Set name of the theme to load --- if set to "random", it will
 # load a random theme each time Oh My Zsh is loaded, in which case,

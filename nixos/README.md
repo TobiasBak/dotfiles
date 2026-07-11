@@ -50,6 +50,11 @@ Keep Linux config links pointed through `~/.dotfiles` where possible. That
 lets each machine place the real Git checkout wherever it wants without
 rewriting every symlink.
 
+The WSL host imports Home Manager for user-level configuration. System state
+stays in `hosts/wsl/configuration.nix`, while `hosts/wsl/home.nix` owns user
+config links and other home-scoped state. The bootstrap remains responsible
+for cloning repositories and updating tools that are not packaged by Nix.
+
 Manual Windows-side repair:
 
 ```powershell

@@ -73,8 +73,15 @@ in
   environment.sessionVariables = {
     BROWSER = "wslview";
     GH_BROWSER = "wslview";
+    ZSH = "${pkgs.oh-my-zsh}/share/oh-my-zsh";
     # Let uv-managed PyPI native wheels find nix-ld runtime libraries.
     LD_LIBRARY_PATH = "/run/current-system/sw/share/nix-ld/lib";
+  };
+
+  home-manager = {
+    useGlobalPkgs = true;
+    useUserPackages = true;
+    users.tobias = import ./home.nix;
   };
 
   environment.systemPackages = with pkgs; [
@@ -90,6 +97,7 @@ in
     nixd
     nixfmt-rfc-style
     nodejs
+    oh-my-zsh
     openssl
     openssh
     pnpm

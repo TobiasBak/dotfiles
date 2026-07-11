@@ -4,7 +4,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REAL_REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 STABLE_REPO_DIR="$HOME/.dotfiles"
-BACKUP_DIR="$HOME/dotfiles_backup_$(date +%Y%m%d_%H%M%S)"
 
 log() { printf '\033[0;36m[nixos-wsl]\033[0m %s\n' "$*"; }
 warn() { printf '\033[0;33m[nixos-wsl]\033[0m %s\n' "$*"; }
@@ -63,83 +62,11 @@ ensure_dotfiles_link() {
   log "Linked $STABLE_REPO_DIR -> $REAL_REPO_DIR"
 }
 
-repo_dir() {
-  if [ -L "$STABLE_REPO_DIR" ] && [ "$(resolve_path "$STABLE_REPO_DIR")" = "$REAL_REPO_DIR" ]; then
-    printf '%s\n' "$STABLE_REPO_DIR"
-  else
-    printf '%s\n' "$REAL_REPO_DIR"
-  fi
-}
-
 ensure_dotfiles_link
-REPO_DIR="$(repo_dir)"
-CONFIGS_DIR="$REPO_DIR/configs"
 
 if [ "$(id -u)" -eq 0 ]; then
   warn "Run this as the WSL user, not root. Current HOME is $HOME."
 fi
-
-backup_file() {
-  local target="$1"
-  if [ -e "$target" ] && [ ! -L "$target" ]; then
-    local target_path backup_name backup_target base_backup_target counter
-    target_path="$(readlink -f "$target")"
-    backup_name="${target_path#/}"
-    backup_name="${backup_name//\//__}"
-    backup_name="${backup_name//:/__}"
-    backup_target="$BACKUP_DIR/$backup_name"
-    base_backup_target="$backup_target"
-    counter=1
-
-    while [ -e "$backup_target" ]; do
-      backup_target="$base_backup_target.$counter"
-      counter=$((counter + 1))
-    done
-
-    mkdir -p "$BACKUP_DIR"
-    mv "$target" "$backup_target"
-    warn "Backed up existing $target to $backup_target"
-  fi
-}
-
-ensure_parent_dir() {
-  local target="$1"
-  local parent
-  parent="$(dirname "$target")"
-
-  if [ -d "$parent" ]; then
-    return
-  fi
-
-  if [ -L "$parent" ]; then
-    rm "$parent"
-    warn "Removed stale parent symlink: $parent"
-  elif [ -e "$parent" ]; then
-    backup_file "$parent"
-  fi
-
-  mkdir -p "$parent"
-}
-
-link_config() {
-  local source="$1"
-  local target="$2"
-  local source_resolved target_resolved
-  ensure_parent_dir "$target"
-
-  source_resolved="$(resolve_path "$source")"
-  target_resolved="$(resolve_path "$target")"
-
-  if [ -L "$target" ] && [ -n "$target_resolved" ] && [ "$target_resolved" = "$source_resolved" ]; then
-    log "Already linked: $target"
-    return
-  fi
-
-  backup_file "$target"
-  [ -L "$target" ] && rm "$target"
-  ln -s "$source" "$target"
-  log "Linked $source -> $target"
-}
 
 require_command() {
   local command_name="$1"
@@ -172,33 +99,6 @@ ensure_github_auth() {
   fi
 
   gh auth setup-git --hostname github.com >/dev/null 2>&1 || true
-}
-
-install_oh_my_zsh() {
-  if [ ! -d "$HOME/.oh-my-zsh" ]; then
-    require_command curl || return
-    log "Installing Oh My Zsh..."
-    RUNZSH=no CHSH=no KEEP_ZSHRC=yes sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
-  else
-    log "Oh My Zsh already installed."
-  fi
-}
-
-setup_symlinks() {
-  log "Linking shell and agent configs through $REPO_DIR..."
-  link_config "$CONFIGS_DIR/zsh/.zshrc" "$HOME/.zshrc"
-  mkdir -p "$HOME/.oh-my-zsh/custom/themes"
-  link_config "$CONFIGS_DIR/zsh/custom.zsh-theme" "$HOME/.oh-my-zsh/custom/themes/custom.zsh-theme"
-  link_config "$CONFIGS_DIR/tmux" "$HOME/.config/tmux"
-  link_config "$CONFIGS_DIR/npm/npmrc" "$HOME/.npmrc"
-  link_config "$CONFIGS_DIR/pi/settings.json" "$HOME/.pi/agent/settings.json"
-  link_config "$CONFIGS_DIR/pi/APPEND_SYSTEM.md" "$HOME/.pi/agent/APPEND_SYSTEM.md"
-  link_config "$CONFIGS_DIR/pi/extensions" "$HOME/.pi/agent/extensions"
-  link_config "$CONFIGS_DIR/pi/prompts" "$HOME/.pi/agent/prompts"
-  link_config "$CONFIGS_DIR/pi/keybindings.json" "$HOME/.pi/agent/keybindings.json"
-  link_config "$CONFIGS_DIR/codex/AGENTS.md" "$HOME/.codex/AGENTS.md"
-  link_config "$CONFIGS_DIR/codex/config.toml" "$HOME/.codex/config.toml"
-  link_config "$CONFIGS_DIR/codex/prompts" "$HOME/.codex/prompts"
 }
 
 install_codex_cli() {
@@ -283,8 +183,6 @@ set_shell() {
   fi
 }
 
-install_oh_my_zsh
-setup_symlinks
 install_codex_cli
 install_pi_cli
 install_agent_skill_links

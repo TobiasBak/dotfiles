@@ -5,7 +5,8 @@ This repository contains configuration files (dotfiles) for Windows, NixOS, NixO
 ## Structure
 
 - `configs/`: Shared program configs used by both OS installers where applicable.
-  - Linux installers symlink XDG configs from here into `~/.config` plus zsh files into `$HOME` / Oh My Zsh.
+  - Home Manager links NixOS WSL user configs from here into the home directory.
+  - The Arch Linux installer symlinks XDG configs into `~/.config` plus zsh files into `$HOME` / Oh My Zsh.
   - Windows installers symlink host configs like WezTerm and VS Code into their Windows locations.
 - `arch-linux/`: Arch Linux installer and Linux-only assets (for example wallpapers).
 - `nixos/`: Flake-based NixOS host configs, including NixOS WSL and server profiles.
@@ -36,7 +37,7 @@ Windows setup creates a stable `%USERPROFILE%\.dotfiles` link for Windows config
 
 That stable path means config symlinks do not need to know whether the real checkout lives in `~/code/dotfiles`, somewhere under `/mnt/c`, or another machine-specific path.
 
-Inside NixOS WSL, refresh the system profile and user config links with:
+Inside NixOS WSL, refresh the system profile and Home Manager user config with:
 
 ```bash
 ./rebuild-wsl.sh
@@ -58,6 +59,6 @@ See `nixos/README.md` for the flake-based laptop server config and install notes
 
 - Use NixOS WSL as the default Windows developer shell.
 - Keep machine/system packages in `nixos/hosts/<host>/configuration.nix` instead of shell bootstrap scripts.
-- Move user-level dotfiles to Home Manager later, once the system-level NixOS WSL path is stable.
+- Keep user-level NixOS WSL configuration in Home Manager and system-level configuration in the host module.
 - Add project-level `flake.nix` dev shells where reproducible tooling matters.
 - Use standalone Nix on non-NixOS Linux machines when replacing the OS is not worth it.
