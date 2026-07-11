@@ -3,6 +3,16 @@
 let
   vitePlus = pkgs.callPackage ../../packages/vite-plus { };
 
+  windowsPowerShell = pkgs.writeShellScriptBin "powershell.exe" ''
+    executable="/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+    if [ -x "$executable" ]; then
+      exec "$executable" "$@"
+    fi
+
+    echo "powershell.exe: Windows PowerShell not found." >&2
+    exit 127
+  '';
+
   windowsCode = pkgs.writeShellScriptBin "code" ''
     for candidate in \
       "/mnt/c/Users/''${USER}/AppData/Local/Programs/Microsoft VS Code/bin/code" \
@@ -88,6 +98,7 @@ in
     bat
     cacert
     coreutils
+    chromium
     curl
     eza
     fd
@@ -111,6 +122,7 @@ in
     vim
     wget
     windowsCode
+    windowsPowerShell
     wslu
     xdg-utils
     zsh
