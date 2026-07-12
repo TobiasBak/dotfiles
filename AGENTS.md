@@ -29,16 +29,16 @@ If a target is a real file/dir instead of a link, report it and recommend rerunn
 
 Pi and Codex CLI personal skills are managed by separate sibling repo `../skills` relative to this dotfiles repo.
 
+The skills repo installer discovers every directory containing `SKILL.md` under `../skills/skills/*` and `../skills/external/*/*`.
+
 Expected links:
 
-- NixOS WSL `~/.pi/agent/skills/<skill>` -> `../skills/skills/<skill>` for personal skills listed in `../skills/skills.json`.
-- NixOS WSL `~/.pi/agent/skills/<skill>` -> `../skills/external/mattpocock-skills/<skill>` for external skills listed in `../skills/skills.json`.
-- NixOS WSL `~/.agents/skills/<skill>` -> `../skills/skills/<skill>` for Codex personal skills listed in `../skills/skills.json`.
-- NixOS WSL `~/.agents/skills/<skill>` -> `../skills/external/mattpocock-skills/<skill>` for Codex external skills listed in `../skills/skills.json`.
+- NixOS WSL `~/.pi/agent/skills/<skill>` -> the corresponding discovered skill directory in `../skills`.
+- NixOS WSL `~/.agents/skills/<skill>` -> the corresponding discovered skill directory in `../skills`, excluding `openai-docs` because Codex bundles it.
 
 - Install/fix all WSL agent skills: `./rebuild-wsl.sh`
 
-When adding a new personal skill, add its name to `../skills/skills.json`, then run the installer/verifier.
+When adding a new personal skill, create it under `../skills/skills/<skill>` with a `SKILL.md`, then run the installer/verifier.
 
 ## Agent sync and verification
 

@@ -13,6 +13,8 @@ interface TokenCost {
 interface SessionRow {
   id: string;
   file: string;
+  source: "Pi" | "Codex";
+  costTracked: boolean;
   cwd: string;
   name: string;
   startedAt: string;
@@ -33,7 +35,7 @@ interface SessionRow {
 interface DashboardData {
   generatedAt: string;
   sessions: SessionRow[];
-  totals: Omit<SessionRow, "id" | "file" | "cwd" | "name" | "startedAt" | "updatedAt" | "models">;
+  totals: Omit<SessionRow, "id" | "file" | "source" | "costTracked" | "cwd" | "name" | "startedAt" | "updatedAt" | "models">;
 }
 
 interface SessionHeader {
@@ -51,7 +53,7 @@ const html = String.raw`<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Pi usage dashboard</title>
+<title>Agent usage dashboard</title>
 <style>
 :root { color-scheme: dark; --bg:#0b0d10; --panel:#13171c; --line:#29313a; --text:#e8edf2; --muted:#8f9ba8; --accent:#70b7ff; --money:#8ee6a2; }
 * { box-sizing:border-box }
@@ -68,10 +70,10 @@ main { padding:20px 24px 40px }
 .card { padding:13px 14px; border:1px solid var(--line); border-radius:9px; background:var(--panel) }
 .card span { display:block; color:var(--muted); font-size:12px; margin-bottom:5px }.card strong { font-size:16px }
 .table-wrap { overflow:auto; border:1px solid var(--line); border-radius:9px }
-table { width:100%; min-width:1160px; border-collapse:collapse; background:var(--panel) }
+table { width:100%; min-width:1240px; border-collapse:collapse; background:var(--panel) }
 th,td { padding:10px 12px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap }
 th { position:sticky; top:0; background:#171c22; color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em }
-th:first-child,td:first-child,th:nth-child(2),td:nth-child(2) { text-align:left }
+th:first-child,td:first-child,th:nth-child(2),td:nth-child(2),th:nth-child(3),td:nth-child(3) { text-align:left }
 tr:hover td { background:#181e25 }.session { max-width:390px; overflow:hidden; text-overflow:ellipsis }.sub { padding-left:28px!important }
 .model { color:var(--muted); max-width:260px; overflow:hidden; text-overflow:ellipsis }.money { color:var(--money); font-weight:700 }
 small { color:var(--muted) }.empty { padding:40px; text-align:center; color:var(--muted) }
@@ -80,11 +82,12 @@ small { color:var(--muted) }.empty { padding:40px; text-align:center; color:var(
 </head>
 <body>
 <header>
-  <h1>Pi usage</h1>
-  <p class="subtitle">Token use and estimated API cost across saved sessions</p>
+  <h1>Agent usage</h1>
+  <p class="subtitle">Token use across saved Pi and Codex CLI sessions. Cost is available for Pi sessions only.</p>
   <div class="controls">
     <input id="search" type="search" aria-label="Filter sessions" placeholder="Search sessions, projects, models, agents…">
     <select id="range" aria-label="Date range"><option value="all">All time</option><option value="1">Today</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option></select>
+    <select id="source" aria-label="Harness"><option value="all">All harnesses</option><option value="Pi">Pi</option><option value="Codex">Codex CLI</option></select>
     <label class="check"><input id="hierarchy" type="checkbox" style="min-width:auto"> Group child sessions</label>
     <button id="refresh" type="button">Refresh now</button>
     <small id="status" role="status"></small>
@@ -93,7 +96,7 @@ small { color:var(--muted) }.empty { padding:40px; text-align:center; color:var(
 <main>
   <section id="summary" class="summary"></section>
   <div class="table-wrap"><table>
-    <thead><tr><th>Session</th><th>Model(s)</th><th>Input</th><th>Cache read</th><th>Reasoning</th><th>Output</th><th>Est. cost</th><th>API calls</th><th>Updated</th></tr></thead>
+    <thead><tr><th>Session</th><th>Harness</th><th>Model(s)</th><th>Input</th><th>Cache read</th><th>Reasoning</th><th>Output</th><th>Est. cost</th><th>API calls</th><th>Updated</th></tr></thead>
     <tbody id="rows"></tbody>
   </table></div>
 </main>
@@ -105,14 +108,14 @@ const integer=new Intl.NumberFormat();
 const dollars=new Intl.NumberFormat(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 const n=v=>compact.format(Math.round(v));
 const usd=v=>v>0&&v<.01?'<$0.01':'$'+dollars.format(v);
-const metric=v=>n(v.tokens)+' · '+usd(v.cost);
+const metric=(v,costTracked=true)=>n(v.tokens)+(costTracked?' · '+usd(v.cost):'');
 const relative=value=>{const seconds=Math.round((Date.parse(value)-Date.now())/1000);const abs=Math.abs(seconds);const [amount,unit]=abs<60?[seconds,'second']:abs<3600?[Math.round(seconds/60),'minute']:abs<86400?[Math.round(seconds/3600),'hour']:[Math.round(seconds/86400),'day'];return new Intl.RelativeTimeFormat(undefined,{numeric:'auto'}).format(amount,unit)};
-function filtered(){const q=$('search').value.toLowerCase();const days=$('range').value;const cutoff=days==='all'?0:Date.now()-Number(days)*864e5;return data.sessions.filter(s=>Date.parse(s.updatedAt)>=cutoff&&(!q||[s.name,s.cwd,s.agent,...s.models].filter(Boolean).join(' ').toLowerCase().includes(q)))}
+function filtered(){const q=$('search').value.toLowerCase();const days=$('range').value;const source=$('source').value;const cutoff=days==='all'?0:Date.now()-Number(days)*864e5;return data.sessions.filter(s=>Date.parse(s.updatedAt)>=cutoff&&(source==='all'||s.source===source)&&(!q||[s.name,s.cwd,s.source,s.agent,...s.models].filter(Boolean).join(' ').toLowerCase().includes(q)))}
 function ordered(rows){if(!$('hierarchy').checked)return rows;const ids=new Set(rows.map(s=>s.id));const children=new Map();const roots=[];for(const s of rows){if(s.parentSessionId&&ids.has(s.parentSessionId)){const a=children.get(s.parentSessionId)||[];a.push(s);children.set(s.parentSessionId,a)}else roots.push(s)}const out=[];const add=(s,d)=>{out.push({...s,_depth:d});for(const c of children.get(s.id)||[])add(c,d+1)};for(const r of roots)add(r,0);return out}
 function sum(rows,key){return rows.reduce((a,s)=>({tokens:a.tokens+s[key].tokens,cost:a.cost+s[key].cost}),{tokens:0,cost:0})}
-function render(){const rows=filtered();const totalCost=rows.reduce((a,s)=>a+s.apiCost,0);const totalCalls=rows.reduce((a,s)=>a+s.calls,0);const metrics=[['Sessions',integer.format(rows.length)],['Input',metric(sum(rows,'input'))],['Cache read',metric(sum(rows,'cacheRead'))],['Reasoning',metric(sum(rows,'reasoning'))],['Output',metric(sum(rows,'output'))],['Estimated cost',usd(totalCost)],['API calls',integer.format(totalCalls)]];$('summary').replaceChildren(...metrics.map(([k,v])=>{const d=document.createElement('div');d.className='card';const l=document.createElement('span');l.textContent=k;const x=document.createElement('strong');x.textContent=v;d.append(l,x);return d}));const body=$('rows');body.replaceChildren();for(const s of ordered(rows)){const tr=document.createElement('tr');const updated=relative(s.updatedAt);const cells=[s.name,s.models.join(', ')||'—',metric(s.input),metric(s.cacheRead),metric(s.reasoning),metric(s.output),usd(s.apiCost),integer.format(s.calls),updated];cells.forEach((value,i)=>{const td=document.createElement('td');td.textContent=value;td.title=i===0?s.file:i===8?new Date(s.updatedAt).toLocaleString():value;if(i===0){td.className='session'+(s._depth?' sub':'');if(s.agent)td.textContent=(s._depth?'↳ ':'')+'['+s.agent+'] '+value}else if(i===1)td.className='model';else if(i===6)td.className='money';tr.append(td)});body.append(tr)}if(!rows.length){const tr=document.createElement('tr');const td=document.createElement('td');td.colSpan=9;td.className='empty';td.textContent='No sessions match current filters';tr.append(td);body.append(tr)}}
+function render(){const rows=filtered();const priced=rows.filter(s=>s.costTracked);const totalCost=priced.reduce((a,s)=>a+s.apiCost,0);const totalCalls=rows.reduce((a,s)=>a+s.calls,0);const allPriced=priced.length===rows.length;const metrics=[['Sessions',integer.format(rows.length)],['Input',metric(sum(rows,'input'),allPriced)],['Cache read',metric(sum(rows,'cacheRead'),allPriced)],['Reasoning',metric(sum(rows,'reasoning'),allPriced)],['Output',metric(sum(rows,'output'),allPriced)],['Estimated cost',priced.length?usd(totalCost)+(allPriced?'':' · Pi only'):'n/a'],['API calls',integer.format(totalCalls)]];$('summary').replaceChildren(...metrics.map(([k,v])=>{const d=document.createElement('div');d.className='card';const l=document.createElement('span');l.textContent=k;const x=document.createElement('strong');x.textContent=v;d.append(l,x);return d}));const body=$('rows');body.replaceChildren();for(const s of ordered(rows)){const tr=document.createElement('tr');const updated=relative(s.updatedAt);const cells=[s.name,s.source,s.models.join(', ')||'—',metric(s.input,s.costTracked),metric(s.cacheRead,s.costTracked),metric(s.reasoning,s.costTracked),metric(s.output,s.costTracked),s.costTracked?usd(s.apiCost):'n/a',integer.format(s.calls),updated];cells.forEach((value,i)=>{const td=document.createElement('td');td.textContent=value;td.title=i===0?s.file:i===9?new Date(s.updatedAt).toLocaleString():value;if(i===0){td.className='session'+(s._depth?' sub':'');if(s.agent)td.textContent=(s._depth?'↳ ':'')+'['+s.agent+'] '+value}else if(i===2)td.className='model';else if(i===7)td.className='money';tr.append(td)});body.append(tr)}if(!rows.length){const tr=document.createElement('tr');const td=document.createElement('td');td.colSpan=10;td.className='empty';td.textContent='No sessions match current filters';tr.append(td);body.append(tr)}}
 async function load(){try{$('refresh').disabled=true;$('status').textContent='Refreshing…';const r=await fetch('/api/sessions',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);data=await r.json();render();$('status').textContent='Updated '+new Date(data.generatedAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}catch(e){$('status').textContent='Refresh failed: '+e.message}finally{$('refresh').disabled=false}}
-for(const id of ['search','range','hierarchy'])$(id).addEventListener(id==='search'?'input':'change',render);$('refresh').addEventListener('click',load);load();setInterval(load,15000);
+for(const id of ['search','range','source','hierarchy'])$(id).addEventListener(id==='search'?'input':'change',render);$('refresh').addEventListener('click',load);load();setInterval(load,15000);
 </script>
 </body></html>`;
 
@@ -131,7 +134,7 @@ function textFromContent(content: unknown): string {
     .trim();
 }
 
-async function findJsonlFiles(root: string): Promise<string[]> {
+async function findJsonlFiles(root: string, exactName?: string): Promise<string[]> {
   const files: string[] = [];
   async function visit(dir: string): Promise<void> {
     let entries;
@@ -143,7 +146,7 @@ async function findJsonlFiles(root: string): Promise<string[]> {
     await Promise.all(entries.map(async (entry) => {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) await visit(path);
-      else if (entry.isFile() && entry.name.endsWith(".jsonl")) files.push(path);
+      else if (entry.isFile() && entry.name.endsWith(".jsonl") && (!exactName || entry.name === exactName)) files.push(path);
     }));
   }
   await visit(root);
@@ -238,8 +241,10 @@ async function parseSession(file: string): Promise<{ row: SessionRow; entries: J
 
   return {
     row: {
-      id: String(header.id ?? resolve(file)),
+      id: `Pi:${String(header.id ?? resolve(file))}`,
       file: resolve(file),
+      source: "Pi",
+      costTracked: true,
       cwd: header.cwd ?? "",
       name: truncateLabel(label),
       startedAt: header.timestamp ?? timestamps[0] ?? fileMtime,
@@ -248,6 +253,173 @@ async function parseSession(file: string): Promise<{ row: SessionRow; entries: J
       ...usage,
     },
     entries,
+  };
+}
+
+function codexUsageSummary(records: JsonRecord[]): Pick<SessionRow, "models" | "calls" | "input" | "cacheRead" | "cacheWrite" | "reasoning" | "output" | "apiCost"> {
+  const input = { tokens: 0, cost: 0 };
+  const cacheRead = { tokens: 0, cost: 0 };
+  const cacheWrite = { tokens: 0, cost: 0 };
+  const reasoning = { tokens: 0, cost: 0 };
+  const output = { tokens: 0, cost: 0 };
+  const models = new Set<string>();
+  let calls = 0;
+  let previousTotal: JsonRecord | undefined;
+
+  for (const record of records) {
+    if (record.type === "turn_context" && typeof record.payload?.model === "string") {
+      const effort = typeof record.payload.effort === "string" ? `:${record.payload.effort}` : "";
+      models.add(`openai/${record.payload.model}${effort}`);
+    }
+    const info = record.type === "event_msg" && record.payload?.type === "token_count"
+      ? record.payload.info
+      : undefined;
+    if (!info) continue;
+    const total = info.total_token_usage;
+    const usage = info.last_token_usage ?? (total ? {
+      input_tokens: Math.max(0, number(total.input_tokens) - number(previousTotal?.input_tokens)),
+      cached_input_tokens: Math.max(0, number(total.cached_input_tokens) - number(previousTotal?.cached_input_tokens)),
+      output_tokens: Math.max(0, number(total.output_tokens) - number(previousTotal?.output_tokens)),
+      reasoning_output_tokens: Math.max(0, number(total.reasoning_output_tokens) - number(previousTotal?.reasoning_output_tokens)),
+    } : undefined);
+    if (total) previousTotal = total;
+    if (!usage) continue;
+    calls++;
+    const cachedTokens = number(usage.cached_input_tokens);
+    const reasoningTokens = Math.min(number(usage.output_tokens), number(usage.reasoning_output_tokens));
+    input.tokens += Math.max(0, number(usage.input_tokens) - cachedTokens);
+    cacheRead.tokens += cachedTokens;
+    reasoning.tokens += reasoningTokens;
+    output.tokens += Math.max(0, number(usage.output_tokens) - reasoningTokens);
+  }
+
+  return { models: [...models], calls, input, cacheRead, cacheWrite, reasoning, output, apiCost: 0 };
+}
+
+async function parseCodexSession(file: string): Promise<{ row: SessionRow; entries: JsonRecord[] } | undefined> {
+  let raw: string;
+  try {
+    raw = await readFile(file, "utf8");
+  } catch {
+    return undefined;
+  }
+  const records: JsonRecord[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      records.push(JSON.parse(line));
+    } catch {
+      // Active sessions can briefly expose a partial final line. Ignore it until next scan.
+    }
+  }
+  const metadata = records.find((record) => record.type === "session_meta")?.payload;
+  if (!metadata || typeof metadata !== "object") return undefined;
+
+  const sessionId = String(metadata.id ?? metadata.session_id ?? resolve(file));
+  const userMessage = records.find((record) => record.type === "event_msg" && record.payload?.type === "user_message");
+  const label = typeof userMessage?.payload?.message === "string" && userMessage.payload.message.trim()
+    ? userMessage.payload.message.trim()
+    : `Codex session ${sessionId.slice(0, 8)}`;
+  const spawn = metadata.source?.subagent?.thread_spawn;
+  const parentId = typeof spawn?.parent_thread_id === "string" ? `Codex:${spawn.parent_thread_id}` : undefined;
+  const agent = typeof spawn?.agent_nickname === "string"
+    ? spawn.agent_nickname
+    : typeof spawn?.agent_path === "string"
+      ? spawn.agent_path.split("/").filter(Boolean).at(-1)
+      : undefined;
+  let fileMtime = new Date().toISOString();
+  try {
+    fileMtime = (await stat(file)).mtime.toISOString();
+  } catch {}
+  const timestamps = records.map((record) => record.timestamp).filter((value): value is string => typeof value === "string");
+
+  return {
+    row: {
+      id: `Codex:${sessionId}`,
+      file: resolve(file),
+      source: "Codex",
+      costTracked: false,
+      cwd: typeof metadata.cwd === "string" ? metadata.cwd : "",
+      name: truncateLabel(label),
+      startedAt: typeof metadata.timestamp === "string" ? metadata.timestamp : timestamps[0] ?? fileMtime,
+      updatedAt: timestamps.at(-1) ?? fileMtime,
+      ...(parentId ? { parentSessionId: parentId } : {}),
+      ...(agent ? { agent } : {}),
+      ...codexUsageSummary(records),
+    },
+    entries: records,
+  };
+}
+
+async function parseCodexEvents(file: string): Promise<{ row: SessionRow; entries: JsonRecord[] } | undefined> {
+  let raw: string;
+  try {
+    raw = await readFile(file, "utf8");
+  } catch {
+    return undefined;
+  }
+  const records: JsonRecord[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      records.push(JSON.parse(line));
+    } catch {
+      // The benchmark may still be appending the final event. Ignore it until next scan.
+    }
+  }
+  const threadId = records.find((record) => record.type === "thread.started")?.thread_id;
+  if (typeof threadId !== "string") return undefined;
+
+  let manifest: JsonRecord = {};
+  try {
+    manifest = JSON.parse(await readFile(join(dirname(file), "manifest.json"), "utf8"));
+  } catch {
+    // A running benchmark writes its manifest at completion. The event stream is still useful meanwhile.
+  }
+  const input = { tokens: 0, cost: 0 };
+  const cacheRead = { tokens: 0, cost: 0 };
+  const cacheWrite = { tokens: 0, cost: 0 };
+  const reasoning = { tokens: 0, cost: 0 };
+  const output = { tokens: 0, cost: 0 };
+  let calls = 0;
+  for (const record of records) {
+    if (record.type !== "turn.completed" || !record.usage) continue;
+    calls++;
+    const cachedTokens = number(record.usage.cached_input_tokens);
+    const reasoningTokens = Math.min(number(record.usage.output_tokens), number(record.usage.reasoning_output_tokens));
+    input.tokens += Math.max(0, number(record.usage.input_tokens) - cachedTokens);
+    cacheRead.tokens += cachedTokens;
+    reasoning.tokens += reasoningTokens;
+    output.tokens += Math.max(0, number(record.usage.output_tokens) - reasoningTokens);
+  }
+  let fileMtime = new Date().toISOString();
+  try {
+    fileMtime = (await stat(file)).mtime.toISOString();
+  } catch {}
+  const runId = typeof manifest.run_id === "string" ? manifest.run_id : `Codex session ${threadId.slice(0, 8)}`;
+  const model = typeof manifest.model === "string" ? manifest.model : "openai/unknown";
+  const thinking = typeof manifest.thinking === "string" ? `:${manifest.thinking}` : "";
+
+  return {
+    row: {
+      id: `Codex:${threadId}`,
+      file: resolve(file),
+      source: "Codex",
+      costTracked: false,
+      cwd: typeof manifest.agent_worktree === "string" ? manifest.agent_worktree : dirname(file),
+      name: truncateLabel(runId),
+      startedAt: typeof manifest.started_at === "string" ? manifest.started_at : fileMtime,
+      updatedAt: typeof manifest.finished_at === "string" ? manifest.finished_at : fileMtime,
+      models: [`${model}${thinking}`],
+      calls,
+      input,
+      cacheRead,
+      cacheWrite,
+      reasoning,
+      output,
+      apiCost: 0,
+    },
+    entries: records,
   };
 }
 
@@ -294,10 +466,31 @@ function emptyTotals(): DashboardData["totals"] {
   };
 }
 
-export async function scanSessions(sessionRoot?: string): Promise<DashboardData> {
-  const root = sessionRoot ?? join(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"), "sessions");
-  const parsed = (await Promise.all((await findJsonlFiles(root)).map(parseSession))).filter((item): item is NonNullable<typeof item> => Boolean(item));
-  // Forked sessions may be copied into several artifact locations. Session id is canonical.
+export async function scanSessions(
+  sessionRoot?: string,
+  codexSessionRoot?: string,
+  benchmarkResultsRoots: string[] = [],
+): Promise<DashboardData> {
+  const piRoot = sessionRoot ?? join(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"), "sessions");
+  const codexRoot = codexSessionRoot ?? join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions");
+  const [piFiles, codexFiles] = await Promise.all([findJsonlFiles(piRoot), findJsonlFiles(codexRoot)]);
+  const piParsed = (await Promise.all(piFiles.map(parseSession))).filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const discoveredResultsRoots = new Set(benchmarkResultsRoots.map((root) => resolve(root)));
+  if (process.env.SWE_BENCHMARK_RESULTS_DIR) discoveredResultsRoots.add(resolve(process.env.SWE_BENCHMARK_RESULTS_DIR));
+  for (const item of piParsed) {
+    if (!item.row.cwd) continue;
+    discoveredResultsRoots.add(resolve(item.row.cwd, "setup", "results"));
+    discoveredResultsRoots.add(resolve(item.row.cwd, "results"));
+  }
+  const codexEventFiles = (await Promise.all(
+    [...discoveredResultsRoots].map((root) => findJsonlFiles(root, "codex-events.jsonl")),
+  )).flat();
+  const parsed = (await Promise.all([
+    ...piParsed,
+    ...codexFiles.map(parseCodexSession),
+    ...codexEventFiles.map(parseCodexEvents),
+  ])).filter((item): item is NonNullable<typeof item> => Boolean(item));
+  // Sessions may be copied into several artifact locations. Source-prefixed session id is canonical.
   const byId = new Map<string, typeof parsed[number]>();
   for (const item of parsed) {
     const previous = byId.get(item.row.id);
@@ -460,7 +653,7 @@ async function openBrowser(pi: ExtensionAPI, url: string): Promise<boolean> {
 
 export default function usageDashboard(pi: ExtensionAPI) {
   pi.registerCommand("usage-dashboard", {
-    description: "Open browser dashboard for historical Pi session usage",
+    description: "Open browser dashboard for historical Pi and Codex CLI session usage",
     handler: async (_args: string, ctx: ExtensionCommandContext) => {
       try {
         const url = await startDashboard();
