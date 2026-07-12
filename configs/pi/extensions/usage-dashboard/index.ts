@@ -15,6 +15,8 @@ interface SessionRow {
   file: string;
   source: "Pi" | "Codex";
   costTracked: boolean;
+  tokenCostsTracked: boolean;
+  usagePending: boolean;
   cwd: string;
   name: string;
   startedAt: string;
@@ -35,7 +37,7 @@ interface SessionRow {
 interface DashboardData {
   generatedAt: string;
   sessions: SessionRow[];
-  totals: Omit<SessionRow, "id" | "file" | "source" | "costTracked" | "cwd" | "name" | "startedAt" | "updatedAt" | "models">;
+  totals: Omit<SessionRow, "id" | "file" | "source" | "costTracked" | "tokenCostsTracked" | "usagePending" | "cwd" | "name" | "startedAt" | "updatedAt" | "models">;
 }
 
 interface SessionHeader {
@@ -47,6 +49,15 @@ interface SessionHeader {
 }
 
 type JsonRecord = Record<string, any>;
+
+interface ModelRates {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+type ModelPricing = ReadonlyMap<string, ModelRates>;
 
 const html = String.raw`<!doctype html>
 <html lang="en">
@@ -83,7 +94,7 @@ small { color:var(--muted) }.empty { padding:40px; text-align:center; color:var(
 <body>
 <header>
   <h1>Agent usage</h1>
-  <p class="subtitle">Token use across saved Pi and Codex CLI sessions. Cost is available for Pi sessions only.</p>
+  <p class="subtitle">Token use and estimated API-equivalent cost across saved Pi and Codex CLI sessions.</p>
   <div class="controls">
     <input id="search" type="search" aria-label="Filter sessions" placeholder="Search sessions, projects, models, agents…">
     <select id="range" aria-label="Date range"><option value="all">All time</option><option value="1">Today</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option></select>
@@ -108,12 +119,12 @@ const integer=new Intl.NumberFormat();
 const dollars=new Intl.NumberFormat(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 const n=v=>compact.format(Math.round(v));
 const usd=v=>v>0&&v<.01?'<$0.01':'$'+dollars.format(v);
-const metric=(v,costTracked=true)=>n(v.tokens)+(costTracked?' · '+usd(v.cost):'');
+const metric=(v,costTracked=true,pending=false)=>pending?'pending':n(v.tokens)+(costTracked?' · '+usd(v.cost):'');
 const relative=value=>{const seconds=Math.round((Date.parse(value)-Date.now())/1000);const abs=Math.abs(seconds);const [amount,unit]=abs<60?[seconds,'second']:abs<3600?[Math.round(seconds/60),'minute']:abs<86400?[Math.round(seconds/3600),'hour']:[Math.round(seconds/86400),'day'];return new Intl.RelativeTimeFormat(undefined,{numeric:'auto'}).format(amount,unit)};
 function filtered(){const q=$('search').value.toLowerCase();const days=$('range').value;const source=$('source').value;const cutoff=days==='all'?0:Date.now()-Number(days)*864e5;return data.sessions.filter(s=>Date.parse(s.updatedAt)>=cutoff&&(source==='all'||s.source===source)&&(!q||[s.name,s.cwd,s.source,s.agent,...s.models].filter(Boolean).join(' ').toLowerCase().includes(q)))}
 function ordered(rows){if(!$('hierarchy').checked)return rows;const ids=new Set(rows.map(s=>s.id));const children=new Map();const roots=[];for(const s of rows){if(s.parentSessionId&&ids.has(s.parentSessionId)){const a=children.get(s.parentSessionId)||[];a.push(s);children.set(s.parentSessionId,a)}else roots.push(s)}const out=[];const add=(s,d)=>{out.push({...s,_depth:d});for(const c of children.get(s.id)||[])add(c,d+1)};for(const r of roots)add(r,0);return out}
 function sum(rows,key){return rows.reduce((a,s)=>({tokens:a.tokens+s[key].tokens,cost:a.cost+s[key].cost}),{tokens:0,cost:0})}
-function render(){const rows=filtered();const priced=rows.filter(s=>s.costTracked);const totalCost=priced.reduce((a,s)=>a+s.apiCost,0);const totalCalls=rows.reduce((a,s)=>a+s.calls,0);const allPriced=priced.length===rows.length;const metrics=[['Sessions',integer.format(rows.length)],['Input',metric(sum(rows,'input'),allPriced)],['Cache read',metric(sum(rows,'cacheRead'),allPriced)],['Reasoning',metric(sum(rows,'reasoning'),allPriced)],['Output',metric(sum(rows,'output'),allPriced)],['Estimated cost',priced.length?usd(totalCost)+(allPriced?'':' · Pi only'):'n/a'],['API calls',integer.format(totalCalls)]];$('summary').replaceChildren(...metrics.map(([k,v])=>{const d=document.createElement('div');d.className='card';const l=document.createElement('span');l.textContent=k;const x=document.createElement('strong');x.textContent=v;d.append(l,x);return d}));const body=$('rows');body.replaceChildren();for(const s of ordered(rows)){const tr=document.createElement('tr');const updated=relative(s.updatedAt);const cells=[s.name,s.source,s.models.join(', ')||'—',metric(s.input,s.costTracked),metric(s.cacheRead,s.costTracked),metric(s.reasoning,s.costTracked),metric(s.output,s.costTracked),s.costTracked?usd(s.apiCost):'n/a',integer.format(s.calls),updated];cells.forEach((value,i)=>{const td=document.createElement('td');td.textContent=value;td.title=i===0?s.file:i===9?new Date(s.updatedAt).toLocaleString():value;if(i===0){td.className='session'+(s._depth?' sub':'');if(s.agent)td.textContent=(s._depth?'↳ ':'')+'['+s.agent+'] '+value}else if(i===2)td.className='model';else if(i===7)td.className='money';tr.append(td)});body.append(tr)}if(!rows.length){const tr=document.createElement('tr');const td=document.createElement('td');td.colSpan=10;td.className='empty';td.textContent='No sessions match current filters';tr.append(td);body.append(tr)}}
+function render(){const rows=filtered();const priced=rows.filter(s=>s.costTracked);const totalCost=priced.reduce((a,s)=>a+s.apiCost,0);const totalCalls=rows.reduce((a,s)=>a+s.calls,0);const allPriced=priced.length===rows.length;const allTokenCostsTracked=rows.every(s=>s.tokenCostsTracked);const metrics=[['Sessions',integer.format(rows.length)],['Input',metric(sum(rows,'input'),allTokenCostsTracked)],['Cache read',metric(sum(rows,'cacheRead'),allTokenCostsTracked)],['Reasoning',metric(sum(rows,'reasoning'),allTokenCostsTracked)],['Output',metric(sum(rows,'output'),allTokenCostsTracked)],['Estimated cost',priced.length?usd(totalCost)+(allPriced?'':' · tracked sessions only'):'n/a'],['API calls',integer.format(totalCalls)]];$('summary').replaceChildren(...metrics.map(([k,v])=>{const d=document.createElement('div');d.className='card';const l=document.createElement('span');l.textContent=k;const x=document.createElement('strong');x.textContent=v;d.append(l,x);return d}));const body=$('rows');body.replaceChildren();for(const s of ordered(rows)){const tr=document.createElement('tr');const updated=relative(s.updatedAt);const cells=[s.name,s.source,s.models.join(', ')||'—',metric(s.input,s.tokenCostsTracked,s.usagePending),metric(s.cacheRead,s.tokenCostsTracked,s.usagePending),metric(s.reasoning,s.tokenCostsTracked,s.usagePending),metric(s.output,s.tokenCostsTracked,s.usagePending),s.costTracked?usd(s.apiCost):'n/a',integer.format(s.calls),updated];cells.forEach((value,i)=>{const td=document.createElement('td');td.textContent=value;td.title=i===0?s.file:i===9?new Date(s.updatedAt).toLocaleString():value;if(i===0){td.className='session'+(s._depth?' sub':'');if(s.agent)td.textContent=(s._depth?'↳ ':'')+'['+s.agent+'] '+value}else if(i===2)td.className='model';else if(i===7)td.className='money';tr.append(td)});body.append(tr)}if(!rows.length){const tr=document.createElement('tr');const td=document.createElement('td');td.colSpan=10;td.className='empty';td.textContent='No sessions match current filters';tr.append(td);body.append(tr)}}
 async function load(){try{$('refresh').disabled=true;$('status').textContent='Refreshing…';const r=await fetch('/api/sessions',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);data=await r.json();render();$('status').textContent='Updated '+new Date(data.generatedAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}catch(e){$('status').textContent='Refresh failed: '+e.message}finally{$('refresh').disabled=false}}
 for(const id of ['search','range','source','hierarchy'])$(id).addEventListener(id==='search'?'input':'change',render);$('refresh').addEventListener('click',load);load();setInterval(load,15000);
 </script>
@@ -245,6 +256,8 @@ async function parseSession(file: string): Promise<{ row: SessionRow; entries: J
       file: resolve(file),
       source: "Pi",
       costTracked: true,
+      tokenCostsTracked: true,
+      usagePending: false,
       cwd: header.cwd ?? "",
       name: truncateLabel(label),
       startedAt: header.timestamp ?? timestamps[0] ?? fileMtime,
@@ -256,20 +269,50 @@ async function parseSession(file: string): Promise<{ row: SessionRow; entries: J
   };
 }
 
-function codexUsageSummary(records: JsonRecord[]): Pick<SessionRow, "models" | "calls" | "input" | "cacheRead" | "cacheWrite" | "reasoning" | "output" | "apiCost"> {
+function priceCodexMetrics(
+  metrics: Pick<SessionRow, "input" | "cacheRead" | "reasoning" | "output">,
+  rates: ModelRates,
+): number {
+  metrics.input.cost = metrics.input.tokens * rates.input / 1_000_000;
+  metrics.cacheRead.cost = metrics.cacheRead.tokens * rates.cacheRead / 1_000_000;
+  metrics.reasoning.cost = metrics.reasoning.tokens * rates.output / 1_000_000;
+  metrics.output.cost = metrics.output.tokens * rates.output / 1_000_000;
+  return metrics.input.cost + metrics.cacheRead.cost + metrics.reasoning.cost + metrics.output.cost;
+}
+
+function addCodexUsage(
+  usage: JsonRecord,
+  metrics: Pick<SessionRow, "input" | "cacheRead" | "reasoning" | "output">,
+): void {
+  const cachedTokens = number(usage.cached_input_tokens);
+  const inputTokens = Math.max(0, number(usage.input_tokens) - cachedTokens);
+  const rawOutput = number(usage.output_tokens);
+  const reasoningTokens = Math.min(rawOutput, number(usage.reasoning_output_tokens));
+  const outputTokens = Math.max(0, rawOutput - reasoningTokens);
+  metrics.input.tokens += inputTokens;
+  metrics.cacheRead.tokens += cachedTokens;
+  metrics.reasoning.tokens += reasoningTokens;
+  metrics.output.tokens += outputTokens;
+}
+
+function codexUsageSummary(records: JsonRecord[], pricing: ModelPricing): Pick<SessionRow, "models" | "calls" | "input" | "cacheRead" | "cacheWrite" | "reasoning" | "output" | "apiCost" | "costTracked" | "tokenCostsTracked"> {
   const input = { tokens: 0, cost: 0 };
   const cacheRead = { tokens: 0, cost: 0 };
   const cacheWrite = { tokens: 0, cost: 0 };
   const reasoning = { tokens: 0, cost: 0 };
   const output = { tokens: 0, cost: 0 };
   const models = new Set<string>();
+  const modelIds = new Set<string>();
   let calls = 0;
+  let currentModel: string | undefined;
   let previousTotal: JsonRecord | undefined;
 
   for (const record of records) {
     if (record.type === "turn_context" && typeof record.payload?.model === "string") {
+      currentModel = record.payload.model;
+      modelIds.add(currentModel);
       const effort = typeof record.payload.effort === "string" ? `:${record.payload.effort}` : "";
-      models.add(`openai/${record.payload.model}${effort}`);
+      models.add(`openai-codex/${currentModel}${effort}`);
     }
     const info = record.type === "event_msg" && record.payload?.type === "token_count"
       ? record.payload.info
@@ -285,18 +328,16 @@ function codexUsageSummary(records: JsonRecord[]): Pick<SessionRow, "models" | "
     if (total) previousTotal = total;
     if (!usage) continue;
     calls++;
-    const cachedTokens = number(usage.cached_input_tokens);
-    const reasoningTokens = Math.min(number(usage.output_tokens), number(usage.reasoning_output_tokens));
-    input.tokens += Math.max(0, number(usage.input_tokens) - cachedTokens);
-    cacheRead.tokens += cachedTokens;
-    reasoning.tokens += reasoningTokens;
-    output.tokens += Math.max(0, number(usage.output_tokens) - reasoningTokens);
+    addCodexUsage(usage, { input, cacheRead, reasoning, output });
   }
 
-  return { models: [...models], calls, input, cacheRead, cacheWrite, reasoning, output, apiCost: 0 };
+  const rates = modelIds.size === 1 ? pricing.get([...modelIds][0]) : undefined;
+  const costTracked = calls > 0 && Boolean(rates);
+  const apiCost = rates ? priceCodexMetrics({ input, cacheRead, reasoning, output }, rates) : 0;
+  return { models: [...models], calls, input, cacheRead, cacheWrite, reasoning, output, apiCost, costTracked, tokenCostsTracked: costTracked };
 }
 
-async function parseCodexSession(file: string): Promise<{ row: SessionRow; entries: JsonRecord[] } | undefined> {
+async function parseCodexSession(file: string, pricing: ModelPricing): Promise<{ row: SessionRow; entries: JsonRecord[] } | undefined> {
   let raw: string;
   try {
     raw = await readFile(file, "utf8");
@@ -338,20 +379,20 @@ async function parseCodexSession(file: string): Promise<{ row: SessionRow; entri
       id: `Codex:${sessionId}`,
       file: resolve(file),
       source: "Codex",
-      costTracked: false,
+      usagePending: false,
       cwd: typeof metadata.cwd === "string" ? metadata.cwd : "",
       name: truncateLabel(label),
       startedAt: typeof metadata.timestamp === "string" ? metadata.timestamp : timestamps[0] ?? fileMtime,
       updatedAt: timestamps.at(-1) ?? fileMtime,
       ...(parentId ? { parentSessionId: parentId } : {}),
       ...(agent ? { agent } : {}),
-      ...codexUsageSummary(records),
+      ...codexUsageSummary(records, pricing),
     },
     entries: records,
   };
 }
 
-async function parseCodexEvents(file: string): Promise<{ row: SessionRow; entries: JsonRecord[] } | undefined> {
+async function parseCodexEvents(file: string, pricing: ModelPricing): Promise<{ row: SessionRow; entries: JsonRecord[] } | undefined> {
   let raw: string;
   try {
     raw = await readFile(file, "utf8");
@@ -382,30 +423,33 @@ async function parseCodexEvents(file: string): Promise<{ row: SessionRow; entrie
   const reasoning = { tokens: 0, cost: 0 };
   const output = { tokens: 0, cost: 0 };
   let calls = 0;
+  const model = typeof manifest.model === "string" ? manifest.model : "openai/unknown";
+  const modelId = model.includes("/") ? model.slice(model.lastIndexOf("/") + 1) : model;
+  const rates = pricing.get(modelId);
   for (const record of records) {
     if (record.type !== "turn.completed" || !record.usage) continue;
     calls++;
-    const cachedTokens = number(record.usage.cached_input_tokens);
-    const reasoningTokens = Math.min(number(record.usage.output_tokens), number(record.usage.reasoning_output_tokens));
-    input.tokens += Math.max(0, number(record.usage.input_tokens) - cachedTokens);
-    cacheRead.tokens += cachedTokens;
-    reasoning.tokens += reasoningTokens;
-    output.tokens += Math.max(0, number(record.usage.output_tokens) - reasoningTokens);
+    addCodexUsage(record.usage, { input, cacheRead, reasoning, output });
   }
+  const apiCost = rates ? priceCodexMetrics({ input, cacheRead, reasoning, output }, rates) : 0;
   let fileMtime = new Date().toISOString();
   try {
     fileMtime = (await stat(file)).mtime.toISOString();
   } catch {}
   const runId = typeof manifest.run_id === "string" ? manifest.run_id : `Codex session ${threadId.slice(0, 8)}`;
-  const model = typeof manifest.model === "string" ? manifest.model : "openai/unknown";
   const thinking = typeof manifest.thinking === "string" ? `:${manifest.thinking}` : "";
+  const manifestCost = manifest.agent_usage?.estimated_api_cost_usd;
+  const hasManifestCost = typeof manifestCost === "number" && Number.isFinite(manifestCost) && manifestCost >= 0;
+  const costTracked = (calls > 0 && Boolean(rates)) || hasManifestCost;
 
   return {
     row: {
       id: `Codex:${threadId}`,
       file: resolve(file),
       source: "Codex",
-      costTracked: false,
+      costTracked,
+      tokenCostsTracked: calls > 0 && Boolean(rates),
+      usagePending: manifest.status === "running" && calls === 0,
       cwd: typeof manifest.agent_worktree === "string" ? manifest.agent_worktree : dirname(file),
       name: truncateLabel(runId),
       startedAt: typeof manifest.started_at === "string" ? manifest.started_at : fileMtime,
@@ -417,7 +461,7 @@ async function parseCodexEvents(file: string): Promise<{ row: SessionRow; entrie
       cacheWrite,
       reasoning,
       output,
-      apiCost: 0,
+      apiCost: calls > 0 && rates ? apiCost : hasManifestCost ? manifestCost : 0,
     },
     entries: records,
   };
@@ -470,6 +514,7 @@ export async function scanSessions(
   sessionRoot?: string,
   codexSessionRoot?: string,
   benchmarkResultsRoots: string[] = [],
+  pricing: ModelPricing = new Map(),
 ): Promise<DashboardData> {
   const piRoot = sessionRoot ?? join(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"), "sessions");
   const codexRoot = codexSessionRoot ?? join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions");
@@ -487,8 +532,8 @@ export async function scanSessions(
   )).flat();
   const parsed = (await Promise.all([
     ...piParsed,
-    ...codexFiles.map(parseCodexSession),
-    ...codexEventFiles.map(parseCodexEvents),
+    ...codexFiles.map((file) => parseCodexSession(file, pricing)),
+    ...codexEventFiles.map((file) => parseCodexEvents(file, pricing)),
   ])).filter((item): item is NonNullable<typeof item> => Boolean(item));
   // Sessions may be copied into several artifact locations. Source-prefixed session id is canonical.
   const byId = new Map<string, typeof parsed[number]>();
@@ -581,7 +626,7 @@ async function closeDashboard(): Promise<void> {
   await removeOwnRegistry(activeToken);
 }
 
-async function startDashboard(): Promise<string> {
+async function startDashboard(pricing: ModelPricing): Promise<string> {
   if (server?.listening && dashboardUrl) return dashboardUrl;
   await stopPreviousDashboard();
   dashboardToken = randomUUID();
@@ -605,7 +650,7 @@ async function startDashboard(): Promise<string> {
       response.writeHead(405).end("Method not allowed");
     } else if (url.pathname === "/api/sessions") {
       try {
-        const data = await scanSessions();
+        const data = await scanSessions(undefined, undefined, [], pricing);
         response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
         response.end(JSON.stringify(data));
       } catch (error) {
@@ -651,12 +696,25 @@ async function openBrowser(pi: ExtensionAPI, url: string): Promise<boolean> {
   return false;
 }
 
+function codexModelPricing(ctx: ExtensionCommandContext): ModelPricing {
+  return new Map(
+    ctx.modelRegistry.getAll()
+      .filter((model) => model.provider === "openai-codex")
+      .map((model) => [model.id, {
+        input: model.cost.input,
+        output: model.cost.output,
+        cacheRead: model.cost.cacheRead,
+        cacheWrite: model.cost.cacheWrite,
+      }]),
+  );
+}
+
 export default function usageDashboard(pi: ExtensionAPI) {
   pi.registerCommand("usage-dashboard", {
     description: "Open browser dashboard for historical Pi and Codex CLI session usage",
     handler: async (_args: string, ctx: ExtensionCommandContext) => {
       try {
-        const url = await startDashboard();
+        const url = await startDashboard(codexModelPricing(ctx));
         const opened = await openBrowser(pi, url);
         ctx.ui.notify(opened ? `Usage dashboard opened: ${url}` : `Usage dashboard ready: ${url}`, "info");
       } catch (error) {
