@@ -11,7 +11,7 @@ Check relevant links before or after config edits:
 - NixOS WSL Pi config:
   - `~/.pi/agent/settings.json` -> `configs/pi/settings.json`
   - `~/.pi/agent/models.json` -> `configs/pi/models.json`
-  - `~/.pi/agent/APPEND_SYSTEM.md` -> `configs/pi/APPEND_SYSTEM.md`
+  - `~/.pi/agent/APPEND_SYSTEM.md` -> `configs/codex/AGENTS.md`
   - `~/.pi/agent/extensions` -> `configs/pi/extensions`
   - `~/.pi/agent/prompts` -> `configs/pi/prompts`
 - NixOS WSL Codex CLI config:

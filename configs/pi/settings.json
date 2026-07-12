@@ -5,7 +5,19 @@
   "defaultThinkingLevel": "high",
   "collapseChangelog": true,
   "compaction": {
-    "reserveTokens": 22000
+    "reserveTokens": 32000
+  },
+  "subagents": {
+    "agentOverrides": {
+      "worker": {
+        "model": "openai-codex/gpt-5.6-sol",
+        "thinking": "low"
+      },
+      "scout": {
+        "model": "openai-codex/gpt-5.6-luna",
+        "thinking": "high"
+      }
+    }
   },
   "packages": [
     "npm:@hypabolic/pi-hypa",

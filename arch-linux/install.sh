@@ -231,7 +231,7 @@ setup_symlinks() {
     # Pi coding agent
     link_config "$CONFIGS_DIR/pi/settings.json" "$HOME/.pi/agent/settings.json"
     link_config "$CONFIGS_DIR/pi/models.json" "$HOME/.pi/agent/models.json"
-    link_config "$CONFIGS_DIR/pi/APPEND_SYSTEM.md" "$HOME/.pi/agent/APPEND_SYSTEM.md"
+    link_config "$CONFIGS_DIR/codex/AGENTS.md" "$HOME/.pi/agent/APPEND_SYSTEM.md"
     link_config "$CONFIGS_DIR/pi/extensions" "$HOME/.pi/agent/extensions"
     link_config "$CONFIGS_DIR/pi/prompts" "$HOME/.pi/agent/prompts"
 
