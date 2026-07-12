@@ -11,6 +11,12 @@ trust_level = "trusted"
 [projects."/home/tobias/code"]
 trust_level = "trusted"
 
+[projects."/tmp/tmp3zijjf2t/subject"]
+trust_level = "trusted"
+
+[projects."/tmp/tmpd_0wiank/subject"]
+trust_level = "trusted"
+
 [notice]
 hide_rate_limit_model_nudge = true
 
