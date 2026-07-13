@@ -5,7 +5,7 @@
   "defaultThinkingLevel": "high",
   "collapseChangelog": true,
   "compaction": {
-    "reserveTokens": 32000
+    "reserveTokens": 13600
   },
   "subagents": {
     "agentOverrides": {
