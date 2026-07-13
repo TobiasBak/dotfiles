@@ -238,6 +238,7 @@ setup_symlinks() {
     # Codex CLI configuration
     link_config "$CONFIGS_DIR/codex/AGENTS.md" "$HOME/.codex/AGENTS.md"
     link_config "$CONFIGS_DIR/codex/config.toml" "$HOME/.codex/config.toml"
+    link_config "$CONFIGS_DIR/codex/agents" "$HOME/.codex/agents"
     link_config "$CONFIGS_DIR/codex/prompts" "$HOME/.codex/prompts"
 
     # Config folders
@@ -310,6 +311,20 @@ install_node() {
     fi
 }
 
+sync_codex_subagents() {
+    local package_root="$HOME/.pi/agent/npm"
+    local source_dir="$package_root/node_modules/pi-subagents/agents"
+    local sync_script="$REAL_REPO_DIR/scripts/sync-codex-agents-from-pi-subagents.mjs"
+
+    mkdir -p "$package_root"
+    log_info "Installing/updating pi-subagents prompt source..."
+    npm install --prefix "$package_root" --no-save "pi-subagents@latest"
+
+    log_info "Generating Codex agents from pi-subagents..."
+    node "$sync_script" --source "$source_dir"
+    log_success "Codex subagents synchronized."
+}
+
 install_pi_skills() {
     local skills_repo="https://github.com/TobiasBak/skills.git"
     local skills_dir
@@ -349,6 +364,7 @@ enable_multilib_repository
 install_packages
 install_oh_my_zsh
 install_node
+sync_codex_subagents
 configure_desktop_settings
 setup_symlinks
 install_pi_skills

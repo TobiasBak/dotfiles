@@ -17,6 +17,7 @@ Check relevant links before or after config edits:
 - NixOS WSL Codex CLI config:
   - `~/.codex/AGENTS.md` -> `configs/codex/AGENTS.md`
   - `~/.codex/config.toml` -> `configs/codex/config.toml`
+  - `~/.codex/agents` -> `configs/codex/agents`
   - `~/.codex/prompts` -> `configs/codex/prompts`
 - NixOS WSL npm config:
   - `~/.npmrc` -> `configs/npm/npmrc`
@@ -24,6 +25,8 @@ Check relevant links before or after config edits:
 - Linux configs installed by `arch-linux/install.sh` into `$HOME`, Oh My Zsh, and `$HOME/.config`.
 
 If a target is a real file/dir instead of a link, report it and recommend rerunning the installer or replacing it with the correct symlink/junction. On Windows, directory symlinks may require admin/dev mode; junctions are acceptable for directories.
+
+Codex `scout`, `researcher`, and `worker` agent TOML files under `configs/codex/agents/` are generated from the installed `pi-subagents` package by `scripts/sync-codex-agents-from-pi-subagents.mjs`. Do not edit or commit the generated TOML files. Run the sync script after updating `pi-subagents`; the full WSL rebuild does this automatically.
 
 ## Agent skills repo
 
@@ -45,6 +48,7 @@ When adding a new personal skill, create it under `../skills/skills/<skill>` wit
 - Verify Windows host config links: `winget configure -f .\windows\configuration.winget --accept-configuration-agreements --disable-interactivity`
 - Sync/fix WSL Pi/Codex config + skills: `./rebuild-wsl.sh`
 - Apply only NixOS WSL config/packages: `./rebuild-wsl.sh --nixos-only`
+- Regenerate Codex subagents from the installed Pi package: `node scripts/sync-codex-agents-from-pi-subagents.mjs`
 
 ## NixOS servers
 

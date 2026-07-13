@@ -137,6 +137,27 @@ install_pi_cli() {
   NPM_CONFIG_PREFIX="$HOME/.local" command npm install -g "@earendil-works/pi-coding-agent@latest"
 }
 
+sync_codex_subagents() {
+  local package_root="$HOME/.pi/agent/npm"
+  local source_dir="$package_root/node_modules/pi-subagents/agents"
+  local sync_script="$REAL_REPO_DIR/scripts/sync-codex-agents-from-pi-subagents.mjs"
+
+  require_command npm || return
+  require_command node || return
+
+  mkdir -p "$package_root"
+  log "Installing/updating pi-subagents prompt source..."
+  command npm install --prefix "$package_root" --no-save "pi-subagents@latest"
+
+  if [ ! -d "$source_dir" ]; then
+    warn "pi-subagents agent definitions not found: $source_dir"
+    return 1
+  fi
+
+  log "Generating Codex agents from pi-subagents..."
+  node "$sync_script" --source "$source_dir"
+}
+
 install_agent_skill_links() {
   require_command git || return
 
@@ -185,6 +206,7 @@ set_shell() {
 
 install_codex_cli
 install_pi_cli
+sync_codex_subagents
 install_agent_skill_links
 set_shell
 
