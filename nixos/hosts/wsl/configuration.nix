@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ hunk, pkgs, ... }:
 
 let
   vitePlus = pkgs.callPackage ../../packages/vite-plus { };
@@ -104,6 +104,7 @@ in
     fd
     git
     gh
+    hunk.packages.${pkgs.stdenv.hostPlatform.system}.hunk
     jq
     nixd
     nixfmt-rfc-style

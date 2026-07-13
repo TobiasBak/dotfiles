@@ -3,6 +3,18 @@ model_reasoning_effort = "high"
 model_verbosity = "low"
 personality = "none"
 
+[agents.scout]
+description = "Fast codebase recon that returns compressed context for handoff"
+config_file = "agents/scout.toml"
+
+[agents.researcher]
+description = "Autonomous web researcher that produces concise, well-sourced briefs"
+config_file = "agents/researcher.toml"
+
+[agents.worker]
+description = "Implementation agent for normal tasks and approved handoffs"
+config_file = "agents/worker.toml"
+
 [projects."/home/tobias/code/order-integration-platform"]
 trust_level = "trusted"
 

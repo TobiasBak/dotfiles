@@ -3,6 +3,10 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    hunk = {
+      url = "github:modem-dev/hunk";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     nixos-wsl.url = "github:nix-community/NixOS-WSL/main";
     home-manager = {
       url = "github:nix-community/home-manager/release-25.11";
@@ -14,6 +18,7 @@
     {
       self,
       home-manager,
+      hunk,
       nixpkgs,
       nixos-wsl,
     }:
@@ -28,6 +33,9 @@
           home-manager.nixosModules.home-manager
           ./hosts/wsl/configuration.nix
         ];
+        specialArgs = {
+          inherit hunk;
+        };
       };
 
       nixosConfigurations.laptop-server = nixpkgs.lib.nixosSystem {
