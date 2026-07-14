@@ -97,12 +97,14 @@ test("does not stop below the compaction threshold", () => {
   assert.equal(harness.notifications.length, 0);
 });
 
-test("continues automatically after core threshold compaction", () => {
+test("continues automatically after core threshold compaction settles", () => {
   const harness = createHarness();
 
   emitToolTurn(harness);
   emitCoreCompaction(harness);
+  assert.equal(harness.sentMessages.length, 0);
 
+  harness.handlers.get("agent_settled")({}, harness.ctx);
   assert.equal(harness.sentMessages.length, 1);
   assert.match(harness.sentMessages[0].message, /continue the same task/i);
   assert.deepEqual(harness.sentMessages[0].options, { deliverAs: "followUp" });
@@ -132,13 +134,15 @@ test("creates a safe turn boundary when core cannot compact the stopped tool loo
   assert.equal(harness.notifications.at(-1).level, "warning");
 });
 
-test("continues after core compacts the recovery boundary", () => {
+test("continues after the compacted recovery boundary settles", () => {
   const harness = createHarness();
 
   emitToolTurn(harness);
   harness.handlers.get("agent_settled")({}, harness.ctx);
   emitCoreCompaction(harness);
+  assert.equal(harness.sentMessages.length, 1);
 
+  harness.handlers.get("agent_settled")({}, harness.ctx);
   assert.equal(harness.sentMessages.length, 2);
   assert.match(harness.sentMessages[1].message, /continue the same task/i);
   assert.deepEqual(harness.sentMessages[1].options, { deliverAs: "followUp" });
@@ -166,7 +170,9 @@ test("ignores unrelated and duplicate compaction events", () => {
   emitToolTurn(harness);
   emitCoreCompaction(harness);
   emitCoreCompaction(harness);
+  assert.equal(harness.sentMessages.length, 0);
 
+  harness.handlers.get("agent_settled")({}, harness.ctx);
   assert.equal(harness.sentMessages.length, 1);
 });
 
@@ -181,13 +187,18 @@ test("does not treat manual compaction as the requested core auto-compaction", (
   assert.match(harness.sentMessages[0].message, /reply with exactly "READY"/i);
 });
 
-test("sends continuation immediately when Pi is idle", () => {
+test("does not start a reentrant prompt when pre-prompt compaction appears idle", () => {
   const harness = createHarness();
   harness.setIdle(true);
 
   emitToolTurn(harness);
   emitCoreCompaction(harness);
 
+  // session_compact can run inside prompt preflight while ctx.isIdle() is true.
+  // Prompting here races the original prompt and produces "Agent is already processing".
+  assert.equal(harness.sentMessages.length, 0);
+
+  harness.handlers.get("agent_settled")({}, harness.ctx);
   assert.equal(harness.sentMessages.length, 1);
   assert.equal(harness.sentMessages[0].options, undefined);
 });

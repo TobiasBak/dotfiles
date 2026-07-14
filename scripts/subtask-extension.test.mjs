@@ -1,8 +1,20 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
+  FORK_CONTEXT_BLOCK_PERCENT,
+  MAX_INLINE_CHILD_RESULT_BYTES,
+  MAX_INLINE_GROUP_RESULT_BYTES,
   MAX_OBSERVED_CHANGE_OPERATIONS,
   MAX_OBSERVED_CHANGE_PATHS,
   MAX_OBSERVED_CHANGE_SNIPPET_BYTES,
@@ -25,14 +37,17 @@ import {
   combineChildOutputWithObservedChanges,
   executeBatchMode,
   formatObservedChanges,
+  formatSubtaskGroupResult,
   formatSubtaskCost,
   formatSubtaskStatusLines,
   listSelectableTools,
   prepareSubtasksArguments,
   registerMutableWidget,
   runChild,
+  shouldBlockForkedSubtasks,
   truncateResult,
 } from "../configs/pi/extensions/subtask/core.ts";
+import { createOverflowResultWriter } from "../configs/pi/extensions/subtask/overflow.ts";
 import {
   SubtaskRuntimeState,
   getSubtaskRuntimeState,
@@ -351,6 +366,16 @@ test("keeps caller task unchanged and adds one contract to a forked child", () =
   assert.equal(args.at(-1), `Task:\n${task}`);
   assert.equal(args.includes("--session"), true);
   assert.equal(args.includes("--no-session"), false);
+});
+
+test("blocks forked subtasks at 65 percent parent context usage", () => {
+  assert.equal(FORK_CONTEXT_BLOCK_PERCENT, 65);
+  assert.equal(shouldBlockForkedSubtasks(true, 64.999), false);
+  assert.equal(shouldBlockForkedSubtasks(true, 65), true);
+  assert.equal(shouldBlockForkedSubtasks(true, 90), true);
+  assert.equal(shouldBlockForkedSubtasks(false, 90), false);
+  assert.equal(shouldBlockForkedSubtasks(true, null), false);
+  assert.equal(shouldBlockForkedSubtasks(true, undefined), false);
 });
 
 test("maps legacy async arguments to wait without exposing async", () => {
@@ -719,6 +744,42 @@ test("normal shutdown cancels tasks and groups, awaits them, and drops queued de
   assert.deepEqual(deliveries, []);
 });
 
+test("writes private Markdown overflow results under the session and group", async () => {
+  const sessionId = `test-${process.pid}-${Date.now()}`;
+  const retainedPaths = [];
+  const writer = createOverflowResultWriter(sessionId, "g-a1b2c3", (temporaryPath) => {
+    retainedPaths.push(temporaryPath);
+  });
+  const expectedSessionDirectory = join(tmpdir(), "pi-subtasks", sessionId);
+
+  try {
+    const outputPath = await writer("d4e5f6", "# Full result\n\nDetails");
+    assert.equal(
+      outputPath,
+      join(expectedSessionDirectory, "g-a1b2c3", "d4e5f6.md"),
+    );
+    assert.deepEqual(retainedPaths, [expectedSessionDirectory]);
+    assert.equal(readFileSync(outputPath, "utf8"), "# Full result\n\nDetails");
+    assert.equal(statSync(expectedSessionDirectory).mode & 0o777, 0o700);
+    assert.equal(statSync(join(expectedSessionDirectory, "g-a1b2c3")).mode & 0o777, 0o700);
+    assert.equal(statSync(outputPath).mode & 0o777, 0o600);
+  } finally {
+    rmSync(expectedSessionDirectory, { recursive: true, force: true });
+  }
+});
+
+test("retained subtask outputs survive reload and are removed at normal shutdown", async () => {
+  const runtime = new SubtaskRuntimeState();
+  const directory = mkdtempSync(join(tmpdir(), "pi-subtask-runtime-test-"));
+  writeFileSync(join(directory, "result.md"), "retained output");
+  runtime.retainTemporaryPath(directory);
+
+  runtime.suspendForReload();
+  assert.equal(existsSync(directory), true);
+  await runtime.stopAndCancel();
+  assert.equal(existsSync(directory), false);
+});
+
 test("parses final output and usage from a JSON-mode child", async () => {
   const assistant = {
     role: "assistant",
@@ -916,6 +977,122 @@ test("bounds retained change text and truncates Unicode without replacement char
   assert.doesNotMatch(serialized, /�/);
   assert.ok(Buffer.byteLength(serialized, "utf8") < Buffer.byteLength(secret, "utf8"));
   assert.match(formatObservedChanges(result.observedChanges), /Diff truncated/i);
+});
+
+test("returns complete child results inline when the group fits", async () => {
+  const overflowWrites = [];
+  const result = await formatSubtaskGroupResult(
+    [
+      {
+        id: "a1b2c3",
+        status: "completed",
+        output: "first complete result",
+        observedChanges: { files: [], omittedOperations: 0 },
+      },
+      {
+        id: "d4e5f6",
+        status: "completed",
+        output: "second complete result",
+        observedChanges: { files: [], omittedOperations: 0 },
+      },
+      {
+        id: "000000",
+        status: "completed",
+        output: "",
+        observedChanges: { files: [], omittedOperations: 0 },
+      },
+    ],
+    async (taskId, content) => {
+      overflowWrites.push({ taskId, content });
+      return `/tmp/${taskId}.md`;
+    },
+  );
+
+  assert.deepEqual(result.truncatedTaskIds, []);
+  assert.deepEqual(result.overflowPaths, {});
+  assert.deepEqual(overflowWrites, []);
+  assert.match(result.content, /first complete result/);
+  assert.match(result.content, /second complete result/);
+});
+
+test("uses spare group capacity before truncating a larger child result", async () => {
+  const overflowWrites = [];
+  const items = [
+    {
+      id: "a1b2c3",
+      status: "completed",
+      output: "x".repeat(45 * 1024),
+      observedChanges: { files: [], omittedOperations: 0 },
+    },
+    ...Array.from({ length: 4 }, (_, index) => ({
+      id: `${index}`.repeat(6),
+      status: "completed",
+      output: "y".repeat(1_024),
+      observedChanges: { files: [], omittedOperations: 0 },
+    })),
+  ];
+  const result = await formatSubtaskGroupResult(items, async (taskId, content) => {
+    overflowWrites.push({ taskId, content });
+    return `/tmp/${taskId}.md`;
+  });
+
+  assert.deepEqual(result.truncatedTaskIds, []);
+  assert.deepEqual(overflowWrites, []);
+  assert.equal(result.content.includes("x".repeat(45 * 1024)), true);
+});
+
+test("saves oversized child results and returns searchable file paths", async () => {
+  const overflowWrites = [];
+  const observedChanges = {
+    files: [
+      {
+        path: "src/example.ts",
+        write: { calls: 1, bytes: 4, lines: 1 },
+        snippets: [{ kind: "write", content: "+new", truncated: false }],
+      },
+    ],
+    omittedOperations: 0,
+  };
+  const oversized = `conclusion first\n${"x".repeat(MAX_INLINE_CHILD_RESULT_BYTES + 1_000)}`;
+  const result = await formatSubtaskGroupResult(
+    [{ id: "a1b2c3", status: "completed", output: oversized, observedChanges }],
+    async (taskId, content) => {
+      overflowWrites.push({ taskId, content });
+      return `/tmp/pi-subtasks/group/${taskId}.md`;
+    },
+  );
+
+  assert.deepEqual(result.truncatedTaskIds, ["a1b2c3"]);
+  assert.equal(result.overflowPaths.a1b2c3, "/tmp/pi-subtasks/group/a1b2c3.md");
+  assert.equal(overflowWrites.length, 1);
+  assert.match(overflowWrites[0].content, /conclusion first/);
+  assert.match(overflowWrites[0].content, /### File changes/);
+  assert.match(result.content, /Full output saved to:/);
+  assert.match(result.content, /\/tmp\/pi-subtasks\/group\/a1b2c3\.md/);
+  assert.match(result.content, /### File changes/);
+  assert.ok(Buffer.byteLength(result.content, "utf8") <= MAX_INLINE_CHILD_RESULT_BYTES);
+});
+
+test("shares the group context budget fairly and preserves every overflow result", async () => {
+  const overflowWrites = [];
+  const items = Array.from({ length: 5 }, (_, index) => ({
+    id: `${index}`.repeat(6),
+    status: "completed",
+    output: `result ${index}\n${String(index).repeat(MAX_INLINE_CHILD_RESULT_BYTES)}`,
+    observedChanges: { files: [], omittedOperations: 0 },
+  }));
+  const result = await formatSubtaskGroupResult(items, async (taskId, content) => {
+    overflowWrites.push({ taskId, content });
+    return `/tmp/pi-subtasks/group/${taskId}.md`;
+  });
+
+  assert.equal(result.truncatedTaskIds.length, 5);
+  assert.equal(overflowWrites.length, 5);
+  for (const item of items) {
+    assert.match(result.content, new RegExp(`Subtask ${item.id}`));
+    assert.match(result.content, new RegExp(`${item.id}\\.md`));
+  }
+  assert.ok(Buffer.byteLength(result.content, "utf8") <= MAX_INLINE_GROUP_RESULT_BYTES);
 });
 
 test("omits the file-change section when no edit or write was observed", () => {

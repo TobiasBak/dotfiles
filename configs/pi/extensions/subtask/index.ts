@@ -9,8 +9,7 @@ import {
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
-  MAX_RESULT_BYTES,
-  MAX_RESULT_LINES,
+  FORK_CONTEXT_BLOCK_PERCENT,
   SUBTASK_CHILD_ENV,
   SUBTASK_MODELS,
   SUBTASKS_CONTROL_TOOL_DESCRIPTION,
@@ -27,8 +26,8 @@ import {
   type SubtaskStatusItem,
   type SubtaskThinkingLevel,
   buildChildArgs,
-  combineChildOutputWithObservedChanges,
   executeBatchMode,
+  formatSubtaskGroupResult,
   formatSubtaskStatusLines,
   formatSubtaskStatusRows,
   getPiInvocation,
@@ -36,6 +35,7 @@ import {
   prepareSubtasksArguments,
   registerMutableWidget,
   runChild,
+  shouldBlockForkedSubtasks,
   truncateResult,
 } from "./core.ts";
 import {
@@ -43,6 +43,7 @@ import {
   formatParentHandoffTiming,
   type ParentHandoffTiming,
 } from "./handoff.ts";
+import { createOverflowResultWriter } from "./overflow.ts";
 import { getSubtaskRuntimeState } from "./runtime.ts";
 
 const MAX_SUBTASKS = 16;
@@ -88,6 +89,7 @@ interface SubtaskDetails {
     turns: number;
   };
   outputTruncated?: boolean;
+  overflowPath?: string;
   observedChanges?: ObservedChanges;
 }
 
@@ -517,7 +519,7 @@ export function createSubtasksExtension(
         fork: Type.Optional(
           Type.Boolean({
             description:
-              "Replays the full parent conversation and may add substantial uncached input cost. Omit unless the child cannot complete from the assignment and filesystem alone. Prefer a self-contained task. Default: false.",
+              "Replays the full parent conversation and may add substantial uncached input cost. Forked requests are blocked when parent context usage is 65% or higher. Omit unless the child cannot complete from the assignment and filesystem alone. Prefer a self-contained task. Default: false.",
             default: false,
           }),
         ),
@@ -656,6 +658,31 @@ export function createSubtasksExtension(
 
         async execute(toolCallId, params, signal, onUpdate, executionCtx) {
           const requests = params.tasks as SubtaskRequest[];
+          const contextUsage = executionCtx.getContextUsage();
+          const forkRequested = requests.some((request) => request.fork === true);
+          if (shouldBlockForkedSubtasks(forkRequested, contextUsage?.percent)) {
+            const percentage = contextUsage!.percent!.toFixed(1);
+            const tokenDetails =
+              contextUsage!.tokens === null
+                ? ""
+                : ` (${contextUsage!.tokens.toLocaleString("en-US")}/${contextUsage!.contextWindow.toLocaleString("en-US")} tokens)`;
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `The subtask request was not started because it includes \`fork: true\` and parent context usage is ${percentage}%${tokenDetails}, meeting the ${FORK_CONTEXT_BLOCK_PERCENT}% safety limit. Retry with self-contained assignments and omit \`fork\`. If full conversation context is essential, reduce the parent context first.`,
+                },
+              ],
+              details: {
+                tasks: [],
+                blocked: true,
+                reason: "fork-context-limit",
+                thresholdPercent: FORK_CONTEXT_BLOCK_PERCENT,
+                contextUsage,
+              },
+            };
+          }
+
           const groupId = runtime.allocateGroupId();
           const tasks: SubtaskState[] = requests.map((request) => ({
             id: runtime.allocateTaskId(),
@@ -690,6 +717,11 @@ export function createSubtasksExtension(
             const snapshotFiles = new Map<number, string>();
             let durationTimer: NodeJS.Timeout | undefined;
             let widget: ReturnType<typeof registerSubtaskWidget> | undefined;
+            const writeOverflowResult = createOverflowResultWriter(
+              executionCtx.sessionManager.getSessionId(),
+              groupId,
+              (temporaryPath) => runtime.retainTemporaryPath(temporaryPath),
+            );
 
             const refreshElapsed = () => {
               const now = Date.now();
@@ -821,32 +853,24 @@ export function createSubtasksExtension(
 
               const allFailed = tasks.every((task) => task.status !== "completed");
 
-              const perTaskBytes = Math.max(
-                512,
-                Math.floor((MAX_RESULT_BYTES - requests.length * 128) / requests.length),
+              const formattedResult = await formatSubtaskGroupResult(
+                outcomes.map((outcome, index) => ({
+                  id: tasks[index]!.id,
+                  status: tasks[index]!.status,
+                  output: outcome.output ?? `Error: ${outcome.error ?? "unknown failure"}`,
+                  observedChanges: tasks[index]!.observedChanges!,
+                })),
+                writeOverflowResult,
               );
-              const perTaskLines = Math.max(
-                5,
-                Math.floor((MAX_RESULT_LINES - requests.length * 3) / requests.length),
-              );
-              const combined = outcomes
-                .map((outcome, index) => {
-                  const status = tasks[index]!.status;
-                  const response = outcome.output ?? `Error: ${outcome.error ?? "unknown failure"}`;
-                  const bounded = combineChildOutputWithObservedChanges(
-                    response,
-                    tasks[index]!.observedChanges!,
-                    { maxBytes: perTaskBytes, maxLines: perTaskLines },
-                  );
-                  tasks[index]!.outputTruncated = bounded.truncated;
-                  return `## Subtask ${tasks[index]!.id} [${status}]\n${bounded.content}`;
-                })
-                .join("\n\n");
-              const finalResult = truncateResult(combined);
+              const truncatedTaskIds = new Set(formattedResult.truncatedTaskIds);
+              for (const task of tasks) {
+                task.outputTruncated = truncatedTaskIds.has(task.id);
+                task.overflowPath = formattedResult.overflowPaths[task.id];
+              }
 
               return {
                 result: {
-                  content: [{ type: "text", text: finalResult.content }],
+                  content: [{ type: "text", text: formattedResult.content }],
                   details: copyDetails(tasks),
                 },
                 allFailed,

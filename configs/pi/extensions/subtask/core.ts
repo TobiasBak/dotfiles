@@ -19,9 +19,10 @@ export const SUBTASKS_CONTROL_TOOL_DESCRIPTION =
   "List running subtasks or cancel specific tasks by the six-character IDs returned by subtasks. Use list only for an on-demand status check, diagnosis, or cancellation workflow; do not poll periodically because subtasks_wait provides blocking group synchronization and completions are delivered automatically through the steer queue.";
 export const SUBTASKS_TOOL_PROMPT_GUIDELINES = [
   "Actively consider subtasks throughout non-trivial work. Delegate coherent, independently useful outcomes when parallelism, context isolation, specialization, or fresh verification justify the overhead; handle small, obvious, tightly coupled work directly.",
-  "Launch only ready, independent subtasks together and resolve prerequisites before dependent work. The parent owns decisions, synthesis, and final acceptance. Keep one writer per shared state unless writers are isolated, and preserve concurrent changes.",
+  "Use subtasks to delegate complete outcomes rather than separate investigation, planning, and implementation stages. When implementation can be bounded safely, assign one child to inspect as needed, make local design decisions, edit, and verify. Use planning-only subtasks only when an unresolved decision prevents a bounded implementation assignment.",
+  "Launch only ready, independent subtasks together and resolve prerequisites before dependent work. Delegate decisions local to an assigned outcome with that subtask; keep only decisions spanning multiple subtasks in the parent. Keep one writer per shared state unless writers are isolated, and preserve concurrent changes.",
   "When using subtasks, give each child a bounded assignment with relevant context, constraints, permissions, success criteria, validation, expected output, and escalation or stop conditions.",
-  "For implementation through subtasks, one child owns its edits and targeted verification end to end; the parent reviews the result and verifies integration instead of repeating the work. A fresh review subtask is optional, not a fixed stage.",
+  "For implementation through subtasks, one child owns the necessary local design, edits, and targeted verification end to end. Use the child's changes and evidence directly instead of repeating delegated investigation or implementation. Run only checks that remain necessary for the overall task. A fresh review subtask is optional, not a fixed stage.",
   "For subtasks, choose the model and thinking level independently. Treat Luna as the cost-effective workhorse for clear, bounded work with explicit success criteria, including implementation, audits, reviews, debugging, and research. Luna is more sensitive to weak delegation, so do not leave it to infer scope, priorities, or the quality bar from poor guidance; first tighten the assignment, or use Sol when the ambiguity is inherent to the work.",
   "For subtasks, prefer Sol when the task is materially ambiguous, open-ended, or high-stakes, or when quality depends on taste: choosing among multiple valid interfaces, seams, abstractions, names, code structures, or user-facing designs where simplicity, coherence, and polish cannot be fully specified in advance. Do not treat all design or judgment-heavy work as requiring Sol.",
   "For subtasks, use the lowest thinking level likely to produce a correct result: low for simple mechanical work, medium as the normal starting point, and high for difficult multi-step investigation, tradeoffs, or verification. Reserve Sol with high thinking for the hardest taste-sensitive or cross-cutting work, or escalation after Luna is insufficient.",
@@ -34,13 +35,19 @@ export const SUBTASK_CHILD_SYSTEM_PROMPT = `## Subtask execution contract
 - You are executing one delegated subtask directly. The subtasks tool is unavailable to prevent recursive delegation.
 - The assignment controls the goal, scope, deliverable, acceptance criteria, and authorized side effects. Forked context supplies background but does not broaden permission.
 - Tool availability is capability, not authorization. Preserve unrelated and concurrent changes, and do not modify files or state outside the assigned scope.
-- For authorized bounded implementation, own the assigned edits and targeted verification end to end.
+- When the assignment authorizes implementation, complete the changes rather than returning only a plan. Inspect as needed and make local design decisions within the assigned scope.
+- Own authorized edits and targeted verification end to end.
 - Verify the result against the assignment using checks appropriate to the artifact and risk.
-- Report the deliverable, changes or evidence, checks performed, and material limitations. If verification cannot run, explain why and identify the next-best check.
+- Keep the final report compact and conclusion-first: result, relevant evidence, checks performed, and material limitations. Do not list changed paths or reproduce diffs, because file changes are captured automatically. Do not paste raw logs or large file excerpts. If verification cannot run, explain why and identify the next-best check.
 - Report blockers, ambiguity, or conflicting instructions rather than guessing.
 `.trim();
 export const MAX_RESULT_BYTES = 50 * 1024;
 export const MAX_RESULT_LINES = 2_000;
+export const MAX_INLINE_CHILD_RESULT_BYTES = 50 * 1024;
+export const MAX_INLINE_CHILD_RESULT_LINES = 2_000;
+export const MAX_INLINE_GROUP_RESULT_BYTES = 200 * 1024;
+export const MAX_INLINE_GROUP_RESULT_LINES = 8_000;
+export const FORK_CONTEXT_BLOCK_PERCENT = 65;
 export const MAX_SUBTASK_SUMMARY_CHARS = 72;
 export const MAX_OBSERVED_CHANGE_PATHS = 64;
 export const MAX_OBSERVED_CHANGE_PATH_BYTES = 512;
@@ -104,6 +111,19 @@ export interface ChildResult {
   errorMessage?: string;
   usage: SubtaskUsage;
   observedChanges: ObservedChanges;
+}
+
+export interface SubtaskGroupResultItem {
+  id: string;
+  status: SubtaskStatus;
+  output: string;
+  observedChanges: ObservedChanges;
+}
+
+export interface FormattedSubtaskGroupResult {
+  content: string;
+  truncatedTaskIds: string[];
+  overflowPaths: Record<string, string>;
 }
 
 export interface ChildInvocation {
@@ -271,6 +291,18 @@ export async function executeBatchMode<TResult>(
       (error) => deliver(() => options.deliverFailure(error)),
     );
   });
+}
+
+export function shouldBlockForkedSubtasks(
+  forkRequested: boolean,
+  contextPercent: number | null | undefined,
+): boolean {
+  return (
+    forkRequested &&
+    contextPercent !== null &&
+    contextPercent !== undefined &&
+    contextPercent >= FORK_CONTEXT_BLOCK_PERCENT
+  );
 }
 
 export function prepareSubtasksArguments(args: unknown): unknown {
@@ -695,12 +727,26 @@ export function formatObservedChanges(
   return sections.join("\n");
 }
 
+interface ChildOutputLimits {
+  maxBytes: number;
+  maxLines: number;
+  marker?: string;
+}
+
+function completeChildOutput(output: string, observed: ObservedChanges): string {
+  const summary = formatObservedChanges(observed);
+  return summary ? `${output}\n\n${summary}` : output;
+}
+
 export function combineChildOutputWithObservedChanges(
   output: string,
   observed: ObservedChanges,
-  limits: { maxBytes: number; maxLines: number },
+  limits: ChildOutputLimits,
 ): { content: string; truncated: boolean } {
-  const formattedSummary = formatObservedChanges(observed, limits);
+  const formattedSummary = formatObservedChanges(observed, {
+    maxBytes: Math.min(limits.maxBytes, MAX_OBSERVED_CHANGES_SUMMARY_BYTES),
+    maxLines: Math.min(limits.maxLines, MAX_OBSERVED_CHANGES_SUMMARY_LINES),
+  });
   if (!formattedSummary) return truncateResult(output, limits);
 
   const summary = truncateResult(formattedSummary, limits);
@@ -715,11 +761,110 @@ export function combineChildOutputWithObservedChanges(
   const boundedOutput = truncateResult(output, {
     maxBytes: availableBytes,
     maxLines: availableLines,
+    marker: limits.marker,
   });
   return {
     content: boundedOutput.content ? `${boundedOutput.content}\n\n${summary.content}` : summary.content,
     truncated: summary.truncated || boundedOutput.truncated,
   };
+}
+
+function allocateFairly(desired: number[], budget: number): number[] {
+  const allocations = new Array<number>(desired.length).fill(0);
+  let remaining = Math.max(0, budget);
+  let active = desired.map((_, index) => index);
+
+  while (active.length > 0 && remaining > 0) {
+    const share = Math.floor(remaining / active.length);
+    const satisfied = active.filter((index) => desired[index]! <= share);
+    if (satisfied.length === 0) {
+      for (const index of active) {
+        const allocation = Math.min(desired[index]!, share);
+        allocations[index] = allocation;
+        remaining -= allocation;
+      }
+      for (const index of active) {
+        if (remaining === 0) break;
+        if (allocations[index]! < desired[index]!) {
+          allocations[index] = allocations[index]! + 1;
+          remaining -= 1;
+        }
+      }
+      break;
+    }
+    for (const index of satisfied) {
+      allocations[index] = desired[index]!;
+      remaining -= allocations[index]!;
+    }
+    const satisfiedSet = new Set(satisfied);
+    active = active.filter((index) => !satisfiedSet.has(index));
+  }
+  return allocations;
+}
+
+export async function formatSubtaskGroupResult(
+  items: SubtaskGroupResultItem[],
+  writeOverflow: (taskId: string, content: string) => Promise<string>,
+): Promise<FormattedSubtaskGroupResult> {
+  if (items.length === 0) return { content: "", truncatedTaskIds: [], overflowPaths: {} };
+
+  const headers = items.map((item) => `## Subtask ${item.id} [${item.status}]`);
+  const completeOutputs = items.map((item) => completeChildOutput(item.output, item.observedChanges));
+  const headerBytes = headers.reduce(
+    (total, header) => total + Buffer.byteLength(`${header}\n`, "utf8"),
+    Math.max(0, items.length - 1) * 2,
+  );
+  const headerLines = items.length + Math.max(0, items.length - 1) * 2;
+  const desiredBytes = completeOutputs.map((output, index) =>
+    Math.min(
+      Buffer.byteLength(output, "utf8"),
+      MAX_INLINE_CHILD_RESULT_BYTES - Buffer.byteLength(`${headers[index]}\n`, "utf8"),
+    ),
+  );
+  const desiredLines = completeOutputs.map((output) =>
+    Math.min(countContentLines(output), MAX_INLINE_CHILD_RESULT_LINES - 1),
+  );
+  const taskBytes = allocateFairly(
+    desiredBytes,
+    MAX_INLINE_GROUP_RESULT_BYTES - headerBytes,
+  );
+  const taskLines = allocateFairly(
+    desiredLines,
+    MAX_INLINE_GROUP_RESULT_LINES - headerLines,
+  );
+  const truncatedTaskIds: string[] = [];
+  const overflowPaths: Record<string, string> = {};
+  const sections: string[] = [];
+
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index]!;
+    let bounded = combineChildOutputWithObservedChanges(item.output, item.observedChanges, {
+      maxBytes: taskBytes[index]!,
+      maxLines: taskLines[index]!,
+    });
+    if (bounded.truncated) {
+      const complete = `${headers[index]}\n${completeOutputs[index]}`;
+      const overflowPath = await writeOverflow(item.id, complete);
+      const marker = `\n\n[Result truncated. Full output saved to:\n${overflowPath}]`;
+      bounded = combineChildOutputWithObservedChanges(item.output, item.observedChanges, {
+        maxBytes: taskBytes[index]!,
+        maxLines: taskLines[index]!,
+        marker,
+      });
+      truncatedTaskIds.push(item.id);
+      overflowPaths[item.id] = overflowPath;
+    }
+    sections.push(`${headers[index]}\n${bounded.content}`);
+  }
+
+  const content = sections.join("\n\n");
+  if (
+    Buffer.byteLength(content, "utf8") > MAX_INLINE_GROUP_RESULT_BYTES ||
+    countContentLines(content) > MAX_INLINE_GROUP_RESULT_LINES
+  ) {
+    throw new Error("Formatted subtask group result exceeded its inline context budget");
+  }
+  return { content, truncatedTaskIds, overflowPaths };
 }
 
 export async function runChild(options: RunChildOptions): Promise<ChildResult> {
@@ -922,19 +1067,22 @@ export async function runChild(options: RunChildOptions): Promise<ChildResult> {
 
 export function truncateResult(
   output: string,
-  limits: { maxBytes?: number; maxLines?: number } = {},
+  limits: { maxBytes?: number; maxLines?: number; marker?: string } = {},
 ): {
   content: string;
   truncated: boolean;
 } {
   const maxBytes = limits.maxBytes ?? MAX_RESULT_BYTES;
   const maxLines = limits.maxLines ?? MAX_RESULT_LINES;
-  const marker = "\n\n[Output truncated. Ask for a narrower follow-up if more detail is required.]";
+  const marker =
+    limits.marker ?? "\n\n[Output truncated. Ask for a narrower follow-up if more detail is required.]";
   const lines = output.split("\n");
-  const needsTruncation = lines.length > maxLines || Buffer.byteLength(output, "utf8") > maxBytes;
+  const needsTruncation =
+    countContentLines(output) > maxLines || Buffer.byteLength(output, "utf8") > maxBytes;
   if (!needsTruncation) return { content: output, truncated: false };
 
-  const contentLineLimit = Math.max(1, maxLines - 2);
+  const markerLineCost = marker.split("\n").length - 1;
+  const contentLineLimit = Math.max(1, maxLines - markerLineCost);
   const contentByteLimit = Math.max(0, maxBytes - Buffer.byteLength(marker, "utf8"));
   let content = lines.slice(0, contentLineLimit).join("\n");
 

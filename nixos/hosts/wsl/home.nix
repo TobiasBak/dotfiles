@@ -19,6 +19,7 @@ in
       ".zshrc" = linkFromDotfiles "configs/zsh/.zshrc";
       ".oh-my-zsh/custom/themes/custom.zsh-theme" = linkFromDotfiles "configs/zsh/custom.zsh-theme";
       ".config/tmux" = linkFromDotfiles "configs/tmux";
+      ".config/hunk/config.toml" = linkFromDotfiles "configs/hunk/config.toml";
       ".npmrc" = linkFromDotfiles "configs/npm/npmrc";
 
       ".pi/agent/settings.json" = linkFromDotfiles "configs/pi/settings.json";

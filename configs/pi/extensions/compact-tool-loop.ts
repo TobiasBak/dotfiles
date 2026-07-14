@@ -11,6 +11,7 @@ export default function (pi: ExtensionAPI) {
   let compactionInFlight = false;
   let boundaryRecoveryPending = false;
   let boundaryRecoveryAttempted = false;
+  let continuationPending = false;
 
   const resetRecovery = () => {
     boundaryRecoveryPending = false;
@@ -65,6 +66,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", () => {
     compactionInFlight = false;
+    continuationPending = false;
     resetRecovery();
   });
 
@@ -76,15 +78,26 @@ export default function (pi: ExtensionAPI) {
     clearCompactionStatus(ctx);
 
     if (event.willRetry) {
+      continuationPending = false;
       resetRecovery();
       return;
     }
 
+    // session_compact can fire while Pi is preparing a prompt, before it marks
+    // the agent as busy. Starting the resume prompt here would be reentrant.
+    // Wait for the current prompt lifecycle to settle before continuing.
+    continuationPending = true;
     resetRecovery();
-    continueAutomatically(ctx, "Tool-loop compaction completed. Continuing automatically.");
   });
 
   pi.on("agent_settled", (_event, ctx) => {
+    if (continuationPending) {
+      continuationPending = false;
+      clearCompactionStatus(ctx);
+      continueAutomatically(ctx, "Tool-loop compaction completed. Continuing automatically.");
+      return;
+    }
+
     if (compactionInFlight) {
       compactionInFlight = false;
       clearCompactionStatus(ctx);

@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import * as fs from "node:fs";
 import type { SubtaskStatusItem } from "./core.ts";
 
 export interface SubtaskCancellationResult {
@@ -218,6 +219,7 @@ class SubtaskGroupRegistry {
 export class SubtaskRuntimeState {
   private readonly activeTasks = new ActiveTaskRegistry();
   private readonly groups = new SubtaskGroupRegistry();
+  private readonly temporaryPaths = new Set<string>();
   private deliveryAdapter?: BackgroundSubtaskDeliveryAdapter;
   private readonly pendingDeliveries: BackgroundSubtaskDelivery[] = [];
   private acceptingDeliveries = false;
@@ -269,6 +271,10 @@ export class SubtaskRuntimeState {
     this.groups.forget(ids);
   }
 
+  retainTemporaryPath(path: string): void {
+    this.temporaryPaths.add(path);
+  }
+
   bindDelivery(adapter: BackgroundSubtaskDeliveryAdapter): void {
     this.acceptingDeliveries = true;
     this.deliveryAdapter = adapter;
@@ -290,11 +296,19 @@ export class SubtaskRuntimeState {
     this.acceptingDeliveries = false;
     this.deliveryAdapter = undefined;
     this.pendingDeliveries.length = 0;
-    await Promise.all([
-      this.activeTasks.cancelAndWait(),
-      this.groups.cancelAndWait(),
-    ]);
-    this.groups.clear();
+    try {
+      await Promise.all([
+        this.activeTasks.cancelAndWait(),
+        this.groups.cancelAndWait(),
+      ]);
+    } finally {
+      this.groups.clear();
+      const temporaryPaths = [...this.temporaryPaths];
+      this.temporaryPaths.clear();
+      await Promise.allSettled(
+        temporaryPaths.map((path) => fs.promises.rm(path, { recursive: true, force: true })),
+      );
+    }
   }
 
   private tryDelivery(delivery: BackgroundSubtaskDelivery): boolean {
@@ -319,9 +333,28 @@ export class SubtaskRuntimeState {
 
 const SUBTASK_RUNTIME_GLOBAL_KEY = "__tobiasPiSubtaskRuntimeV1";
 
+function addTemporaryPathSupport(existing: Record<string, any>): void {
+  if (typeof existing.retainTemporaryPath === "function") return;
+  const temporaryPaths = new Set<string>();
+  const stopAndCancel = existing.stopAndCancel.bind(existing) as () => Promise<void>;
+  existing.retainTemporaryPath = (path: string) => temporaryPaths.add(path);
+  existing.stopAndCancel = async () => {
+    try {
+      await stopAndCancel();
+    } finally {
+      const retained = [...temporaryPaths];
+      temporaryPaths.clear();
+      await Promise.allSettled(
+        retained.map((path) => fs.promises.rm(path, { recursive: true, force: true })),
+      );
+    }
+  };
+}
+
 function upgradeRuntimeState(existing: Record<string, any>): SubtaskRuntimeState {
   if (typeof existing.allocateGroupId === "function") {
     existing.forgetGroups ??= () => {};
+    addTemporaryPathSupport(existing);
     return existing as SubtaskRuntimeState;
   }
 
@@ -343,6 +376,7 @@ function upgradeRuntimeState(existing: Record<string, any>): SubtaskRuntimeState
     await Promise.all([stopAndCancel(), groups.cancelAndWait()]);
     groups.clear();
   };
+  addTemporaryPathSupport(existing);
   return existing as SubtaskRuntimeState;
 }
 

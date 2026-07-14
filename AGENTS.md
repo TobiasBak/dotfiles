@@ -18,6 +18,8 @@ Check relevant links before or after config edits:
   - `~/.codex/AGENTS.md` -> `configs/codex/AGENTS.md`
   - `~/.codex/config.toml` -> `configs/codex/config.toml`
   - `~/.codex/prompts` -> `configs/codex/prompts`
+- NixOS WSL Hunk config:
+  - `~/.config/hunk/config.toml` -> `configs/hunk/config.toml`
 - NixOS WSL npm config:
   - `~/.npmrc` -> `configs/npm/npmrc`
 - Windows host configs are managed by `windows/configuration.winget`.
