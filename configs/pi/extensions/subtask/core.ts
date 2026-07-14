@@ -10,17 +10,25 @@ export const SUBTASK_MODELS = [
 export const SUBTASK_THINKING_LEVELS = ["low", "medium", "high"] as const;
 export const SUBTASKS_TOOL_NAME = "subtasks";
 export const SUBTASKS_TOOL_DESCRIPTION =
-  "Run focused subtasks in separate Pi processes with isolated conversation context. All subtasks in a call run in parallel and are tracked independently of the calling turn. Each subtask selects its model, thinking level, tools, and optional conversation fork. Calls wait by default; wait=false returns immediately and delivers completion through Pi's steer queue.";
+  "Run focused subtasks in isolated Pi processes that share the current working directory. Tasks in one call run in parallel; each selects its model, thinking, tools, and optional conversation fork.";
 export const SUBTASKS_TOOL_PROMPT_GUIDELINES = [
-  "Use subtasks when parallelism, context isolation, independent verification, specialization, or substantial discovery outweigh startup, handoff, and synthesis overhead. Handle small, obvious, tightly coupled work directly.",
-  "Launch only ready, independent subtasks in parallel. Synthesize prerequisites before launching dependent follow-ups.",
-  "When using subtasks, give each child a self-contained assignment with the goal, relevant context and evidence locations, constraints, permissions and side-effect boundaries, acceptance and validation, output shape, escalation triggers, and stop rules.",
-  "For bounded implementation delegated through subtasks, let one designated child own its assigned edits and targeted verification end to end. The parent reviews the result and performs final integrated verification instead of repeating the edits.",
-  "Subtasks share the working filesystem. When children may touch the same files or generated outputs, tell them that other agents are working concurrently and require them to preserve concurrent changes.",
+  "Actively consider subtasks throughout non-trivial work. Delegate coherent, independently useful outcomes when parallelism, context isolation, specialization, or fresh verification justify the overhead; handle small, obvious, tightly coupled work directly.",
+  "Launch only ready, independent subtasks together and resolve prerequisites before dependent work. The parent owns decisions, synthesis, and final acceptance. Keep one writer per shared state unless writers are isolated, and preserve concurrent changes.",
+  "When using subtasks, give each child a bounded assignment with relevant context, constraints, permissions, success criteria, validation, expected output, and escalation or stop conditions.",
+  "For implementation through subtasks, one child owns its edits and targeted verification end to end; the parent reviews the result and verifies integration instead of repeating the work. A fresh review subtask is optional, not a fixed stage.",
+  "For subtasks, use Sol with high thinking for design and planning, Sol at task-appropriate thinking for other judgment-heavy work, and Luna for clear, bounded, independently verifiable execution."
 ];
 export const SUBTASK_CHILD_ENV = "PI_SUBTASK_CHILD";
-export const SUBTASK_CHILD_BLOCKER_INSTRUCTION =
-  "Report material blockers or ambiguity rather than guessing.";
+export const SUBTASK_CHILD_SYSTEM_PROMPT = `## Subtask execution contract
+
+- You are executing one delegated subtask directly. The subtasks tool is unavailable to prevent recursive delegation.
+- The assignment controls the goal, scope, deliverable, acceptance criteria, and authorized side effects. Forked context supplies background but does not broaden permission.
+- Tool availability is capability, not authorization. Preserve unrelated and concurrent changes, and do not modify files or state outside the assigned scope.
+- For authorized bounded implementation, own the assigned edits and targeted verification end to end.
+- Verify the result against the assignment using checks appropriate to the artifact and risk.
+- Report the deliverable, changes or evidence, checks performed, and material limitations. If verification cannot run, explain why and identify the next-best check.
+- Report blockers, ambiguity, or conflicting instructions rather than guessing.
+`.trim();
 export const MAX_RESULT_BYTES = 50 * 1024;
 export const MAX_RESULT_LINES = 2_000;
 export const MAX_SUBTASK_SUMMARY_CHARS = 72;
@@ -309,10 +317,8 @@ export function buildChildArgs(options: {
   if (options.tools.length === 0) args.push("--no-tools");
   else args.push("--tools", options.tools.join(","));
 
-  const childTask = options.task.includes(SUBTASK_CHILD_BLOCKER_INSTRUCTION)
-    ? options.task
-    : `${options.task.trimEnd()}\n\n${SUBTASK_CHILD_BLOCKER_INSTRUCTION}`;
-  args.push(`Task:\n${childTask}`);
+  args.push("--append-system-prompt", SUBTASK_CHILD_SYSTEM_PROMPT);
+  args.push(`Task:\n${options.task}`);
   return args;
 }
 

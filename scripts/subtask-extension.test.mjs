@@ -7,7 +7,7 @@ import {
   MAX_RESULT_BYTES,
   MAX_RESULT_LINES,
   MAX_SUBTASK_SUMMARY_CHARS,
-  SUBTASK_CHILD_BLOCKER_INSTRUCTION,
+  SUBTASK_CHILD_SYSTEM_PROMPT,
   SUBTASK_MODELS,
   SUBTASK_THINKING_LEVELS,
   SUBTASKS_TOOL_DESCRIPTION,
@@ -60,22 +60,16 @@ test("uses the plural tool name and excludes it from child tools", () => {
 });
 
 test("keeps execution metadata mechanical and delegation guidance tool-owned", () => {
-  assert.match(SUBTASKS_TOOL_DESCRIPTION, /isolated conversation context/i);
-  assert.match(SUBTASKS_TOOL_DESCRIPTION, /tracked independently of the calling turn/i);
-  assert.match(SUBTASKS_TOOL_DESCRIPTION, /wait=false.*steer queue/i);
+  assert.match(SUBTASKS_TOOL_DESCRIPTION, /isolated Pi processes/i);
+  assert.match(SUBTASKS_TOOL_DESCRIPTION, /share the current working directory/i);
+  assert.match(SUBTASKS_TOOL_DESCRIPTION, /Tasks in one call run in parallel/i);
   assert.doesNotMatch(
     SUBTASKS_TOOL_DESCRIPTION,
     /1-16|research|implementation|\bLuna\b|\bSol\b|retrieval|architecture|high-consequence/i,
   );
 
-  const guidelines = SUBTASKS_TOOL_PROMPT_GUIDELINES.join("\n");
+  assert.ok(SUBTASKS_TOOL_PROMPT_GUIDELINES.length > 0);
   assert.ok(SUBTASKS_TOOL_PROMPT_GUIDELINES.every((guideline) => /subtasks/i.test(guideline)));
-  assert.match(guidelines, /parallelism.*context isolation.*overhead/i);
-  assert.match(guidelines, /ready, independent subtasks.*prerequisites/i);
-  assert.match(guidelines, /self-contained assignment.*acceptance and validation.*stop rules/i);
-  assert.match(guidelines, /designated child.*targeted verification.*parent.*final integrated verification/i);
-  assert.match(guidelines, /share the working filesystem.*other agents.*concurrently.*preserve concurrent changes/i);
-  assert.doesNotMatch(guidelines, /\bLuna\b|\bSol\b|thinking/i);
 });
 
 test("formats one below-editor tree row per subtask", () => {
@@ -137,7 +131,7 @@ test("formats child costs compactly with small-cost precision", () => {
   assert.equal(formatSubtaskCost(0.00042), "$0.000");
 });
 
-test("builds a fresh child invocation with an exact tool allowlist", () => {
+test("builds a fresh child invocation with the fixed system contract", () => {
   const args = buildChildArgs({
     task: "Inspect the target",
     model: "openai-codex/gpt-5.6-luna",
@@ -152,22 +146,29 @@ test("builds a fresh child invocation with an exact tool allowlist", () => {
     "--tools",
     "read,grep",
   ]);
-  assert.equal(
-    args.at(-1),
-    `Task:\nInspect the target\n\n${SUBTASK_CHILD_BLOCKER_INSTRUCTION}`,
-  );
-  assert.equal(args.at(-1).split(SUBTASK_CHILD_BLOCKER_INSTRUCTION).length - 1, 1);
+  const appendIndex = args.indexOf("--append-system-prompt");
+  assert.notEqual(appendIndex, -1);
+  assert.equal(args.filter((arg) => arg === "--append-system-prompt").length, 1);
+  assert.equal(args[appendIndex + 1], SUBTASK_CHILD_SYSTEM_PROMPT);
+  assert.equal(args.at(-1), "Task:\nInspect the target");
+  assert.ok(args.indexOf("--append-system-prompt") < args.indexOf("Task:\nInspect the target"));
 });
 
-test("does not duplicate the fixed blocker instruction", () => {
+test("keeps caller task unchanged and adds one contract to a forked child", () => {
+  const task = "Review the prior decision\n\nDo not edit files.";
   const args = buildChildArgs({
-    task: `Inspect the target\n\n${SUBTASK_CHILD_BLOCKER_INSTRUCTION}`,
-    model: "openai-codex/gpt-5.6-luna",
-    thinking: "low",
+    task,
+    model: "openai-codex/gpt-5.6-sol",
+    thinking: "high",
     tools: [],
+    sessionFile: "/tmp/fork.jsonl",
   });
 
-  assert.equal(args.at(-1).split(SUBTASK_CHILD_BLOCKER_INSTRUCTION).length - 1, 1);
+  assert.equal(args.filter((arg) => arg === "--append-system-prompt").length, 1);
+  assert.equal(args[args.indexOf("--append-system-prompt") + 1], SUBTASK_CHILD_SYSTEM_PROMPT);
+  assert.equal(args.at(-1), `Task:\n${task}`);
+  assert.equal(args.includes("--session"), true);
+  assert.equal(args.includes("--no-session"), false);
 });
 
 test("maps legacy async arguments to wait without exposing async", () => {
@@ -185,7 +186,7 @@ test("maps legacy async arguments to wait without exposing async", () => {
   );
 });
 
-test("builds a forked child invocation and supports no tools", () => {
+test("supports no tools while preserving the forked child contract", () => {
   const args = buildChildArgs({
     task: "Review the prior decision",
     model: "openai-codex/gpt-5.6-sol",
@@ -200,6 +201,7 @@ test("builds a forked child invocation and supports no tools", () => {
   ]);
   assert.ok(args.includes("--no-tools"));
   assert.ok(!args.includes("--no-session"));
+  assert.equal(args.filter((arg) => arg === "--append-system-prompt").length, 1);
 });
 
 test("extension keeps fork and wait guidance with their parameters", () => {
@@ -211,10 +213,6 @@ test("extension keeps fork and wait guidance with their parameters", () => {
   assert.match(source, /wait: Type\.Optional\(\s*Type\.Boolean/);
   assert.doesNotMatch(source, /async: Type\.Optional\(\s*Type\.Boolean/);
   assert.match(source, /promptGuidelines: SUBTASKS_TOOL_PROMPT_GUIDELINES/);
-  assert.match(source, /prior user clarifications.*negotiated scope.*approval boundaries/);
-  assert.match(source, /results are required for the next correct decision/);
-  assert.match(source, /use false only when useful unrelated progress can continue/);
-  assert.match(source, /Aborting a waiting caller detaches it without cancelling the batch/);
   assert.match(source, /default: true/);
   assert.match(source, /deliverAs: "steer", triggerTurn: true/);
   assert.match(source, /await activeBatches\.cancelAndWait\(\)/);

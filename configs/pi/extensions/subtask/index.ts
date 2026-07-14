@@ -266,7 +266,7 @@ export function createSubtasksExtension(
 
       const SubtaskItemParams = Type.Object({
         task: Type.String({
-          description: "Assignment passed to the child Pi process.",
+          description: "Child assignment.",
           minLength: 1,
         }),
         model: StringEnum(SUBTASK_MODELS, {
@@ -282,7 +282,7 @@ export function createSubtasksExtension(
         fork: Type.Optional(
           Type.Boolean({
             description:
-              "Initialize the child from the parent conversation before this tool-call turn. Use true when prior user clarifications, negotiated scope, approval boundaries, or conversational design decisions materially affect correctness; use false for self-contained work. Default: false.",
+              "Inherit the parent conversation when prior clarifications, scope, permissions, or design decisions matter. Use false for self-contained work. Default: false.",
             default: false,
           }),
         ),
@@ -297,7 +297,7 @@ export function createSubtasksExtension(
         wait: Type.Optional(
           Type.Boolean({
             description:
-              "Whether the caller waits for completion. Use true when results are required for the next correct decision; use false only when useful unrelated progress can continue without them. false returns immediately and completion is delivered through Pi's steer queue. Aborting a waiting caller detaches it without cancelling the batch. Default: true.",
+              "Wait when results are needed next. Use false only while unrelated work can continue; results then arrive through the steer queue. Caller abort detaches without cancelling. Default: true.",
             default: true,
           }),
         ),
