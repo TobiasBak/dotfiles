@@ -4,6 +4,7 @@
   "defaultModel": "gpt-5.6-sol",
   "defaultThinkingLevel": "high",
   "collapseChangelog": true,
+  "steeringMode": "all",
   "compaction": {
     "reserveTokens": 32000
   },

@@ -9,17 +9,24 @@ export const SUBTASK_MODELS = [
 
 export const SUBTASK_THINKING_LEVELS = ["low", "medium", "high"] as const;
 export const SUBTASKS_TOOL_NAME = "subtasks";
+export const SUBTASKS_WAIT_TOOL_NAME = "subtasks_wait";
 export const SUBTASKS_CONTROL_TOOL_NAME = "subtasks_control";
 export const SUBTASKS_TOOL_DESCRIPTION =
-  "Run focused subtasks in isolated Pi processes that share the current working directory. Tasks in one call run in parallel; each selects its model, thinking, tools, and optional conversation fork. Each started task receives a six-character ID for later listing or cancellation.";
+  "Run focused subtasks in isolated Pi processes that share the current working directory. Each call creates one group. Tasks in one call run in parallel; each task selects its model, thinking, tools, and optional conversation fork. The call returns a group ID for later waiting and task IDs for listing or cancellation.";
+export const SUBTASKS_WAIT_TOOL_DESCRIPTION =
+  "Wait once for one or more subtask groups to finish. This blocks until every task in every requested group is terminal; aborting the wait does not cancel the subtasks. Use this instead of polling subtasks_control.";
 export const SUBTASKS_CONTROL_TOOL_DESCRIPTION =
-  "List running subtasks or cancel specific tasks by the six-character IDs returned by subtasks.";
+  "List running subtasks or cancel specific tasks by the six-character IDs returned by subtasks. Use list only for an on-demand status check, diagnosis, or cancellation workflow; do not poll periodically because subtasks_wait provides blocking group synchronization and completions are delivered automatically through the steer queue.";
 export const SUBTASKS_TOOL_PROMPT_GUIDELINES = [
   "Actively consider subtasks throughout non-trivial work. Delegate coherent, independently useful outcomes when parallelism, context isolation, specialization, or fresh verification justify the overhead; handle small, obvious, tightly coupled work directly.",
   "Launch only ready, independent subtasks together and resolve prerequisites before dependent work. The parent owns decisions, synthesis, and final acceptance. Keep one writer per shared state unless writers are isolated, and preserve concurrent changes.",
   "When using subtasks, give each child a bounded assignment with relevant context, constraints, permissions, success criteria, validation, expected output, and escalation or stop conditions.",
   "For implementation through subtasks, one child owns its edits and targeted verification end to end; the parent reviews the result and verifies integration instead of repeating the work. A fresh review subtask is optional, not a fixed stage.",
-  "For subtasks, use Sol with high thinking for design and planning, Sol at task-appropriate thinking for other judgment-heavy work, and Luna for clear, bounded, independently verifiable execution."
+  "For subtasks, choose the model and thinking level independently. Treat Luna as the cost-effective workhorse for clear, bounded work with explicit success criteria, including implementation, audits, reviews, debugging, and research. Luna is more sensitive to weak delegation, so do not leave it to infer scope, priorities, or the quality bar from poor guidance; first tighten the assignment, or use Sol when the ambiguity is inherent to the work.",
+  "For subtasks, prefer Sol when the task is materially ambiguous, open-ended, or high-stakes, or when quality depends on taste: choosing among multiple valid interfaces, seams, abstractions, names, code structures, or user-facing designs where simplicity, coherence, and polish cannot be fully specified in advance. Do not treat all design or judgment-heavy work as requiring Sol.",
+  "For subtasks, use the lowest thinking level likely to produce a correct result: low for simple mechanical work, medium as the normal starting point, and high for difficult multi-step investigation, tradeoffs, or verification. Reserve Sol with high thinking for the hardest taste-sensitive or cross-cutting work, or escalation after Luna is insufficient.",
+  "When a subtasks call uses wait=false, continue only concrete independent work. As soon as that work is exhausted and the group findings are needed, call subtasks_wait once for the relevant group IDs; it blocks until all requested groups finish.",
+  "Do not continuously poll subtasks_control for status. Use subtasks_wait for synchronization, and use subtasks_control list only for an on-demand status check, diagnosis, or cancellation workflow."
 ];
 export const SUBTASK_CHILD_ENV = "PI_SUBTASK_CHILD";
 export const SUBTASK_CHILD_SYSTEM_PROMPT = `## Subtask execution contract
@@ -145,41 +152,95 @@ export interface RunChildOptions {
   onProgress?: (progress: ChildProgress) => void;
 }
 
-export interface BatchExecutionModeOptions<TResult, TAcknowledgement> {
-  wait: boolean;
-  completion: Promise<TResult>;
-  acknowledgement: TAcknowledgement;
-  callerSignal?: AbortSignal;
-  detach(): void;
-  onBackgroundSuccess(result: TResult): void;
-  onBackgroundFailure(error: unknown): void;
+export interface MutableWidgetComponent {
+  render(width: number): string[];
+  invalidate(): void;
 }
 
-export async function executeBatchMode<TResult, TAcknowledgement>(
-  options: BatchExecutionModeOptions<TResult, TAcknowledgement>,
-): Promise<TResult | TAcknowledgement> {
+export interface MutableWidgetTui {
+  requestRender(): void;
+}
+
+export type MutableWidgetSetter<TTheme> = (
+  key: string,
+  content:
+    | ((tui: MutableWidgetTui, theme: TTheme) => MutableWidgetComponent)
+    | undefined,
+  options?: { placement?: "aboveEditor" | "belowEditor" },
+) => void;
+
+export function registerMutableWidget<TValue, TTheme>(options: {
+  setWidget: MutableWidgetSetter<TTheme>;
+  key: string;
+  initialValue: TValue;
+  placement?: "aboveEditor" | "belowEditor";
+  createComponent(getValue: () => TValue, theme: TTheme): MutableWidgetComponent;
+}): { update(value: TValue): void; clear(): void } {
+  let value = options.initialValue;
+  let cleared = false;
+  let requestRender = () => {};
+
+  options.setWidget(
+    options.key,
+    (tui, theme) => {
+      requestRender = () => tui.requestRender();
+      return options.createComponent(() => value, theme);
+    },
+    options.placement ? { placement: options.placement } : undefined,
+  );
+
+  return {
+    update(nextValue) {
+      if (cleared) return;
+      value = nextValue;
+      requestRender();
+    },
+    clear() {
+      if (cleared) return;
+      cleared = true;
+      options.setWidget(options.key, undefined);
+      requestRender = () => {};
+    },
+  };
+}
+
+export interface BatchExecutionModeOptions<TResult> {
+  wait: boolean;
+  completion: Promise<TResult>;
+  callerSignal?: AbortSignal;
+  detach(): void;
+  deliverSuccess(result: TResult): void;
+  deliverFailure(error: unknown): void;
+}
+
+export async function executeBatchMode<TResult>(
+  options: BatchExecutionModeOptions<TResult>,
+): Promise<void> {
   let detached = false;
+  const deliverCompletion = () =>
+    options.completion.then(options.deliverSuccess, options.deliverFailure);
   const detach = () => {
     if (detached) return;
     detached = true;
     options.detach();
-    void options.completion
-      .then(options.onBackgroundSuccess, options.onBackgroundFailure)
-      .catch(() => {});
+    void deliverCompletion().catch(() => {});
   };
 
   if (!options.wait) {
     detach();
-    return options.acknowledgement;
+    return;
   }
 
-  if (!options.callerSignal) return options.completion;
+  if (!options.callerSignal) {
+    await deliverCompletion();
+    return;
+  }
   if (options.callerSignal.aborted) {
     detach();
-    return options.acknowledgement;
+    return;
   }
 
-  return new Promise<TResult | TAcknowledgement>((resolve, reject) => {
+  return new Promise<void>((resolve, reject) => {
     let settled = false;
     const finish = (callback: () => void) => {
       if (settled) return;
@@ -187,17 +248,27 @@ export async function executeBatchMode<TResult, TAcknowledgement>(
       options.callerSignal?.removeEventListener("abort", onAbort);
       callback();
     };
+    const deliver = (callback: () => void) => {
+      finish(() => {
+        try {
+          callback();
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      });
+    };
     const onAbort = () => {
       finish(() => {
         detach();
-        resolve(options.acknowledgement);
+        resolve();
       });
     };
 
     options.callerSignal.addEventListener("abort", onAbort, { once: true });
     void options.completion.then(
-      (result) => finish(() => resolve(result)),
-      (error) => finish(() => reject(error)),
+      (result) => deliver(() => options.deliverSuccess(result)),
+      (error) => deliver(() => options.deliverFailure(error)),
     );
   });
 }
@@ -234,7 +305,12 @@ export function prepareSubtasksArguments(args: unknown): unknown {
 
 export function listSelectableTools(toolNames: Iterable<string>): string[] {
   return [...new Set(toolNames)]
-    .filter((name) => name !== SUBTASKS_TOOL_NAME && name !== SUBTASKS_CONTROL_TOOL_NAME)
+    .filter(
+      (name) =>
+        name !== SUBTASKS_TOOL_NAME &&
+        name !== SUBTASKS_WAIT_TOOL_NAME &&
+        name !== SUBTASKS_CONTROL_TOOL_NAME,
+    )
     .sort((a, b) => a.localeCompare(b));
 }
 
@@ -329,7 +405,6 @@ export function buildChildArgs(options: {
     "--mode",
     "json",
     "-p",
-    "--no-skills",
     "--no-prompt-templates",
     "--model",
     options.model,

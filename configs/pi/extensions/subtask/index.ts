@@ -6,7 +6,7 @@ import {
   type ExtensionContext,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
   MAX_RESULT_BYTES,
@@ -19,6 +19,8 @@ import {
   SUBTASKS_TOOL_DESCRIPTION,
   SUBTASKS_TOOL_NAME,
   SUBTASKS_TOOL_PROMPT_GUIDELINES,
+  SUBTASKS_WAIT_TOOL_DESCRIPTION,
+  SUBTASKS_WAIT_TOOL_NAME,
   type ObservedChanges,
   type SubtaskModel,
   type SubtaskStatus,
@@ -32,16 +34,24 @@ import {
   getPiInvocation,
   listSelectableTools,
   prepareSubtasksArguments,
+  registerMutableWidget,
   runChild,
   truncateResult,
 } from "./core.ts";
+import {
+  ParentHandoffTracker,
+  formatParentHandoffTiming,
+  type ParentHandoffTiming,
+} from "./handoff.ts";
 import { getSubtaskRuntimeState } from "./runtime.ts";
 
 const MAX_SUBTASKS = 16;
 const MAX_ERROR_BYTES = 4 * 1024;
 const MAX_ERROR_LINES = 40;
 const WIDGET_PREFIX = "subtasks:";
-const BACKGROUND_MESSAGE_TYPE = "subtasks-background-result";
+const PARENT_HANDOFF_WIDGET_ID = `${WIDGET_PREFIX}parent-handoff`;
+const SUBTASK_RESULT_MESSAGE_TYPE = "subtasks-result";
+const SUBTASK_HANDOFF_TIMING_ENTRY_TYPE = "subtasks-handoff-timing";
 
 interface SubtaskRequest {
   task: string;
@@ -194,15 +204,21 @@ function getSelectableToolNames(pi: ExtensionAPI): string[] {
   );
 }
 
-function setSubtaskWidget(ctx: ExtensionContext, widgetId: string, tasks: SubtaskStatusItem[]): void {
-  if (ctx.mode !== "tui") return;
+function registerSubtaskWidget(
+  ctx: ExtensionContext,
+  widgetId: string,
+  tasks: SubtaskStatusItem[],
+): { update(tasks: SubtaskStatusItem[]): void; clear(): void } {
+  if (ctx.mode !== "tui") return { update() {}, clear() {} };
 
-  const rows = formatSubtaskStatusRows(tasks);
-  ctx.ui.setWidget(
-    widgetId,
-    (_tui, theme) => ({
+  return registerMutableWidget({
+    setWidget: (key, content, options) => ctx.ui.setWidget(key, content, options),
+    key: widgetId,
+    initialValue: tasks,
+    placement: "belowEditor",
+    createComponent: (getTasks, theme) => ({
       render(width: number): string[] {
-        return rows.map((row) => {
+        return formatSubtaskStatusRows(getTasks()).map((row) => {
           const color =
             row.status === "completed"
               ? "success"
@@ -224,8 +240,31 @@ function setSubtaskWidget(ctx: ExtensionContext, widgetId: string, tasks: Subtas
       },
       invalidate() {},
     }),
-    { placement: "belowEditor" },
-  );
+  });
+}
+
+function registerParentHandoffWidget(
+  ctx: ExtensionContext,
+  timings: ParentHandoffTiming[],
+): { update(timings: ParentHandoffTiming[]): void; clear(): void } {
+  if (ctx.mode !== "tui") return { update() {}, clear() {} };
+
+  return registerMutableWidget({
+    setWidget: (key, content, options) => ctx.ui.setWidget(key, content, options),
+    key: PARENT_HANDOFF_WIDGET_ID,
+    initialValue: timings,
+    placement: "belowEditor",
+    createComponent: (getTimings, theme) => ({
+      render(width: number): string[] {
+        return getTimings().map((timing) => {
+          const color = timing.responseCompletedAt === undefined ? "accent" : "success";
+          const line = `${theme.fg(color, "↪ parent handoff")}  ${formatParentHandoffTiming(timing)}`;
+          return truncateToWidth(line, width);
+        });
+      },
+      invalidate() {},
+    }),
+  });
 }
 
 function clearSubtaskWidget(ctx: ExtensionContext, widgetId: string): void {
@@ -268,14 +307,19 @@ export function createSubtasksExtension(
     let registered = false;
     let shuttingDown = false;
     let inheritedWidgetTimer: NodeJS.Timeout | undefined;
+    let inheritedWidget: ReturnType<typeof registerSubtaskWidget> | undefined;
+    let handoffWidgetTimer: NodeJS.Timeout | undefined;
+    let handoffWidget: ReturnType<typeof registerParentHandoffWidget> | undefined;
+    const handoffTracker = new ParentHandoffTracker();
     const activeWidgetIds = new Set<string>();
     const inheritedWidgetId = `${WIDGET_PREFIX}inherited`;
 
-    const stopInheritedWidget = (ctx: ExtensionContext) => {
+    const stopInheritedWidget = () => {
       if (inheritedWidgetTimer) clearInterval(inheritedWidgetTimer);
       inheritedWidgetTimer = undefined;
       activeWidgetIds.delete(inheritedWidgetId);
-      clearSubtaskWidget(ctx, inheritedWidgetId);
+      inheritedWidget?.clear();
+      inheritedWidget = undefined;
     };
 
     const startInheritedWidget = (ctx: ExtensionContext) => {
@@ -286,11 +330,15 @@ export function createSubtasksExtension(
         if (shuttingDown) return;
         const inheritedTasks = runtime.listTasks(inheritedIds);
         if (inheritedTasks.length === 0) {
-          stopInheritedWidget(ctx);
+          stopInheritedWidget();
           return;
         }
-        activeWidgetIds.add(inheritedWidgetId);
-        setSubtaskWidget(ctx, inheritedWidgetId, inheritedTasks);
+        if (inheritedWidget) {
+          inheritedWidget.update(inheritedTasks);
+        } else {
+          activeWidgetIds.add(inheritedWidgetId);
+          inheritedWidget = registerSubtaskWidget(ctx, inheritedWidgetId, inheritedTasks);
+        }
       };
 
       refresh();
@@ -298,26 +346,134 @@ export function createSubtasksExtension(
       inheritedWidgetTimer.unref();
     };
 
-    const bindRuntimeDelivery = () => {
+    const stopHandoffWidgetTimer = () => {
+      if (handoffWidgetTimer) clearInterval(handoffWidgetTimer);
+      handoffWidgetTimer = undefined;
+    };
+
+    const clearHandoffWidget = () => {
+      stopHandoffWidgetTimer();
+      activeWidgetIds.delete(PARENT_HANDOFF_WIDGET_ID);
+      handoffWidget?.clear();
+      handoffWidget = undefined;
+    };
+
+    const refreshHandoffWidget = (ctx: ExtensionContext) => {
+      const timings = handoffTracker.list();
+      if (timings.length === 0) {
+        clearHandoffWidget();
+        return;
+      }
+      if (handoffWidget) handoffWidget.update(timings);
+      else {
+        activeWidgetIds.add(PARENT_HANDOFF_WIDGET_ID);
+        handoffWidget = registerParentHandoffWidget(ctx, timings);
+      }
+    };
+
+    const animateHandoffWidget = (ctx: ExtensionContext) => {
+      refreshHandoffWidget(ctx);
+      if (handoffWidgetTimer) return;
+      handoffWidgetTimer = setInterval(() => refreshHandoffWidget(ctx), 250);
+      handoffWidgetTimer.unref();
+    };
+
+    const bindRuntimeDelivery = (ctx: ExtensionContext) => {
       runtime.bindDelivery(({ content, details }) => {
+        const acceptedAt = Date.now();
+        const queuedAt =
+          typeof details.parentHandoff === "object" &&
+          details.parentHandoff !== null &&
+          typeof (details.parentHandoff as { resultQueuedAt?: unknown }).resultQueuedAt === "number"
+            ? (details.parentHandoff as { resultQueuedAt: number }).resultQueuedAt
+            : acceptedAt;
+        const groupId = typeof details.groupId === "string" ? details.groupId : undefined;
+        const batchId = typeof details.batchId === "string" ? details.batchId : undefined;
+        const timing = groupId
+          ? handoffTracker.accept({
+              groupId,
+              batchId,
+              resultBytes: Buffer.byteLength(content, "utf8"),
+              resultQueuedAt: queuedAt,
+              resultAcceptedAt: acceptedAt,
+            })
+          : undefined;
+
         pi.sendMessage(
           {
-            customType: BACKGROUND_MESSAGE_TYPE,
+            customType: SUBTASK_RESULT_MESSAGE_TYPE,
             content,
             display: true,
-            details,
+            details: timing ? { ...details, parentHandoff: timing } : details,
           },
           { deliverAs: "steer", triggerTurn: true },
         );
+        if (timing) animateHandoffWidget(ctx);
       });
     };
+
+    const coordinationTools = [SUBTASKS_CONTROL_TOOL_NAME, SUBTASKS_WAIT_TOOL_NAME];
+    const updateCoordinationTools = (forceEnable = false) => {
+      const activeToolNames = pi.getActiveTools();
+      const shouldEnable =
+        forceEnable || runtime.listGroups().length > 0 || runtime.listTasks().length > 0;
+      if (shouldEnable) {
+        const missingTools = coordinationTools.filter(
+          (toolName) => !activeToolNames.includes(toolName),
+        );
+        if (missingTools.length > 0) pi.setActiveTools([...activeToolNames, ...missingTools]);
+        return;
+      }
+
+      pi.setActiveTools(activeToolNames.filter((toolName) => !coordinationTools.includes(toolName)));
+    };
+
+    pi.registerEntryRenderer<ParentHandoffTiming>(
+      SUBTASK_HANDOFF_TIMING_ENTRY_TYPE,
+      (entry, _options, theme) => {
+        const timing = entry.data;
+        const text = timing
+          ? `${theme.fg("success", "↪ parent handoff")}  ${formatParentHandoffTiming(timing)}`
+          : theme.fg("muted", "Parent handoff timing unavailable");
+        return new Text(text, 0, 0);
+      },
+    );
+
+    pi.on("before_provider_request", (_event, ctx) => {
+      if (handoffTracker.markPayloadBuilt().length > 0) refreshHandoffWidget(ctx);
+    });
+
+    pi.on("message_start", (event, ctx) => {
+      if (event.message.role !== "assistant") return;
+      handoffTracker.markStreamStarted();
+      refreshHandoffWidget(ctx);
+    });
+
+    pi.on("message_end", (event, ctx) => {
+      if (event.message.role !== "assistant") return;
+      if (handoffTracker.markResponseCompleted().length === 0) return;
+      stopHandoffWidgetTimer();
+      refreshHandoffWidget(ctx);
+    });
+
+    pi.on("turn_end", (_event, ctx) => {
+      const completed = handoffTracker.drainCompleted();
+      for (const timing of completed) {
+        pi.appendEntry<ParentHandoffTiming>(SUBTASK_HANDOFF_TIMING_ENTRY_TYPE, timing);
+      }
+      if (completed.length > 0) refreshHandoffWidget(ctx);
+    });
 
     pi.on("session_shutdown", async (event, ctx) => {
       shuttingDown = true;
       if (inheritedWidgetTimer) clearInterval(inheritedWidgetTimer);
       inheritedWidgetTimer = undefined;
+      stopHandoffWidgetTimer();
       for (const widgetId of activeWidgetIds) clearSubtaskWidget(ctx, widgetId);
       activeWidgetIds.clear();
+      inheritedWidget = undefined;
+      handoffWidget = undefined;
+      handoffTracker.clear();
 
       if (event.reason === "reload") {
         runtime.suspendForReload();
@@ -330,7 +486,7 @@ export function createSubtasksExtension(
       shuttingDown = false;
       const finishSessionStart = () => {
         if (event.reason === "reload") startInheritedWidget(ctx);
-        bindRuntimeDelivery();
+        bindRuntimeDelivery(ctx);
       };
       if (registered) {
         finishSessionStart();
@@ -376,9 +532,24 @@ export function createSubtasksExtension(
         wait: Type.Optional(
           Type.Boolean({
             description:
-              "Wait when results are needed next. Use false only while unrelated work can continue; results then arrive through the steer queue. Caller abort detaches without cancelling. Default: true.",
+              "Wait for every task to finish before this tool call returns. Completion is always delivered through the steer queue. Use false only while unrelated work can continue; caller abort detaches without cancelling. Default: true.",
             default: true,
           }),
+        ),
+      });
+
+      const SubtaskWaitParams = Type.Object({
+        groupIds: Type.Array(
+          Type.String({
+            description: "Subtask group ID returned by subtasks.",
+            pattern: "^g-[0-9a-f]{6}$",
+          }),
+          {
+            description: "Groups to wait for. The call returns after every group is terminal.",
+            minItems: 1,
+            maxItems: MAX_SUBTASKS,
+            uniqueItems: true,
+          },
         ),
       });
 
@@ -436,6 +607,44 @@ export function createSubtasksExtension(
       });
 
       pi.registerTool({
+        name: SUBTASKS_WAIT_TOOL_NAME,
+        label: "Wait for Subtasks",
+        description: SUBTASKS_WAIT_TOOL_DESCRIPTION,
+        promptSnippet: "Block once until every task in the requested subtask groups is terminal",
+        parameters: SubtaskWaitParams,
+
+        async execute(_toolCallId, params, signal) {
+          const result = await runtime.waitForGroups(params.groupIds, signal);
+          const groupStatuses = result.groups
+            .map((group) => `${group.id} [${group.status}]`)
+            .join(", ");
+          if (result.aborted) {
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `Stopped waiting for subtask groups: ${groupStatuses}. The subtasks continue running and completion will still be delivered through the steer queue.`,
+                },
+              ],
+              details: result,
+            };
+          }
+
+          runtime.forgetGroups(params.groupIds);
+          updateCoordinationTools();
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Subtask groups reached terminal state: ${groupStatuses}. Findings were delivered through the steer queue.`,
+              },
+            ],
+            details: result,
+          };
+        },
+      });
+
+      pi.registerTool({
         name: SUBTASKS_TOOL_NAME,
         label: "Subtasks",
         description: SUBTASKS_TOOL_DESCRIPTION,
@@ -447,6 +656,7 @@ export function createSubtasksExtension(
 
         async execute(toolCallId, params, signal, onUpdate, executionCtx) {
           const requests = params.tasks as SubtaskRequest[];
+          const groupId = runtime.allocateGroupId();
           const tasks: SubtaskState[] = requests.map((request) => ({
             id: runtime.allocateTaskId(),
             task: request.task,
@@ -473,15 +683,13 @@ export function createSubtasksExtension(
             { once: true },
           );
 
-          const activeToolNames = pi.getActiveTools();
-          if (!activeToolNames.includes(SUBTASKS_CONTROL_TOOL_NAME)) {
-            pi.setActiveTools([...activeToolNames, SUBTASKS_CONTROL_TOOL_NAME]);
-          }
+          updateCoordinationTools(true);
 
           const runBatch = async (): Promise<SubtaskBatchCompletion> => {
             const widgetId = `${WIDGET_PREFIX}${toolCallId}`;
             const snapshotFiles = new Map<number, string>();
             let durationTimer: NodeJS.Timeout | undefined;
+            let widget: ReturnType<typeof registerSubtaskWidget> | undefined;
 
             const refreshElapsed = () => {
               const now = Date.now();
@@ -495,7 +703,7 @@ export function createSubtasksExtension(
             const refreshWidget = () => {
               if (shuttingDown) return;
               refreshElapsed();
-              setSubtaskWidget(executionCtx, widgetId, tasks);
+              widget?.update(tasks);
             };
 
             const publish = () => {
@@ -526,6 +734,7 @@ export function createSubtasksExtension(
               }
 
               activeWidgetIds.add(widgetId);
+              widget = registerSubtaskWidget(executionCtx, widgetId, tasks);
               publish();
               durationTimer = setInterval(refreshWidget, 1_000);
               durationTimer.unref();
@@ -657,7 +866,7 @@ export function createSubtasksExtension(
               activeWidgetIds.delete(widgetId);
               if (!shuttingDown) {
                 try {
-                  clearSubtaskWidget(executionCtx, widgetId);
+                  widget?.clear();
                 } catch (error) {
                   cleanupErrors.push(error);
                 }
@@ -670,60 +879,59 @@ export function createSubtasksExtension(
           };
 
           const completion = runBatch();
-          runtime.trackBatch(controller, completion);
+          runtime.trackGroup(
+            groupId,
+            tasks.map((task) => task.id),
+            controller,
+            completion,
+          );
 
-          const deliverBackgroundResult = (
+          const deliverSteerResult = (
             content: string,
             details: Record<string, unknown>,
           ): void => {
-            runtime.deliver({ content, details });
-          };
-
-          const acknowledgement = {
-            content: [
-              {
-                type: "text" as const,
-                text: `Started ${tasks.length} independent subtask${tasks.length === 1 ? "" : "s"}: ${tasks.map((task) => task.id).join(", ")}. Completion will be delivered through the steer queue.`,
+            runtime.deliver({
+              content,
+              details: {
+                ...details,
+                parentHandoff: { resultQueuedAt: Date.now() },
               },
-            ],
-            details: {
-              ...copyDetails(tasks),
-              background: true,
-              batchId: toolCallId,
-              status: "running",
-            },
+            });
           };
+          let deliveryStatus: "running" | "completed" | "failed" = "running";
 
-          const settledOrAcknowledgement = await executeBatchMode({
+          await executeBatchMode({
             wait: params.wait !== false,
             completion,
-            acknowledgement,
             callerSignal: signal,
             detach() {
               detachedFromToolResult = true;
             },
-            onBackgroundSuccess({ result, allFailed }) {
-              const status = allFailed ? "failed" : "completed";
-              deliverBackgroundResult(
-                `## Background subtasks ${toolCallId} [${status}]\n\n${result.content[0]?.text ?? ""}`,
+            deliverSuccess({ result, allFailed }) {
+              deliveryStatus = allFailed ? "failed" : "completed";
+              deliverSteerResult(
+                `## Subtask group ${groupId} [${deliveryStatus}]\n\n${result.content[0]?.text ?? ""}`,
                 {
                   ...result.details,
-                  background: true,
+                  delivery: "steer",
+                  groupId,
                   batchId: toolCallId,
-                  status,
+                  status: deliveryStatus,
                 },
               );
             },
-            onBackgroundFailure(error) {
+            deliverFailure(error) {
+              deliveryStatus = "failed";
               const boundedError = truncateResult(errorMessage(error), {
                 maxBytes: MAX_ERROR_BYTES,
                 maxLines: MAX_ERROR_LINES,
               });
-              deliverBackgroundResult(
-                `## Background subtasks ${toolCallId} [failed]\n\n${boundedError.content}`,
+              deliverSteerResult(
+                `## Subtask group ${groupId} [failed]\n\n${boundedError.content}`,
                 {
                   ...copyDetails(tasks),
-                  background: true,
+                  delivery: "steer",
+                  groupId,
                   batchId: toolCallId,
                   status: "failed",
                   error: boundedError.content,
@@ -732,25 +940,29 @@ export function createSubtasksExtension(
             },
           });
 
-          if (settledOrAcknowledgement === acknowledgement) return acknowledgement;
-          const settled = settledOrAcknowledgement as SubtaskBatchCompletion;
-          if (settled.allFailed) {
-            throw new Error(`All subtasks failed:\n${settled.result.content[0]?.text ?? ""}`);
-          }
-          return settled.result;
+          if (!detachedFromToolResult) runtime.forgetGroups([groupId]);
+          updateCoordinationTools();
+
+          const taskLabel = `subtask${tasks.length === 1 ? "" : "s"}`;
+          const taskIds = tasks.map((task) => task.id).join(", ");
+          const message =
+            deliveryStatus === "running"
+              ? `Started subtask group ${groupId} with ${tasks.length} independent ${taskLabel}: ${taskIds}. Use subtasks_wait for group ${groupId} when independent work is exhausted; completion will be delivered through the steer queue.`
+              : `Finished subtask group ${groupId} with ${tasks.length} independent ${taskLabel}: ${taskIds}. Completion was delivered through the steer queue.`;
+          return {
+            content: [{ type: "text" as const, text: message }],
+            details: {
+              ...copyDetails(tasks),
+              delivery: "steer",
+              groupId,
+              batchId: toolCallId,
+              status: deliveryStatus,
+            },
+          };
         },
       });
 
-      if (runtime.listTasks().length > 0) {
-        const activeToolNames = pi.getActiveTools();
-        if (!activeToolNames.includes(SUBTASKS_CONTROL_TOOL_NAME)) {
-          pi.setActiveTools([...activeToolNames, SUBTASKS_CONTROL_TOOL_NAME]);
-        }
-      } else {
-        pi.setActiveTools(
-          pi.getActiveTools().filter((toolName) => toolName !== SUBTASKS_CONTROL_TOOL_NAME),
-        );
-      }
+      updateCoordinationTools();
       registered = true;
       finishSessionStart();
     });

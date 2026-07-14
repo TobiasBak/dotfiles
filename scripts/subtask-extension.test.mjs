@@ -20,6 +20,7 @@ import {
   SUBTASKS_TOOL_DESCRIPTION,
   SUBTASKS_TOOL_NAME,
   SUBTASKS_TOOL_PROMPT_GUIDELINES,
+  SUBTASKS_WAIT_TOOL_NAME,
   buildChildArgs,
   combineChildOutputWithObservedChanges,
   executeBatchMode,
@@ -28,6 +29,7 @@ import {
   formatSubtaskStatusLines,
   listSelectableTools,
   prepareSubtasksArguments,
+  registerMutableWidget,
   runChild,
   truncateResult,
 } from "../configs/pi/extensions/subtask/core.ts";
@@ -35,6 +37,10 @@ import {
   SubtaskRuntimeState,
   getSubtaskRuntimeState,
 } from "../configs/pi/extensions/subtask/runtime.ts";
+import {
+  ParentHandoffTracker,
+  formatParentHandoffTiming,
+} from "../configs/pi/extensions/subtask/handoff.ts";
 
 function deferred() {
   let resolve;
@@ -62,13 +68,15 @@ test("exposes only Luna and Sol with low, medium, and high thinking", () => {
   assert.deepEqual(SUBTASK_THINKING_LEVELS, ["low", "medium", "high"]);
 });
 
-test("uses separate execution and control tools and excludes both from children", () => {
+test("uses separate execution, wait, and control tools and excludes them from children", () => {
   assert.equal(SUBTASKS_TOOL_NAME, "subtasks");
+  assert.equal(SUBTASKS_WAIT_TOOL_NAME, "subtasks_wait");
   assert.equal(SUBTASKS_CONTROL_TOOL_NAME, "subtasks_control");
   assert.deepEqual(
     listSelectableTools([
       "write",
       "subtasks",
+      "subtasks_wait",
       "subtasks_control",
       "read",
       "write",
@@ -78,13 +86,19 @@ test("uses separate execution and control tools and excludes both from children"
   );
 });
 
-test("generates unique six-character hexadecimal task IDs", () => {
+test("generates distinct task and group IDs", () => {
   const runtime = new SubtaskRuntimeState();
-  const ids = new Set();
-  for (let index = 0; index < 100; index += 1) ids.add(runtime.allocateTaskId());
+  const taskIds = new Set();
+  const groupIds = new Set();
+  for (let index = 0; index < 100; index += 1) {
+    taskIds.add(runtime.allocateTaskId());
+    groupIds.add(runtime.allocateGroupId());
+  }
 
-  assert.equal(ids.size, 100);
-  assert.ok([...ids].every((id) => /^[0-9a-f]{6}$/.test(id)));
+  assert.equal(taskIds.size, 100);
+  assert.equal(groupIds.size, 100);
+  assert.ok([...taskIds].every((id) => /^[0-9a-f]{6}$/.test(id)));
+  assert.ok([...groupIds].every((id) => /^g-[0-9a-f]{6}$/.test(id)));
 });
 
 test("keeps execution metadata mechanical and delegation guidance tool-owned", () => {
@@ -136,6 +150,143 @@ test("formats one below-editor tree row per subtask", () => {
   );
 });
 
+test("updates a registered widget in place without changing widget order", () => {
+  const registrations = [];
+  const widgets = new Map();
+  let renders = 0;
+  const tui = { requestRender: () => { renders += 1; } };
+  const theme = {
+    fg: (_color, text) => text,
+    bold: (text) => text,
+  };
+  const ctx = {
+    mode: "tui",
+    ui: {
+      setWidget(key, content) {
+        widgets.delete(key);
+        if (content === undefined) return;
+        registrations.push(key);
+        widgets.set(key, content(tui, theme));
+      },
+    },
+  };
+  const running = [{ id: "a1b2c3", task: "First", status: "running", elapsedMs: 1_000 }];
+  const widget = registerMutableWidget({
+    setWidget: ctx.ui.setWidget,
+    key: "subtasks:first",
+    initialValue: running,
+    placement: "belowEditor",
+    createComponent: (getTasks) => ({
+      render: () => formatSubtaskStatusLines(getTasks()),
+      invalidate() {},
+    }),
+  });
+  ctx.ui.setWidget("subtasks:second", () => ({ render: () => ["second"], invalidate() {} }));
+
+  widget.update([{ ...running[0], status: "completed", elapsedMs: 2_000 }]);
+  widget.update([{ ...running[0], status: "completed", elapsedMs: 3_000 }]);
+
+  assert.deepEqual([...widgets.keys()], ["subtasks:first", "subtasks:second"]);
+  assert.equal(registrations.filter((key) => key === "subtasks:first").length, 1);
+  assert.equal(renders, 2);
+  assert.match(widgets.get("subtasks:first").render(120)[0], /✓ done\s+00:03/);
+
+  widget.clear();
+  assert.equal(widgets.has("subtasks:first"), false);
+});
+
+test("tracks parent handoff boundaries without confusing response completion with request delivery", () => {
+  const tracker = new ParentHandoffTracker();
+  tracker.accept({
+    groupId: "g-a1b2c3",
+    batchId: "call-1",
+    resultBytes: 46_059,
+    resultQueuedAt: 1_000,
+    resultAcceptedAt: 1_004,
+  });
+
+  assert.deepEqual(tracker.markPayloadBuilt(1_020), ["g-a1b2c3"]);
+  tracker.markStreamStarted(2_500);
+  const completed = tracker.markResponseCompleted(8_000);
+
+  assert.equal(completed.length, 1);
+  assert.deepEqual(completed[0], {
+    groupId: "g-a1b2c3",
+    batchId: "call-1",
+    resultBytes: 46_059,
+    resultQueuedAt: 1_000,
+    resultAcceptedAt: 1_004,
+    payloadBuiltAt: 1_020,
+    streamStartedAt: 2_500,
+    responseCompletedAt: 8_000,
+  });
+  assert.deepEqual(tracker.list(), completed);
+  assert.deepEqual(tracker.drainCompleted(), completed);
+  assert.deepEqual(tracker.list(), []);
+});
+
+test("assigns all queued subtask groups to one parent provider request", () => {
+  const tracker = new ParentHandoffTracker();
+  tracker.accept({
+    groupId: "g-111111",
+    resultBytes: 100,
+    resultQueuedAt: 100,
+    resultAcceptedAt: 101,
+  });
+  tracker.accept({
+    groupId: "g-222222",
+    resultBytes: 200,
+    resultQueuedAt: 110,
+    resultAcceptedAt: 111,
+  });
+
+  assert.deepEqual(tracker.markPayloadBuilt(120), ["g-111111", "g-222222"]);
+  tracker.markStreamStarted(150);
+  assert.deepEqual(
+    tracker.markResponseCompleted(200).map((timing) => timing.groupId),
+    ["g-111111", "g-222222"],
+  );
+});
+
+test("does not attach a result queued during an active response to that response", () => {
+  const tracker = new ParentHandoffTracker();
+  tracker.accept({
+    groupId: "g-first1",
+    resultBytes: 100,
+    resultQueuedAt: 100,
+    resultAcceptedAt: 101,
+  });
+  tracker.markPayloadBuilt(110);
+  tracker.accept({
+    groupId: "g-second",
+    resultBytes: 200,
+    resultQueuedAt: 120,
+    resultAcceptedAt: 121,
+  });
+  tracker.markStreamStarted(130);
+
+  assert.deepEqual(
+    tracker.markResponseCompleted(140).map((timing) => timing.groupId),
+    ["g-first1"],
+  );
+  assert.deepEqual(tracker.markPayloadBuilt(150), ["g-second"]);
+});
+
+test("formats parent handoff timing as cumulative boundaries", () => {
+  assert.equal(
+    formatParentHandoffTiming({
+      groupId: "g-a1b2c3",
+      resultBytes: 46_059,
+      resultQueuedAt: 1_000,
+      resultAcceptedAt: 1_004,
+      payloadBuiltAt: 1_020,
+      streamStartedAt: 2_500,
+      responseCompletedAt: 8_000,
+    }),
+    "g-a1b2c3 · 45.0KB · accepted +4ms · payload +20ms · stream +1.5s · done +7.0s",
+  );
+});
+
 test("puts a bounded task summary after all status metadata", () => {
   const [line] = formatSubtaskStatusLines([
     {
@@ -171,7 +322,7 @@ test("builds a fresh child invocation with the fixed system contract", () => {
   });
 
   assert.ok(args.includes("--no-session"));
-  assert.ok(args.includes("--no-skills"));
+  assert.equal(args.includes("--no-skills"), false);
   assert.ok(args.includes("--no-prompt-templates"));
   assert.deepEqual(args.slice(args.indexOf("--tools"), args.indexOf("--tools") + 2), [
     "--tools",
@@ -242,26 +393,36 @@ test("extension keeps fork and wait guidance with their parameters", () => {
   );
 
   assert.match(source, /wait: Type\.Optional\(\s*Type\.Boolean/);
+  assert.match(source, /name: SUBTASKS_WAIT_TOOL_NAME/);
+  assert.match(source, /runtime\.waitForGroups\(params\.groupIds, signal\)/);
   assert.doesNotMatch(source, /async: Type\.Optional\(\s*Type\.Boolean/);
   assert.match(source, /promptGuidelines: SUBTASKS_TOOL_PROMPT_GUIDELINES/);
   assert.match(source, /default: true/);
+  assert.match(source, /Completion is always delivered through the steer queue/);
   assert.match(source, /deliverAs: "steer", triggerTurn: true/);
 });
 
-test("wait mode returns normal completion without background delivery", async () => {
+test("defaults Pi steering delivery to all queued messages", () => {
+  const settings = JSON.parse(
+    readFileSync(new URL("../configs/pi/settings.json", import.meta.url), "utf8"),
+  );
+
+  assert.equal(settings.steeringMode, "all");
+});
+
+test("wait mode holds the tool open and delivers completion through steer", async () => {
   const batch = deferred();
-  const backgroundEvents = [];
+  const deliveries = [];
   let detached = false;
   let settled = false;
   const execution = executeBatchMode({
     wait: true,
     completion: batch.promise,
-    acknowledgement: "started",
     detach: () => {
       detached = true;
     },
-    onBackgroundSuccess: (result) => backgroundEvents.push(result),
-    onBackgroundFailure: (error) => backgroundEvents.push(error),
+    deliverSuccess: (result) => deliveries.push({ type: "steer", result }),
+    deliverFailure: (error) => deliveries.push({ type: "failure", error }),
   }).finally(() => {
     settled = true;
   });
@@ -269,33 +430,50 @@ test("wait mode returns normal completion without background delivery", async ()
   await Promise.resolve();
   assert.equal(settled, false);
   assert.equal(detached, false);
+  assert.deepEqual(deliveries, []);
 
   batch.resolve("finished");
-  assert.equal(await execution, "finished");
+  await execution;
   assert.equal(detached, false);
-  assert.deepEqual(backgroundEvents, []);
+  assert.deepEqual(deliveries, [{ type: "steer", result: "finished" }]);
 });
 
-test("wait=false acknowledges immediately and delivers eventual success once", async () => {
+test("wait mode delivers failure through steer instead of rejecting the tool", async () => {
   const batch = deferred();
-  const backgroundEvents = [];
+  const deliveries = [];
+  const execution = executeBatchMode({
+    wait: true,
+    completion: batch.promise,
+    detach() {},
+    deliverSuccess: (value) => deliveries.push({ type: "success", value }),
+    deliverFailure: (error) => deliveries.push({ type: "failure", error }),
+  });
+
+  const failure = new Error("child exploded");
+  batch.reject(failure);
+  await execution;
+  assert.deepEqual(deliveries, [{ type: "failure", error: failure }]);
+});
+
+test("wait=false returns immediately and delivers eventual success once", async () => {
+  const batch = deferred();
+  const deliveries = [];
   let detachCount = 0;
-  const result = await executeBatchMode({
+  await executeBatchMode({
     wait: false,
     completion: batch.promise,
-    acknowledgement: { status: "running" },
     detach: () => {
       detachCount += 1;
     },
-    onBackgroundSuccess: (value) => backgroundEvents.push({ type: "steer", value }),
-    onBackgroundFailure: (error) => backgroundEvents.push({ type: "failure", error }),
+    deliverSuccess: (value) => deliveries.push({ type: "steer", value }),
+    deliverFailure: (error) => deliveries.push({ type: "failure", error }),
   });
 
-  assert.deepEqual(result, { status: "running" });
   assert.equal(detachCount, 1);
+  assert.deepEqual(deliveries, []);
   batch.resolve("background result");
-  await eventually(() => backgroundEvents.length === 1);
-  assert.deepEqual(backgroundEvents, [{ type: "steer", value: "background result" }]);
+  await eventually(() => deliveries.length === 1);
+  assert.deepEqual(deliveries, [{ type: "steer", value: "background result" }]);
 });
 
 test("caller abort detaches wait without cancelling completion", async () => {
@@ -306,17 +484,16 @@ test("caller abort detaches wait without cancelling completion", async () => {
   const execution = executeBatchMode({
     wait: true,
     completion: batch.promise,
-    acknowledgement: "detached",
     callerSignal: caller.signal,
     detach: () => {
       detachCount += 1;
     },
-    onBackgroundSuccess: (value) => backgroundEvents.push({ type: "steer", value }),
-    onBackgroundFailure: (error) => backgroundEvents.push({ type: "failure", error }),
+    deliverSuccess: (value) => backgroundEvents.push({ type: "steer", value }),
+    deliverFailure: (error) => backgroundEvents.push({ type: "failure", error }),
   });
 
   caller.abort();
-  assert.equal(await execution, "detached");
+  await execution;
   assert.equal(detachCount, 1);
   assert.equal(backgroundEvents.length, 0);
 
@@ -331,10 +508,9 @@ test("detached batch routes failure once", async () => {
   await executeBatchMode({
     wait: false,
     completion: batch.promise,
-    acknowledgement: "started",
     detach() {},
-    onBackgroundSuccess: (value) => backgroundEvents.push({ type: "success", value }),
-    onBackgroundFailure: (error) => backgroundEvents.push({ type: "failure", error }),
+    deliverSuccess: (value) => backgroundEvents.push({ type: "success", value }),
+    deliverFailure: (error) => backgroundEvents.push({ type: "failure", error }),
   });
 
   const failure = new Error("child exploded");
@@ -455,28 +631,88 @@ test("runtime lists tasks and cancels only requested IDs", async () => {
   await eventually(() => runtime.listTasks().length === 0);
 });
 
-test("normal shutdown cancels tasks and batches, awaits them, and drops queued delivery", async () => {
+test("waits once for every requested group and retains terminal status", async () => {
+  const runtime = new SubtaskRuntimeState();
+  const first = deferred();
+  const second = deferred();
+  runtime.trackGroup("g-a1b2c3", ["111111"], new AbortController(), first.promise);
+  runtime.trackGroup("g-d4e5f6", ["222222", "333333"], new AbortController(), second.promise);
+
+  let settled = false;
+  const waiting = runtime.waitForGroups(["g-a1b2c3", "g-d4e5f6"]).finally(() => {
+    settled = true;
+  });
+  first.resolve({ allFailed: false });
+  await Promise.resolve();
+  assert.equal(settled, false);
+
+  second.resolve({ allFailed: true });
+  assert.deepEqual(await waiting, {
+    groups: [
+      { id: "g-a1b2c3", taskIds: ["111111"], status: "completed" },
+      { id: "g-d4e5f6", taskIds: ["222222", "333333"], status: "failed" },
+    ],
+    aborted: false,
+  });
+  assert.deepEqual(runtime.listGroups(), [
+    { id: "g-a1b2c3", taskIds: ["111111"], status: "completed" },
+    { id: "g-d4e5f6", taskIds: ["222222", "333333"], status: "failed" },
+  ]);
+
+  runtime.forgetGroups(["g-a1b2c3", "g-d4e5f6"]);
+  assert.deepEqual(runtime.listGroups(), []);
+});
+
+test("aborting a group wait detaches the waiter without cancelling subtasks", async () => {
+  const runtime = new SubtaskRuntimeState();
+  const groupController = new AbortController();
+  const completion = deferred();
+  runtime.trackGroup("g-a1b2c3", ["111111"], groupController, completion.promise);
+  const caller = new AbortController();
+
+  const waiting = runtime.waitForGroups(["g-a1b2c3"], caller.signal);
+  caller.abort();
+  assert.deepEqual(await waiting, {
+    groups: [{ id: "g-a1b2c3", taskIds: ["111111"], status: "running" }],
+    aborted: true,
+  });
+  assert.equal(groupController.signal.aborted, false);
+
+  completion.resolve({ allFailed: false });
+  assert.deepEqual(await runtime.waitForGroups(["g-a1b2c3"]), {
+    groups: [{ id: "g-a1b2c3", taskIds: ["111111"], status: "completed" }],
+    aborted: false,
+  });
+});
+
+test("rejects waits for unknown group IDs instead of hanging", async () => {
+  const runtime = new SubtaskRuntimeState();
+  await assert.rejects(runtime.waitForGroups(["g-ffffff"]), /Unknown subtask group IDs: g-ffffff/);
+});
+
+test("normal shutdown cancels tasks and groups, awaits them, and drops queued delivery", async () => {
   const runtime = new SubtaskRuntimeState();
   const taskController = new AbortController();
-  const batchController = new AbortController();
+  const groupController = new AbortController();
   const task = deferred();
-  const batch = deferred();
+  const group = deferred();
   taskController.signal.addEventListener("abort", () => task.reject(new Error("task cancelled")));
-  batchController.signal.addEventListener("abort", () => batch.reject(new Error("batch cancelled")));
+  groupController.signal.addEventListener("abort", () => group.reject(new Error("group cancelled")));
   runtime.trackTask("a1b2c3", taskController, task.promise, () => ({
     id: "a1b2c3",
     task: "Stop normally",
     status: "running",
   }));
-  runtime.trackBatch(batchController, batch.promise);
+  runtime.trackGroup("g-a1b2c3", ["a1b2c3"], groupController, group.promise);
   runtime.bindDelivery(() => {});
   runtime.suspendForReload();
   runtime.deliver({ content: "must be dropped", details: {} });
 
   await runtime.stopAndCancel();
   assert.equal(taskController.signal.aborted, true);
-  assert.equal(batchController.signal.aborted, true);
+  assert.equal(groupController.signal.aborted, true);
   assert.deepEqual(runtime.listTasks(), []);
+  assert.deepEqual(runtime.listGroups(), []);
 
   const deliveries = [];
   runtime.bindDelivery((delivery) => deliveries.push(delivery.content));
