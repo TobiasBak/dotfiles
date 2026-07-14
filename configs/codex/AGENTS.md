@@ -5,5 +5,18 @@
 - Never manually modify `CHANGELOG.md` files or any files that are marked as auto-generated.
 - Assume multiple agents are working on the same filesystem. Do not modify, revert, or delete changes you did not make.
 - When making technical decisions, do not give much weight to development cost. Instead, prefer quality, simplicity, robustness, scalability, and long term maintainability.
-- For non-trivial tasks, default to delegating independent work to subagents and run them in parallel when useful. Prefer `scout` for codebase reconnaissance and task decomposition, `researcher` for authoritative external research, and `worker` for bounded implementation and verification. The primary agent should focus on planning, coordination, critical decisions, reviewing subagent work, integration, and final verification rather than doing all work itself.
-- For every Pi `subagent(...)` execution, pass `artifacts: false` unless the user explicitly requests persisted debug artifacts.
+
+## Decomposing work
+
+- Break broad work into coherent, manageable pieces that can be completed and checked independently.
+- Keep tightly coupled reasoning and changes together.
+- Identify prerequisites and complete them before dependent work. Independent pieces may proceed concurrently when useful.
+- Resolve decisions that affect multiple pieces deliberately, then integrate and verify the complete result.
+- Coordinate work that touches shared state and preserve concurrent changes.
+
+## Models and thinking
+
+- Use Luna for clear, bounded, independently verifiable leaf work.
+- Use Sol for synthesis, architecture, difficult debugging, integration, ambiguity, and high-consequence review.
+- Use low thinking for retrieval and mechanical work, medium for ordinary multi-step execution, and high for judgment-heavy or consequential work.
+- Raise thinking as ambiguity, risk, or weak validation increases.

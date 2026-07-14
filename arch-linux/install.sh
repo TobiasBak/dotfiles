@@ -238,7 +238,6 @@ setup_symlinks() {
     # Codex CLI configuration
     link_config "$CONFIGS_DIR/codex/AGENTS.md" "$HOME/.codex/AGENTS.md"
     link_config "$CONFIGS_DIR/codex/config.toml" "$HOME/.codex/config.toml"
-    link_config "$CONFIGS_DIR/codex/agents" "$HOME/.codex/agents"
     link_config "$CONFIGS_DIR/codex/prompts" "$HOME/.codex/prompts"
 
     # Config folders
@@ -311,18 +310,25 @@ install_node() {
     fi
 }
 
-sync_codex_subagents() {
+remove_legacy_subagents() {
     local package_root="$HOME/.pi/agent/npm"
-    local source_dir="$package_root/node_modules/pi-subagents/agents"
-    local sync_script="$REAL_REPO_DIR/scripts/sync-codex-agents-from-pi-subagents.mjs"
+    local agents_link="$HOME/.codex/agents"
 
-    mkdir -p "$package_root"
-    log_info "Installing/updating pi-subagents prompt source..."
-    npm install --prefix "$package_root" --no-save "pi-subagents@latest"
+    if [ -d "$package_root/node_modules/pi-subagents" ] ||
+       { [ -f "$package_root/package.json" ] && grep -q '"pi-subagents"' "$package_root/package.json"; }; then
+        if command -v npm &> /dev/null; then
+            log_info "Removing legacy pi-subagents package..."
+            npm uninstall --prefix "$package_root" pi-subagents ||
+                log_warning "Could not remove legacy pi-subagents package from $package_root"
+        else
+            log_warning "npm not found, skipping legacy pi-subagents package cleanup."
+        fi
+    fi
 
-    log_info "Generating Codex agents from pi-subagents..."
-    node "$sync_script" --source "$source_dir"
-    log_success "Codex subagents synchronized."
+    if [ -L "$agents_link" ]; then
+        log_info "Removing legacy Codex agents link..."
+        rm -f "$agents_link"
+    fi
 }
 
 install_pi_skills() {
@@ -364,7 +370,7 @@ enable_multilib_repository
 install_packages
 install_oh_my_zsh
 install_node
-sync_codex_subagents
+remove_legacy_subagents
 configure_desktop_settings
 setup_symlinks
 install_pi_skills

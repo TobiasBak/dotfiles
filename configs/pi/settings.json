@@ -7,26 +7,9 @@
   "compaction": {
     "reserveTokens": 32000
   },
-  "subagents": {
-    "agentOverrides": {
-      "worker": {
-        "model": "openai-codex/gpt-5.6-luna",
-        "thinking": "high"
-      },
-      "scout": {
-        "model": "openai-codex/gpt-5.6-luna",
-        "thinking": "high"
-      },
-      "researcher": {
-        "model": "openai-codex/gpt-5.6-luna",
-        "thinking": "high"
-      }
-    }
-  },
   "packages": [
     "npm:@hypabolic/pi-hypa",
-    "npm:pi-web-access",
-    "npm:pi-subagents"
+    "npm:pi-web-access"
   ],
   "defaultProjectTrust": "always",
   "enableInstallTelemetry": true
