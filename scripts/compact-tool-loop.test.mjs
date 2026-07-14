@@ -1,16 +1,19 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import compactToolLoop from "../configs/pi/extensions/compact-tool-loop.ts";
+import compactToolLoop, {
+  COMPACTION_HEADROOM_TOKENS,
+} from "../configs/pi/extensions/compact-tool-loop.ts";
 
 const HIGH_USAGE = { tokens: 249_327, contextWindow: 272_000, percent: 91.7 };
-const NOTHING_TO_COMPACT = new Error("Nothing to compact (session too small)");
+const LOW_USAGE = { tokens: 200_000, contextWindow: 272_000, percent: 73.5 };
 
-function createHarness() {
+function createHarness({ usage = HIGH_USAGE } = {}) {
   const handlers = new Map();
-  const compactCalls = [];
   const notifications = [];
   const sentMessages = [];
+  let abortCalls = 0;
   let idle = false;
 
   const pi = {
@@ -24,9 +27,12 @@ function createHarness() {
 
   const ctx = {
     hasUI: true,
-    getContextUsage: () => HIGH_USAGE,
-    compact(options) {
-      compactCalls.push(options);
+    getContextUsage: () => usage,
+    abort() {
+      abortCalls += 1;
+    },
+    compact() {
+      throw new Error("The extension must not start a competing manual compaction");
     },
     isIdle: () => idle,
     ui: {
@@ -40,7 +46,9 @@ function createHarness() {
   compactToolLoop(pi);
 
   return {
-    compactCalls,
+    get abortCalls() {
+      return abortCalls;
+    },
     ctx,
     handlers,
     notifications,
@@ -58,13 +66,64 @@ function emitToolTurn(harness) {
   );
 }
 
-test("creates a safe turn boundary when the first tool-loop compaction has no compactable prefix", () => {
+function emitCoreCompaction(harness, { reason = "threshold", willRetry = false } = {}) {
+  harness.handlers.get("session_compact")({ reason, willRetry }, harness.ctx);
+}
+
+test("uses the same compaction headroom configured for Pi core", () => {
+  const settings = JSON.parse(
+    readFileSync(new URL("../configs/pi/settings.json", import.meta.url), "utf8"),
+  );
+
+  assert.equal(settings.compaction.reserveTokens, COMPACTION_HEADROOM_TOKENS);
+});
+
+test("stops the tool loop and leaves compaction ownership to Pi core", () => {
   const harness = createHarness();
 
   emitToolTurn(harness);
-  assert.equal(harness.compactCalls.length, 1);
 
-  harness.compactCalls[0].onError(NOTHING_TO_COMPACT);
+  assert.equal(harness.abortCalls, 1);
+  assert.match(harness.notifications.at(-1).message, /compacting before the next model request/i);
+  assert.equal(harness.notifications.at(-1).level, "warning");
+});
+
+test("does not stop below the compaction threshold", () => {
+  const harness = createHarness({ usage: LOW_USAGE });
+
+  emitToolTurn(harness);
+
+  assert.equal(harness.abortCalls, 0);
+  assert.equal(harness.notifications.length, 0);
+});
+
+test("continues automatically after core threshold compaction", () => {
+  const harness = createHarness();
+
+  emitToolTurn(harness);
+  emitCoreCompaction(harness);
+
+  assert.equal(harness.sentMessages.length, 1);
+  assert.match(harness.sentMessages[0].message, /continue the same task/i);
+  assert.deepEqual(harness.sentMessages[0].options, { deliverAs: "followUp" });
+  assert.doesNotMatch(harness.notifications.at(-1).message, /failed/i);
+});
+
+test("lets core own continuation when overflow compaction will retry", () => {
+  const harness = createHarness();
+
+  emitToolTurn(harness);
+  emitCoreCompaction(harness, { reason: "overflow", willRetry: true });
+  harness.handlers.get("agent_settled")({}, harness.ctx);
+
+  assert.equal(harness.sentMessages.length, 0);
+});
+
+test("creates a safe turn boundary when core cannot compact the stopped tool loop", () => {
+  const harness = createHarness();
+
+  emitToolTurn(harness);
+  harness.handlers.get("agent_settled")({}, harness.ctx);
 
   assert.equal(harness.sentMessages.length, 1);
   assert.match(harness.sentMessages[0].message, /reply with exactly "READY"/i);
@@ -73,93 +132,62 @@ test("creates a safe turn boundary when the first tool-loop compaction has no co
   assert.equal(harness.notifications.at(-1).level, "warning");
 });
 
-test("continues the task after built-in compaction uses the recovery boundary", () => {
+test("continues after core compacts the recovery boundary", () => {
   const harness = createHarness();
 
   emitToolTurn(harness);
-  harness.compactCalls[0].onError(NOTHING_TO_COMPACT);
-  harness.handlers.get("session_compact")(
-    { reason: "threshold", willRetry: false },
-    harness.ctx,
-  );
+  harness.handlers.get("agent_settled")({}, harness.ctx);
+  emitCoreCompaction(harness);
 
   assert.equal(harness.sentMessages.length, 2);
   assert.match(harness.sentMessages[1].message, /continue the same task/i);
   assert.deepEqual(harness.sentMessages[1].options, { deliverAs: "followUp" });
 });
 
-test("stops with a clear error when the safe boundary still cannot be compacted", () => {
+test("stops clearly when core still does not compact the recovery boundary", () => {
   const harness = createHarness();
 
   emitToolTurn(harness);
-  harness.compactCalls[0].onError(NOTHING_TO_COMPACT);
+  harness.handlers.get("agent_settled")({}, harness.ctx);
   harness.handlers.get("agent_settled")({}, harness.ctx);
 
   assert.equal(harness.sentMessages.length, 1);
   assert.equal(harness.notifications.at(-1).level, "error");
-  assert.match(harness.notifications.at(-1).message, /still no compactable history/i);
+  assert.match(harness.notifications.at(-1).message, /still did not compact/i);
+  assert.match(harness.notifications.at(-1).message, /settings.*authentication/i);
 });
 
-test("continues the task once after core retries an overflowing boundary turn", () => {
+test("ignores unrelated and duplicate compaction events", () => {
   const harness = createHarness();
 
+  emitCoreCompaction(harness);
+  assert.equal(harness.sentMessages.length, 0);
+
   emitToolTurn(harness);
-  harness.compactCalls[0].onError(NOTHING_TO_COMPACT);
-  harness.handlers.get("session_compact")(
-    { reason: "overflow", willRetry: true },
-    harness.ctx,
-  );
+  emitCoreCompaction(harness);
+  emitCoreCompaction(harness);
+
   assert.equal(harness.sentMessages.length, 1);
-
-  harness.setIdle(true);
-  harness.handlers.get("agent_settled")({}, harness.ctx);
-
-  assert.equal(harness.sentMessages.length, 2);
-  assert.match(harness.sentMessages[1].message, /continue the same task/i);
-  assert.equal(harness.sentMessages[1].options, undefined);
 });
 
-test("allows one more manual compaction after creating the boundary without retrying forever", () => {
+test("does not treat manual compaction as the requested core auto-compaction", () => {
   const harness = createHarness();
 
   emitToolTurn(harness);
-  harness.compactCalls[0].onError(NOTHING_TO_COMPACT);
-  emitToolTurn(harness);
-  assert.equal(harness.compactCalls.length, 2);
-
-  harness.handlers.get("agent_settled")({}, harness.ctx);
-  assert.notEqual(harness.notifications.at(-1).level, "error");
-
-  harness.compactCalls[1].onError(NOTHING_TO_COMPACT);
-  assert.equal(harness.sentMessages.length, 1);
-  assert.equal(harness.notifications.at(-1).level, "error");
-  assert.match(harness.notifications.at(-1).message, /automatic continuation stopped/i);
-});
-
-test("leaves non-structural compaction failures stopped", () => {
-  const harness = createHarness();
-
-  emitToolTurn(harness);
-  harness.compactCalls[0].onError(new Error("Authentication failed"));
+  emitCoreCompaction(harness, { reason: "manual", willRetry: false });
 
   assert.equal(harness.sentMessages.length, 0);
-  assert.equal(harness.notifications.at(-1).level, "error");
-  assert.match(harness.notifications.at(-1).message, /Authentication failed/);
+  harness.handlers.get("agent_settled")({}, harness.ctx);
+  assert.match(harness.sentMessages[0].message, /reply with exactly "READY"/i);
 });
 
-test("manual recovery compaction has a single continuation owner", () => {
+test("sends continuation immediately when Pi is idle", () => {
   const harness = createHarness();
+  harness.setIdle(true);
 
   emitToolTurn(harness);
-  harness.compactCalls[0].onError(NOTHING_TO_COMPACT);
-  emitToolTurn(harness);
-  harness.handlers.get("session_compact")(
-    { reason: "manual", willRetry: false },
-    harness.ctx,
-  );
+  emitCoreCompaction(harness);
+
   assert.equal(harness.sentMessages.length, 1);
-
-  harness.compactCalls[1].onComplete();
-  assert.equal(harness.sentMessages.length, 2);
-  assert.match(harness.sentMessages[1].message, /continue the same task/i);
+  assert.equal(harness.sentMessages[0].options, undefined);
 });

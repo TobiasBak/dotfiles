@@ -118,6 +118,7 @@ resources:
         @{ name = 'codeSettings'; path = Join-Path $env:APPDATA 'Code\User\settings.json' }
         @{ name = 'codeKeybindings'; path = Join-Path $env:APPDATA 'Code\User\keybindings.json' }
         @{ name = 'weztermConfig'; path = Join-Path $HOME '.wezterm.lua' }
+        @{ name = 'wslConfig'; path = Join-Path $HOME '.wslconfig' }
       )
       $present = @{}
       foreach ($target in $targets) {
@@ -152,6 +153,7 @@ resources:
         @{ path = Join-Path $env:APPDATA 'Code\User\settings.json'; target = Join-Path $effectiveRepoRoot 'configs\Code\User\settings.json' }
         @{ path = Join-Path $env:APPDATA 'Code\User\keybindings.json'; target = Join-Path $effectiveRepoRoot 'configs\Code\User\keybindings.json' }
         @{ path = Join-Path $HOME '.wezterm.lua'; target = Join-Path $effectiveRepoRoot 'configs\wezterm\wezterm.lua' }
+        @{ path = Join-Path $HOME '.wslconfig'; target = Join-Path $effectiveRepoRoot 'configs\wsl\wslconfig' }
       )
       $missingLinks = @($expectedLinks | Where-Object { -not (Test-LinkTarget $_.path $_.target) })
       return ((Test-LinkTarget $stableRepoRoot $repoRoot) -and $missingLinks.Count -eq 0)
@@ -216,6 +218,7 @@ resources:
       Link-DotfileConfig (Join-Path $configsDir 'Code\User\settings.json') (Join-Path $env:APPDATA 'Code\User\settings.json')
       Link-DotfileConfig (Join-Path $configsDir 'Code\User\keybindings.json') (Join-Path $env:APPDATA 'Code\User\keybindings.json')
       Link-DotfileConfig (Join-Path $configsDir 'wezterm\wezterm.lua') (Join-Path $HOME '.wezterm.lua')
+      Link-DotfileConfig (Join-Path $configsDir 'wsl\wslconfig') (Join-Path $HOME '.wslconfig')
 
 - name: RemoveLegacyPowerShellProfileDotfilesHooks
   type: Microsoft.DSC.Transitional/PowerShellScript
