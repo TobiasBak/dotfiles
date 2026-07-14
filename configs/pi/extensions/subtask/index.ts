@@ -9,20 +9,25 @@ import {
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
-  ActiveBatchRegistry,
   MAX_RESULT_BYTES,
   MAX_RESULT_LINES,
   SUBTASK_CHILD_ENV,
   SUBTASK_MODELS,
+  SUBTASKS_CONTROL_TOOL_DESCRIPTION,
+  SUBTASKS_CONTROL_TOOL_NAME,
   SUBTASK_THINKING_LEVELS,
   SUBTASKS_TOOL_DESCRIPTION,
   SUBTASKS_TOOL_NAME,
   SUBTASKS_TOOL_PROMPT_GUIDELINES,
+  type ObservedChanges,
   type SubtaskModel,
   type SubtaskStatus,
+  type SubtaskStatusItem,
   type SubtaskThinkingLevel,
   buildChildArgs,
+  combineChildOutputWithObservedChanges,
   executeBatchMode,
+  formatSubtaskStatusLines,
   formatSubtaskStatusRows,
   getPiInvocation,
   listSelectableTools,
@@ -30,6 +35,7 @@ import {
   runChild,
   truncateResult,
 } from "./core.ts";
+import { getSubtaskRuntimeState } from "./runtime.ts";
 
 const MAX_SUBTASKS = 16;
 const MAX_ERROR_BYTES = 4 * 1024;
@@ -46,6 +52,7 @@ interface SubtaskRequest {
 }
 
 interface SubtaskDetails {
+  id: string;
   task: string;
   model: SubtaskModel;
   thinking: SubtaskThinkingLevel;
@@ -71,6 +78,7 @@ interface SubtaskDetails {
     turns: number;
   };
   outputTruncated?: boolean;
+  observedChanges?: ObservedChanges;
 }
 
 interface SubtaskState extends SubtaskDetails {
@@ -150,6 +158,17 @@ function copyDetails(tasks: SubtaskState[]): SubtaskBatchDetails {
         ...task,
         tools: [...task.tools],
         usage: task.usage ? { ...task.usage } : undefined,
+        observedChanges: task.observedChanges
+          ? {
+              files: task.observedChanges.files.map((file) => ({
+                ...file,
+                edit: file.edit ? { ...file.edit } : undefined,
+                write: file.write ? { ...file.write } : undefined,
+                snippets: file.snippets.map((snippet) => ({ ...snippet })),
+              })),
+              omittedOperations: task.observedChanges.omittedOperations,
+            }
+          : undefined,
       };
       delete details.startedAt;
       return details as SubtaskDetails;
@@ -175,7 +194,7 @@ function getSelectableToolNames(pi: ExtensionAPI): string[] {
   );
 }
 
-function setSubtaskWidget(ctx: ExtensionContext, widgetId: string, tasks: SubtaskState[]): void {
+function setSubtaskWidget(ctx: ExtensionContext, widgetId: string, tasks: SubtaskStatusItem[]): void {
   if (ctx.mode !== "tui") return;
 
   const rows = formatSubtaskStatusRows(tasks);
@@ -193,7 +212,7 @@ function setSubtaskWidget(ctx: ExtensionContext, widgetId: string, tasks: Subtas
                   ? "accent"
                   : "muted";
           const status = `${row.marker} ${row.label.padEnd(9)} ${row.duration}`;
-          let line = theme.fg("borderMuted", `${row.connector} `);
+          let line = theme.fg("borderMuted", `${row.connector} [${row.id}] `);
           line += theme.fg(color, theme.bold(status));
           if (row.metadata.length > 0) {
             line += theme.fg("dim", `  ${row.metadata.join("  ·  ")}`);
@@ -245,24 +264,84 @@ export function createSubtasksExtension(
   return function subtasksExtension(pi: ExtensionAPI): void {
     if (process.env[SUBTASK_CHILD_ENV] === "1") return;
 
+    const runtime = getSubtaskRuntimeState();
     let registered = false;
     let shuttingDown = false;
+    let inheritedWidgetTimer: NodeJS.Timeout | undefined;
     const activeWidgetIds = new Set<string>();
-    const activeBatches = new ActiveBatchRegistry();
+    const inheritedWidgetId = `${WIDGET_PREFIX}inherited`;
 
-    pi.on("session_shutdown", async (_event, ctx) => {
+    const stopInheritedWidget = (ctx: ExtensionContext) => {
+      if (inheritedWidgetTimer) clearInterval(inheritedWidgetTimer);
+      inheritedWidgetTimer = undefined;
+      activeWidgetIds.delete(inheritedWidgetId);
+      clearSubtaskWidget(ctx, inheritedWidgetId);
+    };
+
+    const startInheritedWidget = (ctx: ExtensionContext) => {
+      const inheritedIds = new Set(runtime.listTasks().map((task) => task.id));
+      if (inheritedIds.size === 0) return;
+
+      const refresh = () => {
+        if (shuttingDown) return;
+        const inheritedTasks = runtime.listTasks(inheritedIds);
+        if (inheritedTasks.length === 0) {
+          stopInheritedWidget(ctx);
+          return;
+        }
+        activeWidgetIds.add(inheritedWidgetId);
+        setSubtaskWidget(ctx, inheritedWidgetId, inheritedTasks);
+      };
+
+      refresh();
+      inheritedWidgetTimer = setInterval(refresh, 1_000);
+      inheritedWidgetTimer.unref();
+    };
+
+    const bindRuntimeDelivery = () => {
+      runtime.bindDelivery(({ content, details }) => {
+        pi.sendMessage(
+          {
+            customType: BACKGROUND_MESSAGE_TYPE,
+            content,
+            display: true,
+            details,
+          },
+          { deliverAs: "steer", triggerTurn: true },
+        );
+      });
+    };
+
+    pi.on("session_shutdown", async (event, ctx) => {
       shuttingDown = true;
+      if (inheritedWidgetTimer) clearInterval(inheritedWidgetTimer);
+      inheritedWidgetTimer = undefined;
       for (const widgetId of activeWidgetIds) clearSubtaskWidget(ctx, widgetId);
       activeWidgetIds.clear();
-      await activeBatches.cancelAndWait();
+
+      if (event.reason === "reload") {
+        runtime.suspendForReload();
+        return;
+      }
+      await runtime.stopAndCancel();
     });
 
-    pi.on("session_start", () => {
+    pi.on("session_start", (event, ctx) => {
       shuttingDown = false;
-      if (registered) return;
+      const finishSessionStart = () => {
+        if (event.reason === "reload") startInheritedWidget(ctx);
+        bindRuntimeDelivery();
+      };
+      if (registered) {
+        finishSessionStart();
+        return;
+      }
 
       const selectableTools = getSelectableToolNames(pi);
-      if (selectableTools.length === 0) return;
+      if (selectableTools.length === 0) {
+        finishSessionStart();
+        return;
+      }
 
       const SubtaskItemParams = Type.Object({
         task: Type.String({
@@ -282,7 +361,7 @@ export function createSubtasksExtension(
         fork: Type.Optional(
           Type.Boolean({
             description:
-              "Inherit the parent conversation when prior clarifications, scope, permissions, or design decisions matter. Use false for self-contained work. Default: false.",
+              "Replays the full parent conversation and may add substantial uncached input cost. Omit unless the child cannot complete from the assignment and filesystem alone. Prefer a self-contained task. Default: false.",
             default: false,
           }),
         ),
@@ -303,6 +382,59 @@ export function createSubtasksExtension(
         ),
       });
 
+      const SubtaskControlParams = Type.Union([
+        Type.Object({ action: Type.Literal("list") }),
+        Type.Object({
+          action: Type.Literal("cancel"),
+          ids: Type.Array(
+            Type.String({
+              description: "Six-character subtask ID returned by subtasks.",
+              pattern: "^[0-9a-f]{6}$",
+            }),
+            { minItems: 1, uniqueItems: true },
+          ),
+        }),
+      ]);
+
+      pi.registerTool({
+        name: SUBTASKS_CONTROL_TOOL_NAME,
+        label: "Subtask Control",
+        description: SUBTASKS_CONTROL_TOOL_DESCRIPTION,
+        parameters: SubtaskControlParams,
+
+        async execute(_toolCallId, params) {
+          if (params.action === "list") {
+            const running = runtime.listTasks();
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text:
+                    running.length === 0
+                      ? "No subtasks are running."
+                      : `Running subtasks:\n${formatSubtaskStatusLines(running).join("\n")}`,
+                },
+              ],
+              details: { tasks: running },
+            };
+          }
+
+          const cancellation = await runtime.cancelTasks(params.ids);
+          const messages = [
+            cancellation.cancelled.length > 0
+              ? `Cancelled: ${cancellation.cancelled.join(", ")}`
+              : "No matching running subtasks were cancelled.",
+          ];
+          if (cancellation.notRunning.length > 0) {
+            messages.push(`Not running: ${cancellation.notRunning.join(", ")}`);
+          }
+          return {
+            content: [{ type: "text" as const, text: messages.join("\n") }],
+            details: { ...cancellation, tasks: runtime.listTasks() },
+          };
+        },
+      });
+
       pi.registerTool({
         name: SUBTASKS_TOOL_NAME,
         label: "Subtasks",
@@ -316,6 +448,7 @@ export function createSubtasksExtension(
         async execute(toolCallId, params, signal, onUpdate, executionCtx) {
           const requests = params.tasks as SubtaskRequest[];
           const tasks: SubtaskState[] = requests.map((request) => ({
+            id: runtime.allocateTaskId(),
             task: request.task,
             model: request.model,
             thinking: request.thinking,
@@ -327,9 +460,23 @@ export function createSubtasksExtension(
             contextWindow: 0,
             cost: 0,
             toolCalls: 0,
+            observedChanges: { files: [], omittedOperations: 0 },
           }));
           let detachedFromToolResult = false;
           const controller = new AbortController();
+          const taskControllers = tasks.map(() => new AbortController());
+          controller.signal.addEventListener(
+            "abort",
+            () => {
+              for (const taskController of taskControllers) taskController.abort();
+            },
+            { once: true },
+          );
+
+          const activeToolNames = pi.getActiveTools();
+          if (!activeToolNames.includes(SUBTASKS_CONTROL_TOOL_NAME)) {
+            pi.setActiveTools([...activeToolNames, SUBTASKS_CONTROL_TOOL_NAME]);
+          }
 
           const runBatch = async (): Promise<SubtaskBatchCompletion> => {
             const widgetId = `${WIDGET_PREFIX}${toolCallId}`;
@@ -387,9 +534,10 @@ export function createSubtasksExtension(
                 if (requests[index]?.fork) snapshotFiles.set(index, createForkSnapshot(executionCtx));
               }
 
-              const outcomes = await Promise.all(
-                requests.map(async (request, index): Promise<SubtaskOutcome> => {
-                  const details = tasks[index]!;
+              const taskCompletions = requests.map((request, index) => {
+                const details = tasks[index]!;
+                const taskController = taskControllers[index]!;
+                const completion = (async (): Promise<SubtaskOutcome> => {
                   details.status = "running";
                   details.startedAt = Date.now();
                   publish();
@@ -405,7 +553,7 @@ export function createSubtasksExtension(
                     const result = await runChildProcess({
                       invocation: getPiInvocation(args),
                       cwd: executionCtx.cwd,
-                      signal: controller.signal,
+                      signal: taskController.signal,
                       onProgress(progress) {
                         details.progress = progress.message;
                         details.contextTokens = progress.contextTokens;
@@ -420,6 +568,7 @@ export function createSubtasksExtension(
                     details.usage = result.usage;
                     details.contextTokens = result.usage.contextTokens;
                     details.cost = result.usage.cost;
+                    details.observedChanges = result.observedChanges;
 
                     const failed =
                       result.exitCode !== 0 ||
@@ -444,17 +593,24 @@ export function createSubtasksExtension(
                     details.progress = undefined;
                     details.error = boundedError.content;
                     refreshElapsed();
-                    details.status = controller.signal.aborted ? "cancelled" : "failed";
+                    details.status =
+                      taskController.signal.aborted || controller.signal.aborted ? "cancelled" : "failed";
                     publish();
                     return { error: boundedError.content };
                   }
-                }),
-              );
+                })();
+
+                runtime.trackTask(details.id, taskController, completion, () => {
+                  refreshElapsed();
+                  return { ...details };
+                });
+                return completion;
+              });
+              const outcomes = await Promise.all(taskCompletions);
 
               if (controller.signal.aborted) throw new Error("Subtasks were cancelled");
 
-              const failedCount = tasks.filter((task) => task.status === "failed").length;
-              const allFailed = failedCount === tasks.length;
+              const allFailed = tasks.every((task) => task.status !== "completed");
 
               const perTaskBytes = Math.max(
                 512,
@@ -467,13 +623,14 @@ export function createSubtasksExtension(
               const combined = outcomes
                 .map((outcome, index) => {
                   const status = tasks[index]!.status;
-                  const body = outcome.output ?? `Error: ${outcome.error ?? "unknown failure"}`;
-                  const bounded = truncateResult(body, {
-                    maxBytes: perTaskBytes,
-                    maxLines: perTaskLines,
-                  });
+                  const response = outcome.output ?? `Error: ${outcome.error ?? "unknown failure"}`;
+                  const bounded = combineChildOutputWithObservedChanges(
+                    response,
+                    tasks[index]!.observedChanges!,
+                    { maxBytes: perTaskBytes, maxLines: perTaskLines },
+                  );
                   tasks[index]!.outputTruncated = bounded.truncated;
-                  return `## Subtask ${index + 1} [${status}]\n${bounded.content}`;
+                  return `## Subtask ${tasks[index]!.id} [${status}]\n${bounded.content}`;
                 })
                 .join("\n\n");
               const finalResult = truncateResult(combined);
@@ -513,33 +670,20 @@ export function createSubtasksExtension(
           };
 
           const completion = runBatch();
-          activeBatches.track(controller, completion);
+          runtime.trackBatch(controller, completion);
 
           const deliverBackgroundResult = (
             content: string,
             details: Record<string, unknown>,
           ): void => {
-            if (shuttingDown) return;
-            try {
-              pi.sendMessage(
-                {
-                  customType: BACKGROUND_MESSAGE_TYPE,
-                  content,
-                  display: true,
-                  details,
-                },
-                { deliverAs: "steer", triggerTurn: true },
-              );
-            } catch {
-              // The runtime can become stale only during session replacement or reload.
-            }
+            runtime.deliver({ content, details });
           };
 
           const acknowledgement = {
             content: [
               {
                 type: "text" as const,
-                text: `Started independent subtasks batch ${toolCallId} with ${tasks.length} task${tasks.length === 1 ? "" : "s"}. Completion will be delivered through the steer queue.`,
+                text: `Started ${tasks.length} independent subtask${tasks.length === 1 ? "" : "s"}: ${tasks.map((task) => task.id).join(", ")}. Completion will be delivered through the steer queue.`,
               },
             ],
             details: {
@@ -597,7 +741,18 @@ export function createSubtasksExtension(
         },
       });
 
+      if (runtime.listTasks().length > 0) {
+        const activeToolNames = pi.getActiveTools();
+        if (!activeToolNames.includes(SUBTASKS_CONTROL_TOOL_NAME)) {
+          pi.setActiveTools([...activeToolNames, SUBTASKS_CONTROL_TOOL_NAME]);
+        }
+      } else {
+        pi.setActiveTools(
+          pi.getActiveTools().filter((toolName) => toolName !== SUBTASKS_CONTROL_TOOL_NAME),
+        );
+      }
       registered = true;
+      finishSessionStart();
     });
   };
 }

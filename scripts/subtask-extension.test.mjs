@@ -3,18 +3,27 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
-  ActiveBatchRegistry,
+  MAX_OBSERVED_CHANGE_OPERATIONS,
+  MAX_OBSERVED_CHANGE_PATHS,
+  MAX_OBSERVED_CHANGE_SNIPPET_BYTES,
+  MAX_OBSERVED_CHANGES_DETAILS_BYTES,
+  MAX_OBSERVED_CHANGES_DETAILS_LINES,
+  MAX_OBSERVED_CHANGES_SUMMARY_BYTES,
+  MAX_OBSERVED_CHANGES_SUMMARY_LINES,
   MAX_RESULT_BYTES,
   MAX_RESULT_LINES,
   MAX_SUBTASK_SUMMARY_CHARS,
   SUBTASK_CHILD_SYSTEM_PROMPT,
   SUBTASK_MODELS,
   SUBTASK_THINKING_LEVELS,
+  SUBTASKS_CONTROL_TOOL_NAME,
   SUBTASKS_TOOL_DESCRIPTION,
   SUBTASKS_TOOL_NAME,
   SUBTASKS_TOOL_PROMPT_GUIDELINES,
   buildChildArgs,
+  combineChildOutputWithObservedChanges,
   executeBatchMode,
+  formatObservedChanges,
   formatSubtaskCost,
   formatSubtaskStatusLines,
   listSelectableTools,
@@ -22,6 +31,10 @@ import {
   runChild,
   truncateResult,
 } from "../configs/pi/extensions/subtask/core.ts";
+import {
+  SubtaskRuntimeState,
+  getSubtaskRuntimeState,
+} from "../configs/pi/extensions/subtask/runtime.ts";
 
 function deferred() {
   let resolve;
@@ -41,7 +54,6 @@ async function eventually(predicate) {
   assert.fail("Condition was not reached");
 }
 
-
 test("exposes only Luna and Sol with low, medium, and high thinking", () => {
   assert.deepEqual(SUBTASK_MODELS, [
     "openai-codex/gpt-5.6-luna",
@@ -50,13 +62,29 @@ test("exposes only Luna and Sol with low, medium, and high thinking", () => {
   assert.deepEqual(SUBTASK_THINKING_LEVELS, ["low", "medium", "high"]);
 });
 
-test("uses the plural tool name and excludes it from child tools", () => {
+test("uses separate execution and control tools and excludes both from children", () => {
   assert.equal(SUBTASKS_TOOL_NAME, "subtasks");
-  assert.deepEqual(listSelectableTools(["write", "subtasks", "read", "write", "bash"]), [
-    "bash",
-    "read",
-    "write",
-  ]);
+  assert.equal(SUBTASKS_CONTROL_TOOL_NAME, "subtasks_control");
+  assert.deepEqual(
+    listSelectableTools([
+      "write",
+      "subtasks",
+      "subtasks_control",
+      "read",
+      "write",
+      "bash",
+    ]),
+    ["bash", "read", "write"],
+  );
+});
+
+test("generates unique six-character hexadecimal task IDs", () => {
+  const runtime = new SubtaskRuntimeState();
+  const ids = new Set();
+  for (let index = 0; index < 100; index += 1) ids.add(runtime.allocateTaskId());
+
+  assert.equal(ids.size, 100);
+  assert.ok([...ids].every((id) => /^[0-9a-f]{6}$/.test(id)));
 });
 
 test("keeps execution metadata mechanical and delegation guidance tool-owned", () => {
@@ -76,6 +104,7 @@ test("formats one below-editor tree row per subtask", () => {
   assert.deepEqual(
     formatSubtaskStatusLines([
       {
+        id: "a1b2c3",
         task: "Inspect the target\nwith extra context",
         status: "running",
         model: "openai-codex/gpt-5.6-sol",
@@ -87,6 +116,7 @@ test("formats one below-editor tree row per subtask", () => {
         toolCalls: 3,
       },
       {
+        id: "d4e5f6",
         task: "Verify behavior",
         status: "completed",
         model: "openai-codex/gpt-5.6-luna",
@@ -96,12 +126,12 @@ test("formats one below-editor tree row per subtask", () => {
         contextWindow: 272_000,
         toolCalls: 1,
       },
-      { task: "Check failure", status: "failed" },
+      { id: "112233", task: "Check failure", status: "failed" },
     ]),
     [
-      "├─ ● running   00:12  Sol · Low  ·  $1.168  ·  18.2k/272k ctx  ·  3 tools  │  Inspect the target",
-      "├─ ✓ done      01:05  Luna · Medium  ·  $0.000  ·  900/272k ctx  ·  1 tool  │  Verify behavior",
-      "└─ × failed    00:00  │  Check failure",
+      "├─ [a1b2c3] ● running   00:12  Sol · Low  ·  $1.168  ·  18.2k/272k ctx  ·  3 tools  │  Inspect the target",
+      "├─ [d4e5f6] ✓ done      01:05  Luna · Medium  ·  $0.000  ·  900/272k ctx  ·  1 tool  │  Verify behavior",
+      "└─ [112233] × failed    00:00  │  Check failure",
     ],
   );
 });
@@ -109,6 +139,7 @@ test("formats one below-editor tree row per subtask", () => {
 test("puts a bounded task summary after all status metadata", () => {
   const [line] = formatSubtaskStatusLines([
     {
+      id: "abcdef",
       task: "Inspect 😀 " + "a".repeat(100),
       status: "running",
       model: "openai-codex/gpt-5.6-luna",
@@ -215,7 +246,6 @@ test("extension keeps fork and wait guidance with their parameters", () => {
   assert.match(source, /promptGuidelines: SUBTASKS_TOOL_PROMPT_GUIDELINES/);
   assert.match(source, /default: true/);
   assert.match(source, /deliverAs: "steer", triggerTurn: true/);
-  assert.match(source, /await activeBatches\.cancelAndWait\(\)/);
 });
 
 test("wait mode returns normal completion without background delivery", async () => {
@@ -313,20 +343,144 @@ test("detached batch routes failure once", async () => {
   assert.deepEqual(backgroundEvents, [{ type: "failure", error: failure }]);
 });
 
-test("active batch registry cancels and waits for independent batches", async () => {
-  const registry = new ActiveBatchRegistry();
+test("process-global runtime preserves active task identity across reloaded modules", async () => {
+  const runtime = getSubtaskRuntimeState();
+  await runtime.stopAndCancel();
+  const reloadedModule = await import(
+    new URL("../configs/pi/extensions/subtask/runtime.ts?simulated-reload", import.meta.url)
+  );
+  assert.equal(reloadedModule.getSubtaskRuntimeState(), runtime);
+
+  const controller = new AbortController();
+  const completion = deferred();
+  const id = runtime.allocateTaskId();
+  runtime.trackTask(id, controller, completion.promise, () => ({
+    id,
+    task: "Survive reload",
+    status: "running",
+  }));
+  runtime.bindDelivery(() => {});
+  runtime.suspendForReload();
+
+  assert.deepEqual(runtime.listTasks().map((task) => task.id), [id]);
+  assert.equal(controller.signal.aborted, false);
+
+  completion.resolve("done");
+  await eventually(() => runtime.listTasks().length === 0);
+  await runtime.stopAndCancel();
+});
+
+test("a fixed inherited ID set excludes tasks launched after reload", async () => {
+  const runtime = new SubtaskRuntimeState();
+  const inherited = deferred();
+  const launchedLater = deferred();
+  const inheritedId = runtime.allocateTaskId();
+  runtime.trackTask(inheritedId, new AbortController(), inherited.promise, () => ({
+    id: inheritedId,
+    task: "Inherited",
+    status: "running",
+  }));
+  const inheritedIds = new Set(runtime.listTasks().map((task) => task.id));
+
+  const laterId = runtime.allocateTaskId();
+  runtime.trackTask(laterId, new AbortController(), launchedLater.promise, () => ({
+    id: laterId,
+    task: "Launched later",
+    status: "running",
+  }));
+
+  assert.deepEqual(runtime.listTasks(inheritedIds).map((task) => task.id), [inheritedId]);
+  inherited.resolve("done");
+  launchedLater.resolve("done");
+  await eventually(() => runtime.listTasks().length === 0);
+});
+
+test("runtime queues background delivery while suspended and flushes through the rebound adapter", () => {
+  const runtime = new SubtaskRuntimeState();
+  const oldRuntimeDeliveries = [];
+  const newRuntimeDeliveries = [];
+  runtime.bindDelivery((delivery) => oldRuntimeDeliveries.push(delivery.content));
+  runtime.deliver({ content: "before reload", details: {} });
+
+  runtime.suspendForReload();
+  runtime.deliver({ content: "during reload", details: { id: "a1b2c3" } });
+  assert.deepEqual(oldRuntimeDeliveries, ["before reload"]);
+
+  runtime.bindDelivery((delivery) => newRuntimeDeliveries.push(delivery.content));
+  assert.deepEqual(newRuntimeDeliveries, ["during reload"]);
+});
+
+test("runtime requeues a delivery rejected by a stale adapter", () => {
+  const runtime = new SubtaskRuntimeState();
+  const reboundDeliveries = [];
+  runtime.bindDelivery(() => {
+    throw new Error("stale Pi runtime");
+  });
+
+  runtime.deliver({ content: "completed during replacement", details: {} });
+  runtime.bindDelivery((delivery) => reboundDeliveries.push(delivery.content));
+  assert.deepEqual(reboundDeliveries, ["completed during replacement"]);
+});
+
+test("runtime lists tasks and cancels only requested IDs", async () => {
+  const runtime = new SubtaskRuntimeState();
   const firstController = new AbortController();
   const secondController = new AbortController();
   const first = deferred();
   const second = deferred();
   firstController.signal.addEventListener("abort", () => first.reject(new Error("first cancelled")));
   secondController.signal.addEventListener("abort", () => second.reject(new Error("second cancelled")));
-  registry.track(firstController, first.promise);
-  registry.track(secondController, second.promise);
 
-  await registry.cancelAndWait();
+  runtime.trackTask("a1b2c3", firstController, first.promise, () => ({
+    id: "a1b2c3",
+    task: "First",
+    status: "running",
+  }));
+  runtime.trackTask("d4e5f6", secondController, second.promise, () => ({
+    id: "d4e5f6",
+    task: "Second",
+    status: "running",
+  }));
+
+  assert.deepEqual(runtime.listTasks().map((task) => task.id), ["a1b2c3", "d4e5f6"]);
+  assert.deepEqual(await runtime.cancelTasks(["a1b2c3", "ffffff"]), {
+    cancelled: ["a1b2c3"],
+    notRunning: ["ffffff"],
+  });
   assert.equal(firstController.signal.aborted, true);
-  assert.equal(secondController.signal.aborted, true);
+  assert.equal(secondController.signal.aborted, false);
+  assert.deepEqual(runtime.listTasks().map((task) => task.id), ["d4e5f6"]);
+
+  second.resolve("done");
+  await eventually(() => runtime.listTasks().length === 0);
+});
+
+test("normal shutdown cancels tasks and batches, awaits them, and drops queued delivery", async () => {
+  const runtime = new SubtaskRuntimeState();
+  const taskController = new AbortController();
+  const batchController = new AbortController();
+  const task = deferred();
+  const batch = deferred();
+  taskController.signal.addEventListener("abort", () => task.reject(new Error("task cancelled")));
+  batchController.signal.addEventListener("abort", () => batch.reject(new Error("batch cancelled")));
+  runtime.trackTask("a1b2c3", taskController, task.promise, () => ({
+    id: "a1b2c3",
+    task: "Stop normally",
+    status: "running",
+  }));
+  runtime.trackBatch(batchController, batch.promise);
+  runtime.bindDelivery(() => {});
+  runtime.suspendForReload();
+  runtime.deliver({ content: "must be dropped", details: {} });
+
+  await runtime.stopAndCancel();
+  assert.equal(taskController.signal.aborted, true);
+  assert.equal(batchController.signal.aborted, true);
+  assert.deepEqual(runtime.listTasks(), []);
+
+  const deliveries = [];
+  runtime.bindDelivery((delivery) => deliveries.push(delivery.content));
+  assert.deepEqual(deliveries, []);
 });
 
 test("parses final output and usage from a JSON-mode child", async () => {
@@ -370,6 +524,195 @@ test("parses final output and usage from a JSON-mode child", async () => {
   assert.match(progress[0].message, /read/);
   assert.equal(progress[0].toolCalls, 1);
   assert.equal(progress.at(-1).contextTokens, 23);
+});
+
+test("collects successful edit and write calls by path with deterministic statistics", async () => {
+  const patch = [
+    "--- a/src/example.ts",
+    "+++ b/src/example.ts",
+    "@@ -1,5 +1,5 @@",
+    "-old one",
+    "-old two",
+    "+new one",
+    "+new two",
+    "+added line",
+    " unchanged",
+    "-deleted line",
+    " tail",
+  ].join("\n");
+  const events = [
+    {
+      type: "tool_execution_start",
+      toolCallId: "edit-ok",
+      toolName: "edit",
+      args: { path: "src/example.ts", edits: [{ oldText: "private source", newText: "secret replacement" }] },
+    },
+    {
+      type: "tool_execution_start",
+      toolCallId: "write-ok",
+      toolName: "write",
+      args: { path: "src/example.ts", content: "alpha\n😀\n" },
+    },
+    {
+      type: "tool_execution_start",
+      toolCallId: "write-failed",
+      toolName: "write",
+      args: { path: "ignored.txt", content: "must not be retained" },
+    },
+    {
+      type: "tool_execution_start",
+      toolCallId: "edit-failed",
+      toolName: "edit",
+      args: { path: "also-ignored.txt", edits: [] },
+    },
+    {
+      type: "tool_execution_end",
+      toolCallId: "write-failed",
+      toolName: "write",
+      result: { content: [] },
+      isError: true,
+    },
+    {
+      type: "tool_execution_end",
+      toolCallId: "edit-failed",
+      toolName: "edit",
+      result: { details: { patch } },
+      isError: true,
+    },
+    {
+      type: "tool_execution_end",
+      toolCallId: "write-ok",
+      toolName: "write",
+      result: { content: [] },
+      isError: false,
+    },
+    {
+      type: "tool_execution_end",
+      toolCallId: "edit-ok",
+      toolName: "edit",
+      result: { details: { patch } },
+      isError: false,
+    },
+  ];
+  const script = events.map((event) => `console.log(${JSON.stringify(JSON.stringify(event))})`).join(";");
+  const result = await runChild({
+    invocation: { command: process.execPath, args: ["-e", script] },
+    cwd: process.cwd(),
+  });
+
+  assert.deepEqual(result.observedChanges, {
+    files: [
+      {
+        path: "src/example.ts",
+        edit: { calls: 1, replacements: 2, additions: 1, deletions: 1 },
+        write: { calls: 1, bytes: 11, lines: 2 },
+        snippets: [
+          { kind: "write", content: "+alpha\n+😀\n", truncated: false },
+          { kind: "edit", content: patch, truncated: false },
+        ],
+      },
+    ],
+    omittedOperations: 0,
+  });
+  assert.doesNotMatch(JSON.stringify(result), /private source|secret replacement|must not be retained/);
+  const summary = formatObservedChanges(result.observedChanges);
+  assert.match(summary, /### File changes/);
+  assert.doesNotMatch(summary, /not a definitive final diff|write 1 call|prior content was unavailable/);
+  assert.match(summary, /#### `src\/example\.ts`/);
+  assert.match(summary, /```diff\n\+alpha\n\+😀\n```/);
+  assert.ok(summary.includes(`\`\`\`diff\n${patch}\n\`\`\``));
+  assert.doesNotMatch(summary, /ignored\.txt|also-ignored\.txt/);
+});
+
+test("keeps observed-change metadata and formatting bounded", async () => {
+  const script = `
+    for (let index = 0; index < ${MAX_OBSERVED_CHANGE_PATHS + 12}; index += 1) {
+      const toolCallId = String(index);
+      const args = { path: "p" + index + "/" + "x".repeat(700), content: "line\\n" };
+      console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName: "write", args }));
+      console.log(JSON.stringify({ type: "tool_execution_end", toolCallId, toolName: "write", result: {}, isError: false }));
+    }
+  `;
+  const result = await runChild({
+    invocation: { command: process.execPath, args: ["-e", script] },
+    cwd: process.cwd(),
+  });
+  const summary = formatObservedChanges(result.observedChanges);
+
+  assert.ok(result.observedChanges.files.length <= MAX_OBSERVED_CHANGE_PATHS);
+  assert.equal(
+    result.observedChanges.files.length + result.observedChanges.omittedOperations,
+    MAX_OBSERVED_CHANGE_PATHS + 12,
+  );
+  assert.ok(
+    Buffer.byteLength(
+      result.observedChanges.files.map((file) => file.path + file.snippets.map((snippet) => snippet.content).join("")).join(""),
+      "utf8",
+    ) <= MAX_OBSERVED_CHANGES_DETAILS_BYTES,
+  );
+  assert.ok(
+    result.observedChanges.files
+      .flatMap((file) => file.snippets)
+      .reduce((lines, snippet) => lines + (snippet.content.match(/\r\n|\r|\n/g)?.length ?? 0) + 1, 0) <=
+      MAX_OBSERVED_CHANGES_DETAILS_LINES,
+  );
+  assert.ok(Buffer.byteLength(summary, "utf8") <= MAX_OBSERVED_CHANGES_SUMMARY_BYTES);
+  assert.ok(summary.split("\n").length <= MAX_OBSERVED_CHANGES_SUMMARY_LINES);
+  assert.match(summary, /output truncated|additional operations omitted/i);
+});
+
+test("bounds retained change text and truncates Unicode without replacement characters", async () => {
+  const secret = "SECRET_BOUNDARY_" + "😀".repeat(MAX_OBSERVED_CHANGE_SNIPPET_BYTES * 2);
+  const patch = `--- a/large.txt\n+++ b/large.txt\n@@ -1 +1 @@\n-old\n+${secret}`;
+  const events = [
+    { type: "tool_execution_start", toolCallId: "w", toolName: "write", args: { path: "write.txt", content: secret } },
+    { type: "tool_execution_start", toolCallId: "e", toolName: "edit", args: { path: "edit.txt", edits: [] } },
+    { type: "tool_execution_end", toolCallId: "e", toolName: "edit", result: { details: { patch } }, isError: false },
+    { type: "tool_execution_end", toolCallId: "w", toolName: "write", result: {}, isError: false },
+  ];
+  const script = events.map((event) => `console.log(${JSON.stringify(JSON.stringify(event))})`).join(";");
+  const result = await runChild({ invocation: { command: process.execPath, args: ["-e", script] }, cwd: process.cwd() });
+  const serialized = JSON.stringify(result.observedChanges);
+
+  assert.ok(result.observedChanges.files.flatMap((file) => file.snippets).length <= MAX_OBSERVED_CHANGE_OPERATIONS);
+  assert.ok(result.observedChanges.files.flatMap((file) => file.snippets).every((snippet) => Buffer.byteLength(snippet.content, "utf8") <= MAX_OBSERVED_CHANGE_SNIPPET_BYTES));
+  assert.ok(result.observedChanges.files.flatMap((file) => file.snippets).every((snippet) => snippet.truncated));
+  assert.doesNotMatch(serialized, /�/);
+  assert.ok(Buffer.byteLength(serialized, "utf8") < Buffer.byteLength(secret, "utf8"));
+  assert.match(formatObservedChanges(result.observedChanges), /Diff truncated/i);
+});
+
+test("omits the file-change section when no edit or write was observed", () => {
+  const combined = combineChildOutputWithObservedChanges(
+    "read-only result",
+    { files: [], omittedOperations: 0 },
+    { maxBytes: 1_024, maxLines: 30 },
+  );
+
+  assert.equal(combined.content, "read-only result");
+  assert.equal(combined.truncated, false);
+});
+
+test("reserves observed-change summary space beside oversized child prose", () => {
+  const observed = {
+    files: [{
+      path: "kept.txt",
+      write: { calls: 1, bytes: 6, lines: 1 },
+      snippets: [{ kind: "write", content: "+kept!", truncated: false }],
+    }],
+    omittedOperations: 0,
+  };
+  const combined = combineChildOutputWithObservedChanges("child prose ".repeat(10_000), observed, {
+    maxBytes: 1_024,
+    maxLines: 30,
+  });
+
+  assert.equal(combined.truncated, true);
+  assert.ok(Buffer.byteLength(combined.content, "utf8") <= 1_024);
+  assert.ok(combined.content.split("\n").length <= 30);
+  assert.match(combined.content, /Output truncated/i);
+  assert.match(combined.content, /### File changes/);
+  assert.match(combined.content, /```diff\n\+kept!\n```/);
 });
 
 test("accumulates assistant usage cost in child progress", async () => {

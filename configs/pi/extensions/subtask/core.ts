@@ -9,8 +9,11 @@ export const SUBTASK_MODELS = [
 
 export const SUBTASK_THINKING_LEVELS = ["low", "medium", "high"] as const;
 export const SUBTASKS_TOOL_NAME = "subtasks";
+export const SUBTASKS_CONTROL_TOOL_NAME = "subtasks_control";
 export const SUBTASKS_TOOL_DESCRIPTION =
-  "Run focused subtasks in isolated Pi processes that share the current working directory. Tasks in one call run in parallel; each selects its model, thinking, tools, and optional conversation fork.";
+  "Run focused subtasks in isolated Pi processes that share the current working directory. Tasks in one call run in parallel; each selects its model, thinking, tools, and optional conversation fork. Each started task receives a six-character ID for later listing or cancellation.";
+export const SUBTASKS_CONTROL_TOOL_DESCRIPTION =
+  "List running subtasks or cancel specific tasks by the six-character IDs returned by subtasks.";
 export const SUBTASKS_TOOL_PROMPT_GUIDELINES = [
   "Actively consider subtasks throughout non-trivial work. Delegate coherent, independently useful outcomes when parallelism, context isolation, specialization, or fresh verification justify the overhead; handle small, obvious, tightly coupled work directly.",
   "Launch only ready, independent subtasks together and resolve prerequisites before dependent work. The parent owns decisions, synthesis, and final acceptance. Keep one writer per shared state unless writers are isolated, and preserve concurrent changes.",
@@ -32,6 +35,15 @@ export const SUBTASK_CHILD_SYSTEM_PROMPT = `## Subtask execution contract
 export const MAX_RESULT_BYTES = 50 * 1024;
 export const MAX_RESULT_LINES = 2_000;
 export const MAX_SUBTASK_SUMMARY_CHARS = 72;
+export const MAX_OBSERVED_CHANGE_PATHS = 64;
+export const MAX_OBSERVED_CHANGE_PATH_BYTES = 512;
+export const MAX_OBSERVED_CHANGE_OPERATIONS = 64;
+export const MAX_OBSERVED_CHANGE_SNIPPET_BYTES = 4 * 1024;
+export const MAX_OBSERVED_CHANGE_SNIPPET_LINES = 80;
+export const MAX_OBSERVED_CHANGES_DETAILS_BYTES = 24 * 1024;
+export const MAX_OBSERVED_CHANGES_DETAILS_LINES = 400;
+export const MAX_OBSERVED_CHANGES_SUMMARY_BYTES = 8 * 1024;
+export const MAX_OBSERVED_CHANGES_SUMMARY_LINES = 80;
 
 export type SubtaskModel = (typeof SUBTASK_MODELS)[number];
 export type SubtaskThinkingLevel = (typeof SUBTASK_THINKING_LEVELS)[number];
@@ -46,6 +58,37 @@ export interface SubtaskUsage {
   turns: number;
 }
 
+export interface ObservedEditStats {
+  calls: number;
+  replacements: number;
+  additions: number;
+  deletions: number;
+}
+
+export interface ObservedWriteStats {
+  calls: number;
+  bytes: number;
+  lines: number;
+}
+
+export interface ObservedChangeSnippet {
+  kind: "edit" | "write";
+  content: string;
+  truncated: boolean;
+}
+
+export interface ObservedFileChange {
+  path: string;
+  edit?: ObservedEditStats;
+  write?: ObservedWriteStats;
+  snippets: ObservedChangeSnippet[];
+}
+
+export interface ObservedChanges {
+  files: ObservedFileChange[];
+  omittedOperations: number;
+}
+
 export interface ChildResult {
   output: string;
   stderr: string;
@@ -53,6 +96,7 @@ export interface ChildResult {
   stopReason?: string;
   errorMessage?: string;
   usage: SubtaskUsage;
+  observedChanges: ObservedChanges;
 }
 
 export interface ChildInvocation {
@@ -63,6 +107,7 @@ export interface ChildInvocation {
 export type SubtaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
 export interface SubtaskStatusItem {
+  id: string;
   task: string;
   status: SubtaskStatus;
   model?: string;
@@ -76,6 +121,7 @@ export interface SubtaskStatusItem {
 
 export interface SubtaskStatusRow {
   connector: "├─" | "└─";
+  id: string;
   marker: string;
   label: string;
   duration: string;
@@ -107,27 +153,6 @@ export interface BatchExecutionModeOptions<TResult, TAcknowledgement> {
   detach(): void;
   onBackgroundSuccess(result: TResult): void;
   onBackgroundFailure(error: unknown): void;
-}
-
-export class ActiveBatchRegistry {
-  private readonly controllers = new Set<AbortController>();
-  private readonly completions = new Set<Promise<unknown>>();
-
-  track(controller: AbortController, completion: Promise<unknown>): void {
-    this.controllers.add(controller);
-    this.completions.add(completion);
-    void completion
-      .finally(() => {
-        this.controllers.delete(controller);
-        this.completions.delete(completion);
-      })
-      .catch(() => {});
-  }
-
-  async cancelAndWait(): Promise<void> {
-    for (const controller of this.controllers) controller.abort();
-    await Promise.allSettled([...this.completions]);
-  }
 }
 
 export async function executeBatchMode<TResult, TAcknowledgement>(
@@ -209,7 +234,7 @@ export function prepareSubtasksArguments(args: unknown): unknown {
 
 export function listSelectableTools(toolNames: Iterable<string>): string[] {
   return [...new Set(toolNames)]
-    .filter((name) => name !== SUBTASKS_TOOL_NAME)
+    .filter((name) => name !== SUBTASKS_TOOL_NAME && name !== SUBTASKS_CONTROL_TOOL_NAME)
     .sort((a, b) => a.localeCompare(b));
 }
 
@@ -274,6 +299,7 @@ export function formatSubtaskStatusRows(items: SubtaskStatusItem[]): SubtaskStat
 
     return {
       connector: index === items.length - 1 ? "└─" : "├─",
+      id: item.id,
       marker: presentation.marker,
       label: presentation.label,
       duration: formatDuration(item.elapsedMs),
@@ -288,7 +314,7 @@ export function formatSubtaskStatusLines(items: SubtaskStatusItem[]): string[] {
   return formatSubtaskStatusRows(items).map((row) => {
     const status = `${row.marker} ${row.label.padEnd(9)} ${row.duration}`;
     const metadata = row.metadata.length > 0 ? `  ${row.metadata.join("  ·  ")}` : "";
-    return `${row.connector} ${status}${metadata}  │  ${row.summary}`;
+    return `${row.connector} [${row.id}] ${status}${metadata}  │  ${row.summary}`;
   });
 }
 
@@ -366,6 +392,261 @@ function emptyUsage(): SubtaskUsage {
   };
 }
 
+function boundedPath(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  const normalized = value.replace(/[\r\n\t]/g, (character) =>
+    character === "\r" ? "\\r" : character === "\n" ? "\\n" : "\\t",
+  );
+  if (Buffer.byteLength(normalized, "utf8") <= MAX_OBSERVED_CHANGE_PATH_BYTES) return normalized;
+
+  const marker = "…";
+  const limit = MAX_OBSERVED_CHANGE_PATH_BYTES - Buffer.byteLength(marker, "utf8");
+  let result = "";
+  for (const character of normalized) {
+    if (Buffer.byteLength(result + character, "utf8") > limit) break;
+    result += character;
+  }
+  return `${result}${marker}`;
+}
+
+function countContentLines(content: string): number {
+  if (content.length === 0) return 0;
+  const separators = content.match(/\r\n|\r|\n/g)?.length ?? 0;
+  return separators + (/\r\n$|[\r\n]$/.test(content) ? 0 : 1);
+}
+
+function parsePatchStats(patch: string): Omit<ObservedEditStats, "calls"> {
+  let replacements = 0;
+  let additions = 0;
+  let deletions = 0;
+  let blockAdditions = 0;
+  let blockDeletions = 0;
+  let inHunk = false;
+
+  const flush = () => {
+    const replaced = Math.min(blockAdditions, blockDeletions);
+    replacements += replaced;
+    additions += blockAdditions - replaced;
+    deletions += blockDeletions - replaced;
+    blockAdditions = 0;
+    blockDeletions = 0;
+  };
+
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("@@")) {
+      flush();
+      inHunk = true;
+    } else if (!inHunk) {
+      continue;
+    } else if (line.startsWith("+")) {
+      blockAdditions += 1;
+    } else if (line.startsWith("-")) {
+      blockDeletions += 1;
+    } else if (!line.startsWith("\\ No newline at end of file")) {
+      flush();
+    }
+  }
+  flush();
+  return { replacements, additions, deletions };
+}
+
+function exactPrefix(
+  content: string,
+  maxBytes: number,
+  maxLines: number,
+): { content: string; truncated: boolean } {
+  let result = "";
+  for (const character of content) {
+    const candidate = result + character;
+    if (
+      Buffer.byteLength(candidate, "utf8") > maxBytes ||
+      countContentLines(candidate) > maxLines
+    ) {
+      return { content: result, truncated: true };
+    }
+    result = candidate;
+  }
+  return { content: result, truncated: false };
+}
+
+function boundedWriteDiff(content: string): { content: string; truncated: boolean } {
+  if (content.length === 0) return { content: "", truncated: false };
+  let result = "+";
+  for (let index = 0; index < content.length; ) {
+    const codePoint = content.codePointAt(index)!;
+    const character = String.fromCodePoint(codePoint);
+    const nextIndex = index + character.length;
+    let addition = character;
+    if (
+      nextIndex < content.length &&
+      (character === "\n" || (character === "\r" && content[nextIndex] !== "\n"))
+    ) {
+      addition += "+";
+    }
+    const candidate = result + addition;
+    if (
+      Buffer.byteLength(candidate, "utf8") > MAX_OBSERVED_CHANGE_SNIPPET_BYTES ||
+      countContentLines(candidate) > MAX_OBSERVED_CHANGE_SNIPPET_LINES
+    ) {
+      return { content: result, truncated: true };
+    }
+    result = candidate;
+    index = nextIndex;
+  }
+  return { content: result, truncated: false };
+}
+
+function observedUsage(observed: ObservedChanges): { operations: number; bytes: number; lines: number } {
+  let operations = 0;
+  let bytes = 0;
+  let lines = 0;
+  for (const file of observed.files) {
+    bytes += Buffer.byteLength(file.path, "utf8");
+    operations += file.snippets.length;
+    for (const snippet of file.snippets) {
+      bytes += Buffer.byteLength(snippet.content, "utf8");
+      lines += countContentLines(snippet.content);
+    }
+  }
+  return { operations, bytes, lines };
+}
+
+function addObservedChange(
+  observed: ObservedChanges,
+  pathValue: unknown,
+  kind: "edit" | "write",
+  stats: Omit<ObservedEditStats, "calls"> | Omit<ObservedWriteStats, "calls">,
+  exactContent: string,
+  contentWasTruncated = false,
+): void {
+  const path = boundedPath(pathValue);
+  if (!path) return;
+  const usage = observedUsage(observed);
+  let file = observed.files.find((candidate) => candidate.path === path);
+  const pathBytes = file ? 0 : Buffer.byteLength(path, "utf8");
+  if (
+    usage.operations >= MAX_OBSERVED_CHANGE_OPERATIONS ||
+    (!file && observed.files.length >= MAX_OBSERVED_CHANGE_PATHS) ||
+    usage.bytes + pathBytes >= MAX_OBSERVED_CHANGES_DETAILS_BYTES ||
+    usage.lines >= MAX_OBSERVED_CHANGES_DETAILS_LINES
+  ) {
+    observed.omittedOperations += 1;
+    return;
+  }
+
+  const snippet = exactPrefix(
+    exactContent,
+    Math.min(
+      MAX_OBSERVED_CHANGE_SNIPPET_BYTES,
+      MAX_OBSERVED_CHANGES_DETAILS_BYTES - usage.bytes - pathBytes,
+    ),
+    Math.min(
+      MAX_OBSERVED_CHANGE_SNIPPET_LINES,
+      MAX_OBSERVED_CHANGES_DETAILS_LINES - usage.lines,
+    ),
+  );
+  if (!file) {
+    file = { path, snippets: [] };
+    observed.files.push(file);
+  }
+  file.snippets.push({ kind, ...snippet, truncated: snippet.truncated || contentWasTruncated });
+
+  if (kind === "edit") {
+    const edit = stats as Omit<ObservedEditStats, "calls">;
+    file.edit ??= { calls: 0, replacements: 0, additions: 0, deletions: 0 };
+    file.edit.calls += 1;
+    file.edit.replacements += edit.replacements;
+    file.edit.additions += edit.additions;
+    file.edit.deletions += edit.deletions;
+  } else {
+    const write = stats as Omit<ObservedWriteStats, "calls">;
+    file.write ??= { calls: 0, bytes: 0, lines: 0 };
+    file.write.calls += 1;
+    file.write.bytes += write.bytes;
+    file.write.lines += write.lines;
+  }
+}
+
+function fitsObservedSummary(
+  content: string,
+  limits: { maxBytes: number; maxLines: number },
+): boolean {
+  return (
+    Buffer.byteLength(content, "utf8") <= limits.maxBytes &&
+    content.split("\n").length <= limits.maxLines
+  );
+}
+
+export function formatObservedChanges(
+  observed: ObservedChanges,
+  limits: { maxBytes: number; maxLines: number } = {
+    maxBytes: MAX_OBSERVED_CHANGES_SUMMARY_BYTES,
+    maxLines: MAX_OBSERVED_CHANGES_SUMMARY_LINES,
+  },
+): string {
+  if (observed.files.length === 0 && observed.omittedOperations === 0) return "";
+
+  const sections = ["### File changes"];
+  let omittedByFormatting = 0;
+  for (let index = 0; index < observed.files.length; index += 1) {
+    const file = observed.files[index]!;
+    const block = [`#### \`${file.path.replace(/`/g, "\\`")}\``];
+    for (const snippet of file.snippets) {
+      const fenceSeparator = /\r\n$|[\r\n]$/.test(snippet.content) ? "" : "\n";
+      block.push(`\`\`\`diff\n${snippet.content}${fenceSeparator}\`\`\``);
+      if (snippet.truncated) block.push("[Diff truncated.]");
+    }
+    if (!fitsObservedSummary([...sections, block.join("\n")].join("\n"), limits)) {
+      omittedByFormatting = observed.files
+        .slice(index)
+        .reduce((count, candidate) => count + candidate.snippets.length, 0);
+      break;
+    }
+    sections.push(block.join("\n"));
+  }
+
+  let omitted = observed.omittedOperations + omittedByFormatting;
+  if (omitted > 0) {
+    const marker = () =>
+      `_${omitted} additional operation${omitted === 1 ? "" : "s"} omitted._`;
+    if (fitsObservedSummary([...sections, marker()].join("\n"), limits)) sections.push(marker());
+    else if (sections.length > 1) {
+      const removedFile = observed.files[sections.length - 2];
+      omitted += removedFile?.snippets.length ?? 0;
+      sections.pop();
+      sections.push(marker());
+    }
+  }
+  return sections.join("\n");
+}
+
+export function combineChildOutputWithObservedChanges(
+  output: string,
+  observed: ObservedChanges,
+  limits: { maxBytes: number; maxLines: number },
+): { content: string; truncated: boolean } {
+  const formattedSummary = formatObservedChanges(observed, limits);
+  if (!formattedSummary) return truncateResult(output, limits);
+
+  const summary = truncateResult(formattedSummary, limits);
+  const summaryBytes = Buffer.byteLength(summary.content, "utf8");
+  const summaryLines = summary.content.split("\n").length;
+  const availableBytes = limits.maxBytes - summaryBytes - 2;
+  const availableLines = limits.maxLines - summaryLines - 1;
+  if (availableBytes <= 0 || availableLines <= 0) {
+    return { content: summary.content, truncated: summary.truncated || output.length > 0 };
+  }
+
+  const boundedOutput = truncateResult(output, {
+    maxBytes: availableBytes,
+    maxLines: availableLines,
+  });
+  return {
+    content: boundedOutput.content ? `${boundedOutput.content}\n\n${summary.content}` : summary.content,
+    truncated: summary.truncated || boundedOutput.truncated,
+  };
+}
+
 export async function runChild(options: RunChildOptions): Promise<ChildResult> {
   const usage = emptyUsage();
   let output = "";
@@ -376,6 +657,19 @@ export async function runChild(options: RunChildOptions): Promise<ChildResult> {
   let closed = false;
   let aborted = false;
   let toolCalls = 0;
+  const observedChanges: ObservedChanges = { files: [], omittedOperations: 0 };
+  const pendingFileCalls = new Map<
+    string,
+    | { tool: "edit"; path?: string }
+    | {
+        tool: "write";
+        path?: string;
+        bytes: number;
+        lines: number;
+        diff: string;
+        diffTruncated: boolean;
+      }
+  >();
   let forceKillTimer: NodeJS.Timeout | undefined;
 
   const proc = spawn(options.invocation.command, options.invocation.args, {
@@ -453,7 +747,46 @@ export async function runChild(options: RunChildOptions): Promise<ChildResult> {
 
     if (event.type === "tool_execution_start") {
       toolCalls += 1;
+      const canTrackFileCall =
+        pendingFileCalls.size + observedUsage(observedChanges).operations < MAX_OBSERVED_CHANGE_OPERATIONS;
+      if (canTrackFileCall && typeof event.toolCallId === "string" && event.toolName === "edit") {
+        pendingFileCalls.set(event.toolCallId, { tool: "edit", path: boundedPath(event.args?.path) });
+      } else if (canTrackFileCall && typeof event.toolCallId === "string" && event.toolName === "write") {
+        const content = typeof event.args?.content === "string" ? event.args.content : "";
+        const boundedDiff = boundedWriteDiff(content);
+        pendingFileCalls.set(event.toolCallId, {
+          tool: "write",
+          path: boundedPath(event.args?.path),
+          bytes: Buffer.byteLength(content, "utf8"),
+          lines: countContentLines(content),
+          diff: boundedDiff.content,
+          diffTruncated: boundedDiff.truncated,
+        });
+      }
       reportProgress(`Running ${event.toolName ?? "tool"}...`);
+      return;
+    }
+
+    if (event.type === "tool_execution_end") {
+      const pending =
+        typeof event.toolCallId === "string" ? pendingFileCalls.get(event.toolCallId) : undefined;
+      if (typeof event.toolCallId === "string") pendingFileCalls.delete(event.toolCallId);
+      if (!pending || event.isError !== false) return;
+      if (pending.tool === "write") {
+        addObservedChange(
+          observedChanges,
+          pending.path,
+          "write",
+          { bytes: pending.bytes, lines: pending.lines },
+          pending.diff,
+          pending.diffTruncated,
+        );
+      } else {
+        const patch = event.result?.details?.patch;
+        if (typeof patch === "string") {
+          addObservedChange(observedChanges, pending.path, "edit", parsePatchStats(patch), patch);
+        }
+      }
       return;
     }
 
@@ -509,7 +842,7 @@ export async function runChild(options: RunChildOptions): Promise<ChildResult> {
   });
 
   if (aborted) throw new Error("Subtask was cancelled");
-  return { output, stderr, exitCode, stopReason, errorMessage, usage };
+  return { output, stderr, exitCode, stopReason, errorMessage, usage, observedChanges };
 }
 
 export function truncateResult(
