@@ -140,6 +140,7 @@ export type SubtaskStatus = "queued" | "running" | "completed" | "failed" | "can
 
 export interface SubtaskStatusItem {
   id: string;
+  groupId?: string;
   task: string;
   status: SubtaskStatus;
   model?: string;
@@ -157,9 +158,27 @@ export interface SubtaskStatusRow {
   marker: string;
   label: string;
   duration: string;
+  model?: string;
+  cost?: string;
+  context?: string;
+  tools?: string;
   summary: string;
   metadata: string[];
   status: SubtaskStatus;
+}
+
+export type SubtaskWidgetSegmentRole =
+  | "frame"
+  | "group"
+  | "status"
+  | "model"
+  | "summary"
+  | "metadata";
+
+export interface SubtaskWidgetLine {
+  kind: "group" | "status" | "detail";
+  status?: SubtaskStatus;
+  segments: Array<{ role: SubtaskWidgetSegmentRole; text: string }>;
 }
 
 export interface ChildProgress {
@@ -402,18 +421,27 @@ export function formatSubtaskStatusRows(items: SubtaskStatusItem[]): SubtaskStat
     const presentation = STATUS_PRESENTATION[item.status];
     const summary = summarizeTask(item.task);
     const metadata: string[] = [];
+    const thinking = item.thinking
+      ? `${item.thinking[0]?.toUpperCase()}${item.thinking.slice(1)}`
+      : undefined;
+    const model = item.model
+      ? [formatModel(item.model), thinking].filter(Boolean).join("/")
+      : undefined;
 
-    if (item.model && item.thinking) {
-      const thinking = `${item.thinking[0]?.toUpperCase()}${item.thinking.slice(1)}`;
-      metadata.push(`${formatModel(item.model)} · ${thinking}`);
-      metadata.push(formatSubtaskCost(item.cost));
-    }
-    if (item.contextWindow !== undefined) {
-      metadata.push(`${formatTokens(item.contextTokens ?? 0)}/${formatTokens(item.contextWindow)} ctx`);
-    }
-    if (item.toolCalls !== undefined) {
-      metadata.push(`${item.toolCalls} tool${item.toolCalls === 1 ? "" : "s"}`);
-    }
+    const cost = item.model ? formatSubtaskCost(item.cost) : undefined;
+    const context =
+      item.contextWindow !== undefined
+        ? `${formatTokens(item.contextTokens ?? 0)}/${formatTokens(item.contextWindow)} ctx`
+        : undefined;
+    const tools =
+      item.toolCalls !== undefined
+        ? `${item.toolCalls} tool${item.toolCalls === 1 ? "" : "s"}`
+        : undefined;
+
+    if (item.model) metadata.push([formatModel(item.model), thinking].filter(Boolean).join(" · "));
+    if (cost) metadata.push(cost);
+    if (context) metadata.push(context);
+    if (tools) metadata.push(tools);
 
     return {
       connector: index === items.length - 1 ? "└─" : "├─",
@@ -421,6 +449,10 @@ export function formatSubtaskStatusRows(items: SubtaskStatusItem[]): SubtaskStat
       marker: presentation.marker,
       label: presentation.label,
       duration: formatDuration(item.elapsedMs),
+      model,
+      cost,
+      context,
+      tools,
       summary,
       metadata,
       status: item.status,
@@ -428,12 +460,159 @@ export function formatSubtaskStatusRows(items: SubtaskStatusItem[]): SubtaskStat
   });
 }
 
+function groupSubtaskStatusItems(
+  items: SubtaskStatusItem[],
+): Array<{ id?: string; items: SubtaskStatusItem[] }> {
+  const groups = new Map<string, { id?: string; items: SubtaskStatusItem[] }>();
+  for (const item of items) {
+    const key = item.groupId ?? "";
+    const group = groups.get(key) ?? { id: item.groupId, items: [] };
+    group.items.push(item);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+
+const METADATA_COLUMNS = [
+  { key: "model", role: "model" },
+  { key: "cost", role: "metadata" },
+  { key: "context", role: "metadata" },
+  { key: "tools", role: "metadata" },
+] as const;
+
+type MetadataColumnKey = (typeof METADATA_COLUMNS)[number]["key"];
+
+function metadataSegments(
+  row: SubtaskStatusRow,
+  keys: MetadataColumnKey[],
+  leading = "",
+): SubtaskWidgetLine["segments"] {
+  const activeColumns = METADATA_COLUMNS.filter(
+    (column) => keys.includes(column.key) && row[column.key] !== undefined,
+  );
+  return activeColumns.map((column, index) => ({
+    role: column.role,
+    text: `${index === 0 ? leading : " · "}${row[column.key]}`,
+  }));
+}
+
+/**
+ * Creates semantic widget lines so group identity and essential task details
+ * survive narrow layouts. The TUI applies theme colors to these roles.
+ */
+export function formatSubtaskWidgetLines(
+  items: SubtaskStatusItem[],
+  width: number,
+): SubtaskWidgetLine[] {
+  const groups = groupSubtaskStatusItems(items).map((group) => ({
+    ...group,
+    rows: formatSubtaskStatusRows(group.items),
+  }));
+  const allRows = groups.flatMap((group) => group.rows);
+  const statusWidth = Math.max(
+    0,
+    ...allRows.map((row) => `${row.marker} ${row.label.padEnd(9)} ${row.duration}`.length),
+  );
+  const taskFrameWidth = Math.max(
+    0,
+    ...allRows.map((row) => `${row.connector} [${row.id}] `.length),
+  );
+  const metadataWidth = Math.max(
+    0,
+    ...allRows.map((row) =>
+      metadataSegments(row, ["model", "cost", "context", "tools"], " ").reduce(
+        (total, segment) => total + segment.text.length,
+        0,
+      ),
+    ),
+  );
+  const useWideLayout = width >= taskFrameWidth + statusWidth + metadataWidth + 3 + 20;
+  const lines: SubtaskWidgetLine[] = [];
+
+  for (const group of groups) {
+    const count = group.items.length;
+    lines.push({
+      kind: "group",
+      segments: [
+        { role: "frame", text: "┌─ " },
+        { role: "group", text: group.id ? `group ${group.id}` : "subtasks" },
+        { role: "metadata", text: ` · ${count} subtask${count === 1 ? "" : "s"}` },
+      ],
+    });
+
+    for (const row of group.rows) {
+      const frame = { role: "frame" as const, text: `${row.connector} [${row.id}] ` };
+      const statusText = `${row.marker} ${row.label.padEnd(9)} ${row.duration}`;
+      const status = {
+        role: "status" as const,
+        text: statusText.padEnd(statusWidth),
+      };
+      const continuation = row.connector === "└─" ? "   " : "│  ";
+      const detailFrame = { role: "frame" as const, text: continuation };
+
+      if (useWideLayout) {
+        lines.push({
+          kind: "status",
+          status: row.status,
+          segments: [
+            frame,
+            status,
+            ...metadataSegments(row, ["model", "cost", "context", "tools"], " "),
+            { role: "frame", text: " │ " },
+            { role: "summary", text: row.summary },
+          ],
+        });
+      } else if (width >= 48) {
+        lines.push({
+          kind: "status",
+          status: row.status,
+          segments: [
+            frame,
+            status,
+            ...metadataSegments(row, ["model"], " "),
+          ],
+        });
+        if (row.cost || row.context || row.tools) {
+          lines.push({
+            kind: "detail",
+            segments: [
+              detailFrame,
+              ...metadataSegments(row, ["cost", "context", "tools"]),
+            ],
+          });
+        }
+        lines.push({
+          kind: "detail",
+          segments: [detailFrame, { role: "summary", text: row.summary }],
+        });
+      } else {
+        lines.push({ kind: "status", status: row.status, segments: [frame, status] });
+        if (row.model || row.cost) {
+          lines.push({
+            kind: "detail",
+            segments: [detailFrame, ...metadataSegments(row, ["model", "cost"])],
+          });
+        }
+        if (row.context || row.tools) {
+          lines.push({
+            kind: "detail",
+            segments: [detailFrame, ...metadataSegments(row, ["context", "tools"])],
+          });
+        }
+        lines.push({
+          kind: "detail",
+          segments: [detailFrame, { role: "summary", text: row.summary }],
+        });
+      }
+    }
+  }
+  return lines;
+}
+
 export function formatSubtaskStatusLines(items: SubtaskStatusItem[]): string[] {
-  return formatSubtaskStatusRows(items).map((row) => {
-    const status = `${row.marker} ${row.label.padEnd(9)} ${row.duration}`;
-    const metadata = row.metadata.length > 0 ? `  ${row.metadata.join("  ·  ")}` : "";
-    return `${row.connector} [${row.id}] ${status}${metadata}  │  ${row.summary}`;
-  });
+  return formatSubtaskWidgetLines(items, Number.POSITIVE_INFINITY).map((line) =>
+    line.segments.map((segment) => segment.text).join(""),
+  );
 }
 
 export function buildChildArgs(options: {

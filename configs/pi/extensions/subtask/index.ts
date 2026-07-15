@@ -30,7 +30,7 @@ import {
   executeBatchMode,
   formatSubtaskGroupResult,
   formatSubtaskStatusLines,
-  formatSubtaskStatusRows,
+  formatSubtaskWidgetLines,
   getPiInvocation,
   listSelectableTools,
   prepareSubtasksArguments,
@@ -57,6 +57,7 @@ interface SubtaskRequest {
 
 interface SubtaskDetails {
   id: string;
+  groupId: string;
   task: string;
   model: SubtaskModel;
   thinking: SubtaskThinkingLevel;
@@ -211,23 +212,32 @@ function registerSubtaskWidget(
     placement: "belowEditor",
     createComponent: (getTasks, theme) => ({
       render(width: number): string[] {
-        return formatSubtaskStatusRows(getTasks()).map((row) => {
-          const color =
-            row.status === "completed"
+        return formatSubtaskWidgetLines(getTasks(), width).map((widgetLine) => {
+          const statusColor =
+            widgetLine.status === "completed"
               ? "success"
-              : row.status === "failed" || row.status === "cancelled"
+              : widgetLine.status === "failed" || widgetLine.status === "cancelled"
                 ? "error"
-                : row.status === "running"
+                : widgetLine.status === "running"
                   ? "accent"
                   : "muted";
-          const status = `${row.marker} ${row.label.padEnd(9)} ${row.duration}`;
-          let line = theme.fg("borderMuted", `${row.connector} [${row.id}] `);
-          line += theme.fg(color, theme.bold(status));
-          if (row.metadata.length > 0) {
-            line += theme.fg("dim", `  ${row.metadata.join("  ·  ")}`);
-          }
-          line += theme.fg("borderMuted", "  │  ");
-          line += theme.fg("text", row.summary);
+          const line = widgetLine.segments
+            .map((segment) => {
+              switch (segment.role) {
+                case "frame":
+                  return theme.fg("borderMuted", segment.text);
+                case "group":
+                  return theme.fg("accent", theme.bold(segment.text));
+                case "status":
+                  return theme.fg(statusColor, theme.bold(segment.text));
+                case "model":
+                case "metadata":
+                  return theme.fg("dim", segment.text);
+                case "summary":
+                  return theme.fg("text", segment.text);
+              }
+            })
+            .join("");
           return truncateToWidth(line, width);
         });
       },
@@ -548,6 +558,7 @@ export function createSubtasksExtension(
           const groupId = runtime.allocateGroupId();
           const tasks: SubtaskState[] = requests.map((request) => ({
             id: runtime.allocateTaskId(),
+            groupId,
             task: request.task,
             model: request.model,
             thinking: request.thinking,

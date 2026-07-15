@@ -41,6 +41,7 @@ import {
   formatSubtaskGroupResult,
   formatSubtaskCost,
   formatSubtaskStatusLines,
+  formatSubtaskWidgetLines,
   listSelectableTools,
   prepareSubtasksArguments,
   registerMutableWidget,
@@ -129,40 +130,78 @@ test("keeps execution metadata mechanical and delegation guidance tool-owned", (
   assert.ok(SUBTASKS_TOOL_PROMPT_GUIDELINES.every((guideline) => /subtasks/i.test(guideline)));
 });
 
-test("formats one below-editor tree row per subtask", () => {
+const groupedTasks = [
+  {
+    id: "a1b2c3",
+    groupId: "g-111111",
+    task: "Inspect the target\nwith extra context",
+    status: "running",
+    model: "openai-codex/gpt-5.6-sol",
+    thinking: "low",
+    elapsedMs: 12_000,
+    contextTokens: 18_200,
+    contextWindow: 272_000,
+    cost: 1.1684,
+    toolCalls: 3,
+  },
+  {
+    id: "d4e5f6",
+    groupId: "g-111111",
+    task: "Verify behavior",
+    status: "completed",
+    model: "openai-codex/gpt-5.6-luna",
+    thinking: "medium",
+    elapsedMs: 65_000,
+    contextTokens: 900,
+    contextWindow: 272_000,
+    toolCalls: 1,
+  },
+  {
+    id: "112233",
+    groupId: "g-222222",
+    task: "Check failure",
+    status: "failed",
+  },
+];
+
+function widgetLineText(line) {
+  return line.segments.map((segment) => segment.text).join("");
+}
+
+test("labels groups and keeps metadata before every task summary", () => {
+  const lines = formatSubtaskStatusLines(groupedTasks);
+
+  assert.equal(lines[0], "┌─ group g-111111 · 2 subtasks");
+  assert.match(lines[1], /^├─ \[a1b2c3\] ● running\s+00:12/);
+  assert.match(lines[2], /^└─ \[d4e5f6\] ✓ done\s+01:05/);
+  assert.equal(lines[3], "┌─ group g-222222 · 1 subtask");
+  assert.match(lines[4], /^└─ \[112233\] × failed\s+00:00/);
+  assert.ok(lines[1].indexOf("$1.168") < lines[1].indexOf("18.2k/272k ctx"));
+  assert.ok(lines[1].indexOf("18.2k/272k ctx") < lines[1].indexOf("3 tools"));
+  assert.ok(lines[1].indexOf("3 tools") < lines[1].indexOf(" │ Inspect the target"));
+});
+
+test("keeps metadata before the task summary in narrow layouts", () => {
+  const lines = formatSubtaskWidgetLines([groupedTasks[0]], 40);
+
   assert.deepEqual(
-    formatSubtaskStatusLines([
-      {
-        id: "a1b2c3",
-        task: "Inspect the target\nwith extra context",
-        status: "running",
-        model: "openai-codex/gpt-5.6-sol",
-        thinking: "low",
-        elapsedMs: 12_000,
-        contextTokens: 18_200,
-        contextWindow: 272_000,
-        cost: 1.1684,
-        toolCalls: 3,
-      },
-      {
-        id: "d4e5f6",
-        task: "Verify behavior",
-        status: "completed",
-        model: "openai-codex/gpt-5.6-luna",
-        thinking: "medium",
-        elapsedMs: 65_000,
-        contextTokens: 900,
-        contextWindow: 272_000,
-        toolCalls: 1,
-      },
-      { id: "112233", task: "Check failure", status: "failed" },
-    ]),
-    [
-      "├─ [a1b2c3] ● running   00:12  Sol · Low  ·  $1.168  ·  18.2k/272k ctx  ·  3 tools  │  Inspect the target",
-      "├─ [d4e5f6] ✓ done      01:05  Luna · Medium  ·  $0.000  ·  900/272k ctx  ·  1 tool  │  Verify behavior",
-      "└─ [112233] × failed    00:00  │  Check failure",
-    ],
+    lines.map((line) => line.kind),
+    ["group", "status", "detail", "detail", "detail"],
   );
+  assert.equal(widgetLineText(lines[0]), "┌─ group g-111111 · 1 subtask");
+  assert.match(widgetLineText(lines[1]), /\[a1b2c3\].*running.*00:12/);
+  assert.match(widgetLineText(lines[2]), /Sol\/Low.*\$1\.168/);
+  assert.match(widgetLineText(lines[3]), /18\.2k\/272k ctx.*3 tools/);
+  assert.match(widgetLineText(lines[4]), /Inspect the target/);
+});
+
+test("keeps telemetry compact in wide layouts", () => {
+  const lines = formatSubtaskWidgetLines(groupedTasks.slice(0, 2), 120);
+  const taskLines = lines.slice(1).map(widgetLineText);
+
+  assert.equal(lines.length, 3);
+  assert.match(taskLines[0], /Sol\/Low.*\$1\.168.*18\.2k\/272k ctx.*3 tools.*│.*Inspect the target/);
+  assert.match(taskLines[1], /Luna\/Medium.*\$0\.000.*900\/272k ctx.*1 tool.*│.*Verify behavior/);
 });
 
 test("updates a registered widget in place without changing widget order", () => {
@@ -204,14 +243,14 @@ test("updates a registered widget in place without changing widget order", () =>
   assert.deepEqual([...widgets.keys()], ["subtasks:first", "subtasks:second"]);
   assert.equal(registrations.filter((key) => key === "subtasks:first").length, 1);
   assert.equal(renders, 2);
-  assert.match(widgets.get("subtasks:first").render(120)[0], /✓ done\s+00:03/);
+  assert.match(widgets.get("subtasks:first").render(120).join("\n"), /✓ done\s+00:03/);
 
   widget.clear();
   assert.equal(widgets.has("subtasks:first"), false);
 });
 
-test("puts a bounded task summary after all status metadata", () => {
-  const [line] = formatSubtaskStatusLines([
+test("bounds the task summary without splitting Unicode", () => {
+  const lines = formatSubtaskWidgetLines([
     {
       id: "abcdef",
       task: "Inspect 😀 " + "a".repeat(100),
@@ -222,12 +261,12 @@ test("puts a bounded task summary after all status metadata", () => {
       contextWindow: 272_000,
       toolCalls: 4,
     },
-  ]);
+  ], 120);
+  const summary = lines.flatMap((line) => line.segments).find((segment) => segment.role === "summary").text;
 
-  const summary = line.split("  │  ").at(-1);
   assert.equal(Array.from(summary).length, MAX_SUBTASK_SUMMARY_CHARS);
   assert.ok(summary.endsWith("…"));
-  assert.match(line, /Luna · Medium.*\$0\.000.*12k\/272k ctx.*4 tools.*│.*Inspect/);
+  assert.ok(!summary.includes("�"));
 });
 
 test("formats child costs compactly with small-cost precision", () => {
