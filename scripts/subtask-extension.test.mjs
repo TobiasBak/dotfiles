@@ -20,8 +20,6 @@ import {
   MAX_OBSERVED_CHANGE_SNIPPET_BYTES,
   MAX_OBSERVED_CHANGES_DETAILS_BYTES,
   MAX_OBSERVED_CHANGES_DETAILS_LINES,
-  MAX_OBSERVED_CHANGES_SUMMARY_BYTES,
-  MAX_OBSERVED_CHANGES_SUMMARY_LINES,
   MAX_RESULT_BYTES,
   MAX_RESULT_LINES,
   MAX_SUBTASK_SUMMARY_CHARS,
@@ -37,6 +35,7 @@ import {
   buildChildArgs,
   combineChildOutputWithObservedChanges,
   executeBatchMode,
+  formatCapturedChangesMarkdown,
   formatObservedChanges,
   formatSubtaskGroupResult,
   formatSubtaskCost,
@@ -49,7 +48,10 @@ import {
   shouldBlockForkedSubtasks,
   truncateResult,
 } from "../configs/pi/extensions/subtask/core.ts";
-import { createOverflowResultWriter } from "../configs/pi/extensions/subtask/overflow.ts";
+import {
+  createCapturedChangesWriter,
+  createOverflowResultWriter,
+} from "../configs/pi/extensions/subtask/overflow.ts";
 import {
   SubtaskRuntimeState,
   getSubtaskRuntimeState,
@@ -739,6 +741,28 @@ test("writes private Markdown overflow results under the session and group", asy
   }
 });
 
+test("writes private per-subtask captured-change artifacts", async () => {
+  const sessionId = `test-${process.pid}-${Date.now()}`;
+  const retainedPaths = [];
+  const writer = createCapturedChangesWriter(sessionId, "g-a1b2c3", (temporaryPath) => {
+    retainedPaths.push(temporaryPath);
+  });
+  const expectedSessionDirectory = join(tmpdir(), "pi-subtasks", sessionId);
+
+  try {
+    const outputPath = await writer("d4e5f6", "# Captured changes\n\nDetails");
+    assert.equal(
+      outputPath,
+      join(expectedSessionDirectory, "g-a1b2c3", "d4e5f6-changes.md"),
+    );
+    assert.deepEqual(retainedPaths, [expectedSessionDirectory]);
+    assert.equal(readFileSync(outputPath, "utf8"), "# Captured changes\n\nDetails");
+    assert.equal(statSync(outputPath).mode & 0o777, 0o600);
+  } finally {
+    rmSync(expectedSessionDirectory, { recursive: true, force: true });
+  }
+});
+
 test("retained subtask outputs survive reload and are removed at normal shutdown", async () => {
   const runtime = new SubtaskRuntimeState();
   const directory = mkdtempSync(join(tmpdir(), "pi-subtask-runtime-test-"));
@@ -834,6 +858,19 @@ test("collects successful edit and write calls by path with deterministic statis
       args: { path: "also-ignored.txt", edits: [] },
     },
     {
+      type: "tool_execution_start",
+      toolCallId: "shell-change",
+      toolName: "hypa_shell",
+      args: { command: "printf ignored > shell-only.txt" },
+    },
+    {
+      type: "tool_execution_end",
+      toolCallId: "shell-change",
+      toolName: "hypa_shell",
+      result: { content: [] },
+      isError: false,
+    },
+    {
       type: "tool_execution_end",
       toolCallId: "write-failed",
       toolName: "write",
@@ -881,22 +918,33 @@ test("collects successful edit and write calls by path with deterministic statis
       },
     ],
     omittedOperations: 0,
+    changedPaths: ["src/example.ts"],
+    capturedOperations: 2,
   });
+  assert.deepEqual(result.capturedChanges, [
+    { kind: "write", path: "src/example.ts", content: "alpha\n😀\n" },
+    { kind: "edit", path: "src/example.ts", content: patch },
+  ]);
   assert.doesNotMatch(JSON.stringify(result), /private source|secret replacement|must not be retained/);
-  const summary = formatObservedChanges(result.observedChanges);
+  const summary = formatObservedChanges(result.observedChanges, "/tmp/a1b2c3-changes.md");
   assert.match(summary, /### File changes/);
-  assert.doesNotMatch(summary, /not a definitive final diff|write 1 call|prior content was unavailable/);
-  assert.match(summary, /#### `src\/example\.ts`/);
-  assert.match(summary, /```diff\n\+alpha\n\+😀\n```/);
-  assert.ok(summary.includes(`\`\`\`diff\n${patch}\n\`\`\``));
-  assert.doesNotMatch(summary, /ignored\.txt|also-ignored\.txt/);
+  assert.match(summary, /Full captured changes: `\/tmp\/a1b2c3-changes\.md`/);
+  assert.match(summary, /1 file changed in 2 captured edit\/write operations/);
+  assert.match(summary, /- `src\/example\.ts`/);
+  assert.doesNotMatch(summary, /ignored\.txt|also-ignored\.txt|shell-only\.txt|```diff/);
+
+  const artifact = formatCapturedChangesMarkdown("a1b2c3", result.capturedChanges);
+  assert.match(artifact, /## Files changed/);
+  assert.match(artifact, /Complete content passed to `write`/);
+  assert.match(artifact, /alpha\n😀/);
+  assert.ok(artifact.includes(patch));
 });
 
-test("keeps observed-change metadata and formatting bounded", async () => {
+test("keeps inline metadata bounded while retaining every changed path", async () => {
   const script = `
     for (let index = 0; index < ${MAX_OBSERVED_CHANGE_PATHS + 12}; index += 1) {
       const toolCallId = String(index);
-      const args = { path: "p" + index + "/" + "x".repeat(700), content: "line\\n" };
+      const args = { path: "p" + index + ".txt", content: "line\\n" };
       console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName: "write", args }));
       console.log(JSON.stringify({ type: "tool_execution_end", toolCallId, toolName: "write", result: {}, isError: false }));
     }
@@ -924,9 +972,11 @@ test("keeps observed-change metadata and formatting bounded", async () => {
       .reduce((lines, snippet) => lines + (snippet.content.match(/\r\n|\r|\n/g)?.length ?? 0) + 1, 0) <=
       MAX_OBSERVED_CHANGES_DETAILS_LINES,
   );
-  assert.ok(Buffer.byteLength(summary, "utf8") <= MAX_OBSERVED_CHANGES_SUMMARY_BYTES);
-  assert.ok(summary.split("\n").length <= MAX_OBSERVED_CHANGES_SUMMARY_LINES);
-  assert.match(summary, /output truncated|additional operations omitted/i);
+  assert.equal(result.observedChanges.changedPaths.length, MAX_OBSERVED_CHANGE_PATHS + 12);
+  assert.equal(result.observedChanges.capturedOperations, MAX_OBSERVED_CHANGE_PATHS + 12);
+  assert.match(summary, /p0\.txt/);
+  assert.match(summary, new RegExp(`p${MAX_OBSERVED_CHANGE_PATHS + 11}\\.txt`));
+  assert.doesNotMatch(summary, /additional operations omitted/i);
 });
 
 test("bounds retained change text and truncates Unicode without replacement characters", async () => {
@@ -947,7 +997,11 @@ test("bounds retained change text and truncates Unicode without replacement char
   assert.ok(result.observedChanges.files.flatMap((file) => file.snippets).every((snippet) => snippet.truncated));
   assert.doesNotMatch(serialized, /�/);
   assert.ok(Buffer.byteLength(serialized, "utf8") < Buffer.byteLength(secret, "utf8"));
-  assert.match(formatObservedChanges(result.observedChanges), /Diff truncated/i);
+  assert.deepEqual(result.observedChanges.changedPaths, ["edit.txt", "write.txt"]);
+  assert.equal(result.capturedChanges.length, 2);
+  const artifact = formatCapturedChangesMarkdown("a1b2c3", result.capturedChanges);
+  assert.ok(artifact.includes(secret));
+  assert.doesNotMatch(artifact, /�/);
 });
 
 test("returns complete child results inline when the group fits", async () => {
@@ -984,6 +1038,67 @@ test("returns complete child results inline when the group fits", async () => {
   assert.deepEqual(overflowWrites, []);
   assert.match(result.content, /first complete result/);
   assert.match(result.content, /second complete result/);
+});
+
+test("always reports isolated captured-change artifacts for children that edited files", async () => {
+  const overflowWrites = [];
+  const changeWrites = [];
+  const items = [
+    {
+      id: "a1b2c3",
+      status: "completed",
+      output: "first result",
+      observedChanges: {
+        files: [],
+        omittedOperations: 1,
+        changedPaths: ["src/first.ts"],
+        capturedOperations: 1,
+      },
+      capturedChanges: [
+        { kind: "edit", path: "src/first.ts", content: "@@ -1 +1 @@\n-old\n+first" },
+      ],
+    },
+    {
+      id: "d4e5f6",
+      status: "completed",
+      output: "second result",
+      observedChanges: {
+        files: [],
+        omittedOperations: 1,
+        changedPaths: ["src/second.ts"],
+        capturedOperations: 1,
+      },
+      capturedChanges: [
+        { kind: "write", path: "src/second.ts", content: "second\n" },
+      ],
+    },
+  ];
+
+  const result = await formatSubtaskGroupResult(
+    items,
+    async (taskId, content) => {
+      overflowWrites.push({ taskId, content });
+      return `/tmp/${taskId}.md`;
+    },
+    async (taskId, content) => {
+      changeWrites.push({ taskId, content });
+      return `/tmp/${taskId}-changes.md`;
+    },
+  );
+
+  assert.deepEqual(overflowWrites, []);
+  assert.deepEqual(result.changeArtifactPaths, {
+    a1b2c3: "/tmp/a1b2c3-changes.md",
+    d4e5f6: "/tmp/d4e5f6-changes.md",
+  });
+  assert.match(result.content, /Full captured changes: `\/tmp\/a1b2c3-changes\.md`/);
+  assert.match(result.content, /Full captured changes: `\/tmp\/d4e5f6-changes\.md`/);
+  assert.match(result.content, /- `src\/first\.ts`/);
+  assert.match(result.content, /- `src\/second\.ts`/);
+  assert.ok(changeWrites[0].content.includes("first"));
+  assert.doesNotMatch(changeWrites[0].content, /src\/second\.ts|second result/);
+  assert.ok(changeWrites[1].content.includes("second"));
+  assert.doesNotMatch(changeWrites[1].content, /src\/first\.ts|first result/);
 });
 
 test("uses spare group capacity before truncating a larger child result", async () => {
@@ -1086,17 +1201,45 @@ test("reserves observed-change summary space beside oversized child prose", () =
     }],
     omittedOperations: 0,
   };
-  const combined = combineChildOutputWithObservedChanges("child prose ".repeat(10_000), observed, {
-    maxBytes: 1_024,
-    maxLines: 30,
-  });
+  const combined = combineChildOutputWithObservedChanges(
+    "child prose ".repeat(10_000),
+    observed,
+    { maxBytes: 1_024, maxLines: 30 },
+    "/tmp/a1b2c3-changes.md",
+  );
 
   assert.equal(combined.truncated, true);
   assert.ok(Buffer.byteLength(combined.content, "utf8") <= 1_024);
   assert.ok(combined.content.split("\n").length <= 30);
   assert.match(combined.content, /Output truncated/i);
   assert.match(combined.content, /### File changes/);
-  assert.match(combined.content, /```diff\n\+kept!\n```/);
+  assert.match(combined.content, /Full captured changes: `\/tmp\/a1b2c3-changes\.md`/);
+  assert.match(combined.content, /- `kept\.txt`/);
+  assert.doesNotMatch(combined.content, /```diff/);
+});
+
+test("preserves the overflow path when the changed-file list fills the inline budget", () => {
+  const changedPaths = Array.from({ length: 100 }, (_, index) =>
+    `src/${index}-${"x".repeat(80)}.ts`
+  );
+  const observed = {
+    files: [],
+    omittedOperations: changedPaths.length,
+    changedPaths,
+    capturedOperations: changedPaths.length,
+  };
+  const overflowMarker = "\n\n[Result truncated. Full output saved to:\n/tmp/a1b2c3.md]";
+  const combined = combineChildOutputWithObservedChanges(
+    "child result",
+    observed,
+    { maxBytes: 1_024, maxLines: 30, marker: overflowMarker },
+    "/tmp/a1b2c3-changes.md",
+  );
+
+  assert.equal(combined.truncated, true);
+  assert.match(combined.content, /Full captured changes: `\/tmp\/a1b2c3-changes\.md`/);
+  assert.match(combined.content, /Result truncated\. Full output saved to:/);
+  assert.match(combined.content, /\/tmp\/a1b2c3\.md/);
 });
 
 test("accumulates assistant usage cost in child progress", async () => {
@@ -1146,16 +1289,81 @@ test("preserves UTF-8 JSON split across stdout chunks", async () => {
   assert.equal(result.output, "split 😀 output");
 });
 
-test("cancels the child process", async () => {
+test("keeps captures isolated when concurrent children reuse tool-call IDs", async () => {
+  const childScript = (path, content) => {
+    const events = [
+      {
+        type: "tool_execution_start",
+        toolCallId: "shared-id",
+        toolName: "write",
+        args: { path, content },
+      },
+      {
+        type: "tool_execution_end",
+        toolCallId: "shared-id",
+        toolName: "write",
+        result: {},
+        isError: false,
+      },
+    ];
+    return events
+      .map((event) => `console.log(${JSON.stringify(JSON.stringify(event))})`)
+      .join(";");
+  };
+
+  const [first, second] = await Promise.all([
+    runChild({
+      invocation: { command: process.execPath, args: ["-e", childScript("first.txt", "first")] },
+      cwd: process.cwd(),
+    }),
+    runChild({
+      invocation: { command: process.execPath, args: ["-e", childScript("second.txt", "second")] },
+      cwd: process.cwd(),
+    }),
+  ]);
+
+  assert.deepEqual(first.capturedChanges, [
+    { kind: "write", path: "first.txt", content: "first" },
+  ]);
+  assert.deepEqual(second.capturedChanges, [
+    { kind: "write", path: "second.txt", content: "second" },
+  ]);
+});
+
+test("cancels the child process while preserving completed file changes", async () => {
   const controller = new AbortController();
+  const events = [
+    {
+      type: "tool_execution_start",
+      toolCallId: "same-id",
+      toolName: "write",
+      args: { path: "before-cancel.txt", content: "preserved\n" },
+    },
+    {
+      type: "tool_execution_end",
+      toolCallId: "same-id",
+      toolName: "write",
+      result: {},
+      isError: false,
+    },
+  ];
+  const script = `${events
+    .map((event) => `console.log(${JSON.stringify(JSON.stringify(event))})`)
+    .join(";")}; setInterval(() => {}, 1000)`;
   const running = runChild({
-    invocation: { command: process.execPath, args: ["-e", "setInterval(() => {}, 1000)"] },
+    invocation: { command: process.execPath, args: ["-e", script] },
     cwd: process.cwd(),
     signal: controller.signal,
   });
 
-  setTimeout(() => controller.abort(), 50);
-  await assert.rejects(running, /cancelled/);
+  setTimeout(() => controller.abort(), 100);
+  const result = await running;
+  assert.equal(result.stopReason, "aborted");
+  assert.equal(result.errorMessage, "Subtask was cancelled");
+  assert.deepEqual(result.observedChanges.changedPaths, ["before-cancel.txt"]);
+  assert.deepEqual(result.capturedChanges, [
+    { kind: "write", path: "before-cancel.txt", content: "preserved\n" },
+  ]);
 });
 
 test("truncates oversized output without splitting Unicode", () => {

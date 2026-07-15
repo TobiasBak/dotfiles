@@ -20,6 +20,7 @@ import {
   SUBTASKS_TOOL_PROMPT_GUIDELINES,
   SUBTASKS_WAIT_TOOL_DESCRIPTION,
   SUBTASKS_WAIT_TOOL_NAME,
+  type CapturedFileChange,
   type ObservedChanges,
   type SubtaskModel,
   type SubtaskStatus,
@@ -39,7 +40,7 @@ import {
   shouldBlockForkedSubtasks,
   truncateResult,
 } from "./core.ts";
-import { createOverflowResultWriter } from "./overflow.ts";
+import { createCapturedChangesWriter, createOverflowResultWriter } from "./overflow.ts";
 import { getSubtaskRuntimeState } from "./runtime.ts";
 
 const MAX_SUBTASKS = 16;
@@ -83,6 +84,7 @@ interface SubtaskDetails {
   };
   outputTruncated?: boolean;
   overflowPath?: string;
+  changeArtifactPath?: string;
   observedChanges?: ObservedChanges;
 }
 
@@ -97,6 +99,7 @@ interface SubtaskBatchDetails {
 interface SubtaskOutcome {
   output?: string;
   error?: string;
+  capturedChanges: CapturedFileChange[];
 }
 
 interface SubtaskToolResult {
@@ -171,6 +174,10 @@ function copyDetails(tasks: SubtaskState[]): SubtaskBatchDetails {
                 snippets: file.snippets.map((snippet) => ({ ...snippet })),
               })),
               omittedOperations: task.observedChanges.omittedOperations,
+              changedPaths: task.observedChanges.changedPaths
+                ? [...task.observedChanges.changedPaths]
+                : undefined,
+              capturedOperations: task.observedChanges.capturedOperations,
             }
           : undefined,
       };
@@ -569,7 +576,12 @@ export function createSubtasksExtension(
             contextWindow: 0,
             cost: 0,
             toolCalls: 0,
-            observedChanges: { files: [], omittedOperations: 0 },
+            observedChanges: {
+              files: [],
+              omittedOperations: 0,
+              changedPaths: [],
+              capturedOperations: 0,
+            },
           }));
           let detachedFromToolResult = false;
           const controller = new AbortController();
@@ -589,10 +601,18 @@ export function createSubtasksExtension(
             const snapshotFiles = new Map<number, string>();
             let durationTimer: NodeJS.Timeout | undefined;
             let widget: ReturnType<typeof registerSubtaskWidget> | undefined;
+            const sessionId = executionCtx.sessionManager.getSessionId();
+            const retainTemporaryPath = (temporaryPath: string) =>
+              runtime.retainTemporaryPath(temporaryPath);
             const writeOverflowResult = createOverflowResultWriter(
-              executionCtx.sessionManager.getSessionId(),
+              sessionId,
               groupId,
-              (temporaryPath) => runtime.retainTemporaryPath(temporaryPath),
+              retainTemporaryPath,
+            );
+            const writeCapturedChanges = createCapturedChangesWriter(
+              sessionId,
+              groupId,
+              retainTemporaryPath,
             );
 
             const refreshElapsed = () => {
@@ -654,6 +674,7 @@ export function createSubtasksExtension(
                   details.status = "running";
                   details.startedAt = Date.now();
                   publish();
+                  let capturedChanges: CapturedFileChange[] = [];
 
                   try {
                     const args = buildChildArgs({
@@ -682,6 +703,7 @@ export function createSubtasksExtension(
                     details.contextTokens = result.usage.contextTokens;
                     details.cost = result.usage.cost;
                     details.observedChanges = result.observedChanges;
+                    capturedChanges = result.capturedChanges ?? [];
 
                     const failed =
                       result.exitCode !== 0 ||
@@ -697,7 +719,10 @@ export function createSubtasksExtension(
                     refreshElapsed();
                     details.status = "completed";
                     publish();
-                    return { output: result.output || "(subtask completed without text output)" };
+                    return {
+                      output: result.output || "(subtask completed without text output)",
+                      capturedChanges,
+                    };
                   } catch (error) {
                     const boundedError = truncateResult(errorMessage(error), {
                       maxBytes: MAX_ERROR_BYTES,
@@ -709,7 +734,7 @@ export function createSubtasksExtension(
                     details.status =
                       taskController.signal.aborted || controller.signal.aborted ? "cancelled" : "failed";
                     publish();
-                    return { error: boundedError.content };
+                    return { error: boundedError.content, capturedChanges };
                   }
                 })();
 
@@ -731,13 +756,16 @@ export function createSubtasksExtension(
                   status: tasks[index]!.status,
                   output: outcome.output ?? `Error: ${outcome.error ?? "unknown failure"}`,
                   observedChanges: tasks[index]!.observedChanges!,
+                  capturedChanges: outcome.capturedChanges,
                 })),
                 writeOverflowResult,
+                writeCapturedChanges,
               );
               const truncatedTaskIds = new Set(formattedResult.truncatedTaskIds);
               for (const task of tasks) {
                 task.outputTruncated = truncatedTaskIds.has(task.id);
                 task.overflowPath = formattedResult.overflowPaths[task.id];
+                task.changeArtifactPath = formattedResult.changeArtifactPaths[task.id];
               }
 
               return {

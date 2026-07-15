@@ -38,7 +38,7 @@ export const SUBTASK_CHILD_SYSTEM_PROMPT = `## Subtask execution contract
 - When the assignment authorizes implementation, complete the changes rather than returning only a plan. Inspect as needed and make local design decisions within the assigned scope.
 - Own authorized edits and targeted verification end to end.
 - Verify the result against the assignment using checks appropriate to the artifact and risk.
-- Keep the final report compact and conclusion-first: result, relevant evidence, checks performed, and material limitations. Do not list changed paths or reproduce diffs, because file changes are captured automatically. Do not paste raw logs or large file excerpts. If verification cannot run, explain why and identify the next-best check.
+- Keep the final report compact and conclusion-first: result, relevant evidence, checks performed, and material limitations. Do not list changed paths or reproduce diffs, because successful edit/write changes are captured automatically in a per-subtask artifact. Do not paste raw logs or large file excerpts. If verification cannot run, explain why and identify the next-best check.
 - Report blockers, ambiguity, or conflicting instructions rather than guessing.
 `.trim();
 
@@ -106,6 +106,14 @@ export interface ObservedFileChange {
 export interface ObservedChanges {
   files: ObservedFileChange[];
   omittedOperations: number;
+  changedPaths?: string[];
+  capturedOperations?: number;
+}
+
+export interface CapturedFileChange {
+  kind: "edit" | "write";
+  path: string;
+  content: string;
 }
 
 export interface ChildResult {
@@ -116,6 +124,7 @@ export interface ChildResult {
   errorMessage?: string;
   usage: SubtaskUsage;
   observedChanges: ObservedChanges;
+  capturedChanges: CapturedFileChange[];
 }
 
 export interface SubtaskGroupResultItem {
@@ -123,12 +132,14 @@ export interface SubtaskGroupResultItem {
   status: SubtaskStatus;
   output: string;
   observedChanges: ObservedChanges;
+  capturedChanges?: CapturedFileChange[];
 }
 
 export interface FormattedSubtaskGroupResult {
   content: string;
   truncatedTaskIds: string[];
   overflowPaths: Record<string, string>;
+  changeArtifactPaths: Record<string, string>;
 }
 
 export interface ChildInvocation {
@@ -687,11 +698,16 @@ function emptyUsage(): SubtaskUsage {
   };
 }
 
-function boundedPath(value: unknown): string | undefined {
+function capturedPath(value: unknown): string | undefined {
   if (typeof value !== "string" || value.length === 0) return undefined;
-  const normalized = value.replace(/[\r\n\t]/g, (character) =>
+  return value.replace(/[\r\n\t]/g, (character) =>
     character === "\r" ? "\\r" : character === "\n" ? "\\n" : "\\t",
   );
+}
+
+function boundedPath(value: unknown): string | undefined {
+  const normalized = capturedPath(value);
+  if (!normalized) return undefined;
   if (Buffer.byteLength(normalized, "utf8") <= MAX_OBSERVED_CHANGE_PATH_BYTES) return normalized;
 
   const marker = "…";
@@ -862,56 +878,69 @@ function addObservedChange(
   }
 }
 
-function fitsObservedSummary(
-  content: string,
-  limits: { maxBytes: number; maxLines: number },
-): boolean {
-  return (
-    Buffer.byteLength(content, "utf8") <= limits.maxBytes &&
-    content.split("\n").length <= limits.maxLines
-  );
+function markdownPath(filePath: string): string {
+  return `\`${filePath.replace(/`/g, "\\`")}\``;
+}
+
+function fencedBlock(content: string, language: string): string {
+  let longestRun = 0;
+  for (const run of content.match(/`+/g) ?? []) longestRun = Math.max(longestRun, run.length);
+  const fence = "`".repeat(Math.max(3, longestRun + 1));
+  const separator = /\r\n$|[\r\n]$/.test(content) ? "" : "\n";
+  return `${fence}${language}\n${content}${separator}${fence}`;
+}
+
+export function formatCapturedChangesMarkdown(
+  taskId: string,
+  changes: CapturedFileChange[],
+): string {
+  const changedPaths = [...new Set(changes.map((change) => change.path))];
+  const sections = [
+    `# Captured file changes for subtask ${taskId}`,
+    "",
+    "This artifact records every successful `edit` patch and complete `write` payload observed for this subtask. Shell-based filesystem changes are not captured.",
+    "",
+    "## Files changed",
+    "",
+    ...changedPaths.map((filePath) => `- ${markdownPath(filePath)}`),
+    "",
+    "## Operations",
+  ];
+
+  changes.forEach((change, index) => {
+    const description =
+      change.kind === "edit" ? "Exact patch returned by `edit`:" : "Complete content passed to `write`:";
+    sections.push(
+      "",
+      `### ${index + 1}. ${change.kind} ${markdownPath(change.path)}`,
+      "",
+      description,
+      "",
+      fencedBlock(change.content, change.kind === "edit" ? "diff" : "text"),
+    );
+  });
+  return `${sections.join("\n")}\n`;
 }
 
 export function formatObservedChanges(
   observed: ObservedChanges,
-  limits: { maxBytes: number; maxLines: number } = {
-    maxBytes: MAX_OBSERVED_CHANGES_SUMMARY_BYTES,
-    maxLines: MAX_OBSERVED_CHANGES_SUMMARY_LINES,
-  },
+  artifactPath?: string,
 ): string {
-  if (observed.files.length === 0 && observed.omittedOperations === 0) return "";
+  const changedPaths = (observed.changedPaths?.length ?? 0) > 0
+    ? observed.changedPaths!
+    : observed.files.map((file) => file.path);
+  if (changedPaths.length === 0) return "";
 
+  const operationCount =
+    observed.capturedOperations ||
+    observed.files.reduce((count, file) => count + file.snippets.length, 0) +
+      observed.omittedOperations;
   const sections = ["### File changes"];
-  let omittedByFormatting = 0;
-  for (let index = 0; index < observed.files.length; index += 1) {
-    const file = observed.files[index]!;
-    const block = [`#### \`${file.path.replace(/`/g, "\\`")}\``];
-    for (const snippet of file.snippets) {
-      const fenceSeparator = /\r\n$|[\r\n]$/.test(snippet.content) ? "" : "\n";
-      block.push(`\`\`\`diff\n${snippet.content}${fenceSeparator}\`\`\``);
-      if (snippet.truncated) block.push("[Diff truncated.]");
-    }
-    if (!fitsObservedSummary([...sections, block.join("\n")].join("\n"), limits)) {
-      omittedByFormatting = observed.files
-        .slice(index)
-        .reduce((count, candidate) => count + candidate.snippets.length, 0);
-      break;
-    }
-    sections.push(block.join("\n"));
-  }
-
-  let omitted = observed.omittedOperations + omittedByFormatting;
-  if (omitted > 0) {
-    const marker = () =>
-      `_${omitted} additional operation${omitted === 1 ? "" : "s"} omitted._`;
-    if (fitsObservedSummary([...sections, marker()].join("\n"), limits)) sections.push(marker());
-    else if (sections.length > 1) {
-      const removedFile = observed.files[sections.length - 2];
-      omitted += removedFile?.snippets.length ?? 0;
-      sections.pop();
-      sections.push(marker());
-    }
-  }
+  if (artifactPath) sections.push(`Full captured changes: ${markdownPath(artifactPath)}`);
+  sections.push(
+    `${changedPaths.length} file${changedPaths.length === 1 ? "" : "s"} changed in ${operationCount} captured edit/write operation${operationCount === 1 ? "" : "s"}:`,
+    ...changedPaths.map((filePath) => `- ${markdownPath(filePath)}`),
+  );
   return sections.join("\n");
 }
 
@@ -921,8 +950,12 @@ interface ChildOutputLimits {
   marker?: string;
 }
 
-function completeChildOutput(output: string, observed: ObservedChanges): string {
-  const summary = formatObservedChanges(observed);
+function completeChildOutput(
+  output: string,
+  observed: ObservedChanges,
+  changeArtifactPath?: string,
+): string {
+  const summary = formatObservedChanges(observed, changeArtifactPath);
   return summary ? `${output}\n\n${summary}` : output;
 }
 
@@ -930,11 +963,9 @@ export function combineChildOutputWithObservedChanges(
   output: string,
   observed: ObservedChanges,
   limits: ChildOutputLimits,
+  changeArtifactPath?: string,
 ): { content: string; truncated: boolean } {
-  const formattedSummary = formatObservedChanges(observed, {
-    maxBytes: Math.min(limits.maxBytes, MAX_OBSERVED_CHANGES_SUMMARY_BYTES),
-    maxLines: Math.min(limits.maxLines, MAX_OBSERVED_CHANGES_SUMMARY_LINES),
-  });
+  const formattedSummary = formatObservedChanges(observed, changeArtifactPath);
   if (!formattedSummary) return truncateResult(output, limits);
 
   const summary = truncateResult(formattedSummary, limits);
@@ -993,11 +1024,27 @@ function allocateFairly(desired: number[], budget: number): number[] {
 export async function formatSubtaskGroupResult(
   items: SubtaskGroupResultItem[],
   writeOverflow: (taskId: string, content: string) => Promise<string>,
+  writeCapturedChanges?: (taskId: string, content: string) => Promise<string>,
 ): Promise<FormattedSubtaskGroupResult> {
-  if (items.length === 0) return { content: "", truncatedTaskIds: [], overflowPaths: {} };
+  if (items.length === 0) {
+    return { content: "", truncatedTaskIds: [], overflowPaths: {}, changeArtifactPaths: {} };
+  }
+
+  const changeArtifactPaths: Record<string, string> = {};
+  if (writeCapturedChanges) {
+    for (const item of items) {
+      if ((item.capturedChanges?.length ?? 0) === 0) continue;
+      changeArtifactPaths[item.id] = await writeCapturedChanges(
+        item.id,
+        formatCapturedChangesMarkdown(item.id, item.capturedChanges!),
+      );
+    }
+  }
 
   const headers = items.map((item) => `## Subtask ${item.id} [${item.status}]`);
-  const completeOutputs = items.map((item) => completeChildOutput(item.output, item.observedChanges));
+  const completeOutputs = items.map((item) =>
+    completeChildOutput(item.output, item.observedChanges, changeArtifactPaths[item.id]),
+  );
   const headerBytes = headers.reduce(
     (total, header) => total + Buffer.byteLength(`${header}\n`, "utf8"),
     Math.max(0, items.length - 1) * 2,
@@ -1026,19 +1073,29 @@ export async function formatSubtaskGroupResult(
 
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index]!;
-    let bounded = combineChildOutputWithObservedChanges(item.output, item.observedChanges, {
-      maxBytes: taskBytes[index]!,
-      maxLines: taskLines[index]!,
-    });
+    let bounded = combineChildOutputWithObservedChanges(
+      item.output,
+      item.observedChanges,
+      {
+        maxBytes: taskBytes[index]!,
+        maxLines: taskLines[index]!,
+      },
+      changeArtifactPaths[item.id],
+    );
     if (bounded.truncated) {
       const complete = `${headers[index]}\n${completeOutputs[index]}`;
       const overflowPath = await writeOverflow(item.id, complete);
       const marker = `\n\n[Result truncated. Full output saved to:\n${overflowPath}]`;
-      bounded = combineChildOutputWithObservedChanges(item.output, item.observedChanges, {
-        maxBytes: taskBytes[index]!,
-        maxLines: taskLines[index]!,
-        marker,
-      });
+      bounded = combineChildOutputWithObservedChanges(
+        item.output,
+        item.observedChanges,
+        {
+          maxBytes: taskBytes[index]!,
+          maxLines: taskLines[index]!,
+          marker,
+        },
+        changeArtifactPaths[item.id],
+      );
       truncatedTaskIds.push(item.id);
       overflowPaths[item.id] = overflowPath;
     }
@@ -1052,7 +1109,7 @@ export async function formatSubtaskGroupResult(
   ) {
     throw new Error("Formatted subtask group result exceeded its inline context budget");
   }
-  return { content, truncatedTaskIds, overflowPaths };
+  return { content, truncatedTaskIds, overflowPaths, changeArtifactPaths };
 }
 
 export async function runChild(options: RunChildOptions): Promise<ChildResult> {
@@ -1065,17 +1122,22 @@ export async function runChild(options: RunChildOptions): Promise<ChildResult> {
   let closed = false;
   let aborted = false;
   let toolCalls = 0;
-  const observedChanges: ObservedChanges = { files: [], omittedOperations: 0 };
+  const observedChanges: ObservedChanges = {
+    files: [],
+    omittedOperations: 0,
+    changedPaths: [],
+    capturedOperations: 0,
+  };
+  const capturedChanges: CapturedFileChange[] = [];
   const pendingFileCalls = new Map<
     string,
     | { tool: "edit"; path?: string }
     | {
         tool: "write";
         path?: string;
+        content: string;
         bytes: number;
         lines: number;
-        diff: string;
-        diffTruncated: boolean;
       }
   >();
   let forceKillTimer: NodeJS.Timeout | undefined;
@@ -1155,20 +1217,16 @@ export async function runChild(options: RunChildOptions): Promise<ChildResult> {
 
     if (event.type === "tool_execution_start") {
       toolCalls += 1;
-      const canTrackFileCall =
-        pendingFileCalls.size + observedUsage(observedChanges).operations < MAX_OBSERVED_CHANGE_OPERATIONS;
-      if (canTrackFileCall && typeof event.toolCallId === "string" && event.toolName === "edit") {
-        pendingFileCalls.set(event.toolCallId, { tool: "edit", path: boundedPath(event.args?.path) });
-      } else if (canTrackFileCall && typeof event.toolCallId === "string" && event.toolName === "write") {
+      if (typeof event.toolCallId === "string" && event.toolName === "edit") {
+        pendingFileCalls.set(event.toolCallId, { tool: "edit", path: capturedPath(event.args?.path) });
+      } else if (typeof event.toolCallId === "string" && event.toolName === "write") {
         const content = typeof event.args?.content === "string" ? event.args.content : "";
-        const boundedDiff = boundedWriteDiff(content);
         pendingFileCalls.set(event.toolCallId, {
           tool: "write",
-          path: boundedPath(event.args?.path),
+          path: capturedPath(event.args?.path),
+          content,
           bytes: Buffer.byteLength(content, "utf8"),
           lines: countContentLines(content),
-          diff: boundedDiff.content,
-          diffTruncated: boundedDiff.truncated,
         });
       }
       reportProgress(`Running ${event.toolName ?? "tool"}...`);
@@ -1179,20 +1237,30 @@ export async function runChild(options: RunChildOptions): Promise<ChildResult> {
       const pending =
         typeof event.toolCallId === "string" ? pendingFileCalls.get(event.toolCallId) : undefined;
       if (typeof event.toolCallId === "string") pendingFileCalls.delete(event.toolCallId);
-      if (!pending || event.isError !== false) return;
+      if (!pending || event.isError !== false || !pending.path) return;
+      if (!observedChanges.changedPaths!.includes(pending.path)) {
+        observedChanges.changedPaths!.push(pending.path);
+      }
+      observedChanges.capturedOperations = (observedChanges.capturedOperations ?? 0) + 1;
+
       if (pending.tool === "write") {
+        capturedChanges.push({ kind: "write", path: pending.path, content: pending.content });
+        const boundedDiff = boundedWriteDiff(pending.content);
         addObservedChange(
           observedChanges,
           pending.path,
           "write",
           { bytes: pending.bytes, lines: pending.lines },
-          pending.diff,
-          pending.diffTruncated,
+          boundedDiff.content,
+          boundedDiff.truncated,
         );
       } else {
         const patch = event.result?.details?.patch;
         if (typeof patch === "string") {
+          capturedChanges.push({ kind: "edit", path: pending.path, content: patch });
           addObservedChange(observedChanges, pending.path, "edit", parsePatchStats(patch), patch);
+        } else {
+          observedChanges.omittedOperations += 1;
         }
       }
       return;
@@ -1249,8 +1317,16 @@ export async function runChild(options: RunChildOptions): Promise<ChildResult> {
     });
   });
 
-  if (aborted) throw new Error("Subtask was cancelled");
-  return { output, stderr, exitCode, stopReason, errorMessage, usage, observedChanges };
+  return {
+    output,
+    stderr,
+    exitCode,
+    stopReason: aborted ? "aborted" : stopReason,
+    errorMessage: aborted ? "Subtask was cancelled" : errorMessage,
+    usage,
+    observedChanges,
+    capturedChanges,
+  };
 }
 
 export function truncateResult(

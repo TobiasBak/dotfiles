@@ -24,10 +24,11 @@ function requireGeneratedId(value: string, pattern: RegExp, kind: string): strin
   return value;
 }
 
-export function createOverflowResultWriter(
+function createPrivateMarkdownWriter(
   sessionId: string,
   groupId: string,
   retainTemporaryPath: (path: string) => void,
+  fileName: (taskId: string) => string,
 ): (taskId: string, content: string) => Promise<string> {
   const safeGroupId = requireGeneratedId(groupId, /^g-[0-9a-f]{6}$/, "subtask group ID");
   const rootDirectory = path.join(os.tmpdir(), "pi-subtasks");
@@ -49,7 +50,7 @@ export function createOverflowResultWriter(
   return async (taskId: string, content: string): Promise<string> => {
     const safeTaskId = requireGeneratedId(taskId, /^[0-9a-f]{6}$/, "subtask ID");
     await prepareDirectory();
-    const outputPath = path.join(outputDirectory, `${safeTaskId}.md`);
+    const outputPath = path.join(outputDirectory, fileName(safeTaskId));
     await fs.promises.writeFile(outputPath, content, {
       encoding: "utf8",
       mode: 0o600,
@@ -57,4 +58,30 @@ export function createOverflowResultWriter(
     });
     return outputPath;
   };
+}
+
+export function createOverflowResultWriter(
+  sessionId: string,
+  groupId: string,
+  retainTemporaryPath: (path: string) => void,
+): (taskId: string, content: string) => Promise<string> {
+  return createPrivateMarkdownWriter(
+    sessionId,
+    groupId,
+    retainTemporaryPath,
+    (taskId) => `${taskId}.md`,
+  );
+}
+
+export function createCapturedChangesWriter(
+  sessionId: string,
+  groupId: string,
+  retainTemporaryPath: (path: string) => void,
+): (taskId: string, content: string) => Promise<string> {
+  return createPrivateMarkdownWriter(
+    sessionId,
+    groupId,
+    retainTemporaryPath,
+    (taskId) => `${taskId}-changes.md`,
+  );
 }
