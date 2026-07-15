@@ -21,6 +21,49 @@ export function setDeferredWebToolsActive(pi: ExtensionAPI, enabled: boolean): s
   return next;
 }
 
+interface WebSearchResultDetails {
+  searchId?: unknown;
+  fetchId?: unknown;
+  fetchUrls?: unknown;
+  queryCount?: unknown;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+export function buildWebSearchRetrievalHint(details: unknown, visibleText = ""): string | undefined {
+  if (!details || typeof details !== "object") return undefined;
+
+  const result = details as WebSearchResultDetails;
+  const searchId = nonEmptyString(result.searchId);
+  const fetchId = nonEmptyString(result.fetchId);
+  const lines: string[] = [];
+
+  if (searchId && !visibleText.includes(searchId)) {
+    const queryCount =
+      typeof result.queryCount === "number" && Number.isInteger(result.queryCount) && result.queryCount > 0
+        ? result.queryCount
+        : undefined;
+    const range = queryCount && queryCount > 1 ? ` Valid queryIndex values: 0-${queryCount - 1}.` : "";
+    lines.push(
+      `Search results responseId: "${searchId}". ` +
+        `Use get_search_content({ responseId: "${searchId}", queryIndex: 0 }).${range}`,
+    );
+  }
+
+  if (fetchId && !visibleText.includes(fetchId)) {
+    const pending = Array.isArray(result.fetchUrls) && result.fetchUrls.length > 0;
+    lines.push(
+      pending
+        ? `Full-page content is being fetched under responseId: "${fetchId}". Wait for the content-ready notification before using get_search_content({ responseId: "${fetchId}", urlIndex: 0 }).`
+        : `Full-page content responseId: "${fetchId}". Use get_search_content({ responseId: "${fetchId}", urlIndex: 0 }).`,
+    );
+  }
+
+  return lines.length > 0 ? lines.join("\n") : undefined;
+}
+
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", () => {
     setDeferredWebToolsActive(pi, false);
@@ -36,6 +79,36 @@ export default function (pi: ExtensionAPI) {
     if (event.toolName === "web_search") {
       setDeferredWebToolsActive(pi, true);
     }
+  });
+
+  pi.on("tool_result", (event) => {
+    if (event.toolName === "get_search_content") {
+      const details = event.details as { error?: unknown } | undefined;
+      if (typeof details?.error === "string") return { isError: true };
+      return;
+    }
+
+    if (event.toolName !== "web_search") return;
+
+    const visibleText = event.content
+      .filter((block): block is Extract<(typeof event.content)[number], { type: "text" }> => block.type === "text")
+      .map((block) => block.text)
+      .join("\n");
+    const hint = buildWebSearchRetrievalHint(event.details, visibleText);
+    if (!hint) return;
+
+    const firstTextIndex = event.content.findIndex((block) => block.type === "text");
+    if (firstTextIndex === -1) {
+      return { content: [...event.content, { type: "text" as const, text: hint }] };
+    }
+
+    return {
+      content: event.content.map((block, index) =>
+        index === firstTextIndex && block.type === "text"
+          ? { ...block, text: `${block.text}\n\n---\n${hint}` }
+          : block,
+      ),
+    };
   });
 
   pi.registerCommand("web-tools", {
