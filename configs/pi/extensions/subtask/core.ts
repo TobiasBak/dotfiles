@@ -12,7 +12,7 @@ export const SUBTASKS_TOOL_NAME = "subtasks";
 export const SUBTASKS_WAIT_TOOL_NAME = "subtasks_wait";
 export const SUBTASKS_CONTROL_TOOL_NAME = "subtasks_control";
 export const SUBTASKS_TOOL_DESCRIPTION =
-  "Run focused subtasks in isolated Pi processes that share the current working directory. Each call creates one group. Tasks in one call run in parallel; each task selects its model, thinking, tools, and optional conversation fork. The call returns a group ID for later waiting and task IDs for listing or cancellation.";
+  "Run focused subtasks in isolated Pi processes that share the current working directory. Each call creates one group. Tasks in one call run in parallel; each task selects its model, thinking, and optional conversation fork. Children receive all active eligible tools. The call returns a group ID for later waiting and task IDs for listing or cancellation.";
 export const SUBTASKS_WAIT_TOOL_DESCRIPTION =
   "Wait once for one or more subtask groups to finish. This blocks until every task in every requested group is terminal; aborting the wait does not cancel the subtasks. Use this instead of polling subtasks_control.";
 export const SUBTASKS_CONTROL_TOOL_DESCRIPTION =
@@ -314,10 +314,16 @@ export function prepareSubtasksArguments(args: unknown): unknown {
       : typeof input.async === "boolean"
         ? !input.async
         : undefined;
+  const withoutLegacyTools = (task: unknown): unknown => {
+    if (!task || typeof task !== "object" || Array.isArray(task)) return task;
+    const { tools: _legacyTools, ...preparedTask } = task as Record<string, unknown>;
+    return preparedTask;
+  };
 
   if (Array.isArray(input.tasks)) {
     const { async: _legacyAsync, ...prepared } = input;
-    return wait === undefined ? prepared : { ...prepared, wait };
+    const normalized = { ...prepared, tasks: input.tasks.map(withoutLegacyTools) };
+    return wait === undefined ? normalized : { ...normalized, wait };
   }
   if (typeof input.task !== "string") return args;
 
@@ -327,7 +333,6 @@ export function prepareSubtasksArguments(args: unknown): unknown {
         task: input.task,
         model: input.model,
         thinking: input.thinking,
-        tools: input.tools,
         fork: input.fork,
       },
     ],

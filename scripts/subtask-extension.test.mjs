@@ -120,6 +120,7 @@ test("keeps execution metadata mechanical and delegation guidance tool-owned", (
   assert.match(SUBTASKS_TOOL_DESCRIPTION, /isolated Pi processes/i);
   assert.match(SUBTASKS_TOOL_DESCRIPTION, /share the current working directory/i);
   assert.match(SUBTASKS_TOOL_DESCRIPTION, /Tasks in one call run in parallel/i);
+  assert.match(SUBTASKS_TOOL_DESCRIPTION, /all active eligible tools/i);
   assert.doesNotMatch(
     SUBTASKS_TOOL_DESCRIPTION,
     /1-16|research|implementation|\bLuna\b|\bSol\b|retrieval|architecture|high-consequence/i,
@@ -378,9 +379,9 @@ test("blocks forked subtasks at 65 percent parent context usage", () => {
   assert.equal(shouldBlockForkedSubtasks(true, undefined), false);
 });
 
-test("maps legacy async arguments to wait without exposing async", () => {
+test("maps legacy arguments without exposing async or per-child tools", () => {
   assert.deepEqual(
-    prepareSubtasksArguments({ tasks: [{ task: "A" }], async: true }),
+    prepareSubtasksArguments({ tasks: [{ task: "A", tools: ["read"] }], async: true }),
     { tasks: [{ task: "A" }], wait: false },
   );
   assert.deepEqual(
@@ -390,6 +391,22 @@ test("maps legacy async arguments to wait without exposing async", () => {
   assert.deepEqual(
     prepareSubtasksArguments({ tasks: [{ task: "A" }], async: true, wait: true }),
     { tasks: [{ task: "A" }], wait: true },
+  );
+  assert.deepEqual(
+    prepareSubtasksArguments({
+      task: "A",
+      model: "openai-codex/gpt-5.6-luna",
+      thinking: "low",
+      tools: [],
+    }),
+    {
+      tasks: [{
+        task: "A",
+        model: "openai-codex/gpt-5.6-luna",
+        thinking: "low",
+        fork: undefined,
+      }],
+    },
   );
 });
 
@@ -422,6 +439,9 @@ test("extension keeps fork and wait guidance with their parameters", () => {
   assert.match(source, /runtime\.waitForGroups\(params\.groupIds, signal\)/);
   assert.doesNotMatch(source, /async: Type\.Optional\(\s*Type\.Boolean/);
   assert.match(source, /promptGuidelines: SUBTASKS_TOOL_PROMPT_GUIDELINES/);
+  assert.doesNotMatch(source, /tools:\s*Type\.Array/);
+  assert.match(source, /const childTools = getSelectableToolNames\(pi\)/);
+  assert.match(source, /tools: childTools/);
   assert.match(source, /default: true/);
   assert.match(source, /Results will be delivered automatically when subtasks finish/);
   assert.doesNotMatch(source, /steer queue/);

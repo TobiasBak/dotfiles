@@ -58,7 +58,6 @@ interface SubtaskRequest {
   task: string;
   model: SubtaskModel;
   thinking: SubtaskThinkingLevel;
-  tools: string[];
   fork?: boolean;
 }
 
@@ -67,7 +66,6 @@ interface SubtaskDetails {
   task: string;
   model: SubtaskModel;
   thinking: SubtaskThinkingLevel;
-  tools: string[];
   forked: boolean;
   status: SubtaskStatus;
   elapsedMs: number;
@@ -168,7 +166,6 @@ function copyDetails(tasks: SubtaskState[]): SubtaskBatchDetails {
     tasks: tasks.map((task) => {
       const details: Partial<SubtaskState> = {
         ...task,
-        tools: [...task.tools],
         usage: task.usage ? { ...task.usage } : undefined,
         observedChanges: task.observedChanges
           ? {
@@ -276,7 +273,6 @@ function clearSubtaskWidget(ctx: ExtensionContext, widgetId: string): void {
 function validateSubtask(
   request: SubtaskRequest,
   ctx: ExtensionContext,
-  currentTools: ReadonlySet<string>,
 ): number {
   const separator = request.model.indexOf("/");
   const provider = request.model.slice(0, separator);
@@ -287,11 +283,6 @@ function validateSubtask(
   }
   if (!getSupportedThinkingLevels(resolvedModel).includes(request.thinking)) {
     throw new Error(`${request.model} does not support thinking level ${request.thinking}`);
-  }
-
-  const unavailableTools = request.tools.filter((tool) => !currentTools.has(tool));
-  if (unavailableTools.length > 0) {
-    throw new Error(`Unavailable subtask tools: ${unavailableTools.join(", ")}`);
   }
 
   return resolvedModel.contextWindow;
@@ -495,12 +486,6 @@ export function createSubtasksExtension(
         return;
       }
 
-      const selectableTools = getSelectableToolNames(pi);
-      if (selectableTools.length === 0) {
-        finishSessionStart();
-        return;
-      }
-
       const SubtaskItemParams = Type.Object({
         task: Type.String({
           description: "Child assignment.",
@@ -511,10 +496,6 @@ export function createSubtasksExtension(
         }),
         thinking: StringEnum(SUBTASK_THINKING_LEVELS, {
           description: "Thinking level used by the child Pi process.",
-        }),
-        tools: Type.Array(StringEnum(selectableTools, { description: "Tool available to this child" }), {
-          description: "Exact tool allowlist passed to the child; an empty array disables tools.",
-          uniqueItems: true,
         }),
         fork: Type.Optional(
           Type.Boolean({
@@ -689,7 +670,6 @@ export function createSubtasksExtension(
             task: request.task,
             model: request.model,
             thinking: request.thinking,
-            tools: [...request.tools],
             forked: request.fork ?? false,
             status: "queued",
             elapsedMs: 0,
@@ -760,9 +740,9 @@ export function createSubtasksExtension(
             };
 
             try {
-              const currentTools = new Set(getSelectableToolNames(pi));
+              const childTools = getSelectableToolNames(pi);
               for (let index = 0; index < requests.length; index += 1) {
-                tasks[index]!.contextWindow = validateSubtask(requests[index]!, executionCtx, currentTools);
+                tasks[index]!.contextWindow = validateSubtask(requests[index]!, executionCtx);
               }
 
               activeWidgetIds.add(widgetId);
@@ -788,7 +768,7 @@ export function createSubtasksExtension(
                       task: request.task,
                       model: request.model,
                       thinking: request.thinking,
-                      tools: request.tools,
+                      tools: childTools,
                       sessionFile: snapshotFiles.get(index),
                     });
                     const result = await runChildProcess({
