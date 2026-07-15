@@ -16,7 +16,7 @@ export const SUBTASKS_TOOL_DESCRIPTION =
 export const SUBTASKS_WAIT_TOOL_DESCRIPTION =
   "Wait once for one or more subtask groups to finish. This blocks until every task in every requested group is terminal; aborting the wait does not cancel the subtasks. Use this instead of polling subtasks_control.";
 export const SUBTASKS_CONTROL_TOOL_DESCRIPTION =
-  "List running subtasks or cancel specific tasks by the six-character IDs returned by subtasks. Use list only for an on-demand status check, diagnosis, or cancellation workflow; do not poll periodically because subtasks_wait provides blocking group synchronization and completions are delivered automatically through the steer queue.";
+  "List running subtasks or cancel specific tasks by the six-character IDs returned by subtasks. Use list only for an on-demand status check, diagnosis, or cancellation workflow; do not poll periodically because subtasks_wait provides blocking group synchronization and results are delivered automatically when subtasks finish.";
 export const SUBTASKS_TOOL_PROMPT_GUIDELINES = [
   "Actively consider subtasks throughout non-trivial work. Delegate coherent, independently useful outcomes when parallelism, context isolation, specialization, or fresh verification justify the overhead; handle small, obvious, tightly coupled work directly.",
   "Use subtasks to delegate complete outcomes rather than separate investigation, planning, and implementation stages. When implementation can be bounded safely, assign one child to inspect as needed, make local design decisions, edit, and verify. Use planning-only subtasks only when an unresolved decision prevents a bounded implementation assignment.",

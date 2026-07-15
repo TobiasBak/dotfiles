@@ -534,7 +534,7 @@ export function createSubtasksExtension(
         wait: Type.Optional(
           Type.Boolean({
             description:
-              "Wait for every task to finish before this tool call returns. Completion is always delivered through the steer queue. Use false only while unrelated work can continue; caller abort detaches without cancelling. Default: true.",
+              "Wait for every task to finish before this tool call returns. Results will be delivered automatically when subtasks finish. Use false only while unrelated work can continue; caller abort detaches without cancelling. Default: true.",
             default: true,
           }),
         ),
@@ -625,7 +625,7 @@ export function createSubtasksExtension(
               content: [
                 {
                   type: "text" as const,
-                  text: `Stopped waiting for subtask groups: ${groupStatuses}. The subtasks continue running and completion will still be delivered through the steer queue.`,
+                  text: `Stopped waiting for subtask groups: ${groupStatuses}. The subtasks continue running, and results will be delivered automatically when they finish.`,
                 },
               ],
               details: result,
@@ -638,7 +638,7 @@ export function createSubtasksExtension(
             content: [
               {
                 type: "text" as const,
-                text: `Subtask groups reached terminal state: ${groupStatuses}. Findings were delivered through the steer queue.`,
+                text: `Subtask groups reached terminal state: ${groupStatuses}. Results were delivered automatically.`,
               },
             ],
             details: result,
@@ -969,10 +969,12 @@ export function createSubtasksExtension(
 
           const taskLabel = `subtask${tasks.length === 1 ? "" : "s"}`;
           const taskIds = tasks.map((task) => task.id).join(", ");
+          const completionTiming =
+            tasks.length === 1 ? "the subtask finishes" : "all subtasks finish";
           const message =
             deliveryStatus === "running"
-              ? `Started subtask group ${groupId} with ${tasks.length} independent ${taskLabel}: ${taskIds}. Use subtasks_wait for group ${groupId} when independent work is exhausted; completion will be delivered through the steer queue.`
-              : `Finished subtask group ${groupId} with ${tasks.length} independent ${taskLabel}: ${taskIds}. Completion was delivered through the steer queue.`;
+              ? `Started subtask group ${groupId} with ${tasks.length} independent ${taskLabel}: ${taskIds}. Use subtasks_wait for group ${groupId} when independent work is exhausted. Results will be delivered automatically when ${completionTiming}.`
+              : `Finished subtask group ${groupId} with ${tasks.length} independent ${taskLabel}: ${taskIds}. Results were delivered automatically.`;
           return {
             content: [{ type: "text" as const, text: message }],
             details: {

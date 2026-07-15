@@ -423,7 +423,8 @@ test("extension keeps fork and wait guidance with their parameters", () => {
   assert.doesNotMatch(source, /async: Type\.Optional\(\s*Type\.Boolean/);
   assert.match(source, /promptGuidelines: SUBTASKS_TOOL_PROMPT_GUIDELINES/);
   assert.match(source, /default: true/);
-  assert.match(source, /Completion is always delivered through the steer queue/);
+  assert.match(source, /Results will be delivered automatically when subtasks finish/);
+  assert.doesNotMatch(source, /steer queue/);
   assert.match(source, /deliverAs: "steer", triggerTurn: true/);
 });
 
