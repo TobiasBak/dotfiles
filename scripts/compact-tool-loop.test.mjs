@@ -13,10 +13,16 @@ function createHarness({ usage = HIGH_USAGE } = {}) {
   const handlers = new Map();
   const notifications = [];
   const sentMessages = [];
+  const emittedEvents = [];
   let abortCalls = 0;
   let idle = false;
 
   const pi = {
+    events: {
+      emit(event, data) {
+        emittedEvents.push({ event, data });
+      },
+    },
     on(event, handler) {
       handlers.set(event, handler);
     },
@@ -50,6 +56,7 @@ function createHarness({ usage = HIGH_USAGE } = {}) {
       return abortCalls;
     },
     ctx,
+    emittedEvents,
     handlers,
     notifications,
     sentMessages,
@@ -156,6 +163,12 @@ test("stops clearly when core still does not compact the recovery boundary", () 
   harness.handlers.get("agent_settled")({}, harness.ctx);
 
   assert.equal(harness.sentMessages.length, 1);
+  assert.deepEqual(harness.emittedEvents, [
+    {
+      event: "compact-tool-loop:paused",
+      data: { reason: "recovery-boundary-did-not-compact" },
+    },
+  ]);
   assert.equal(harness.notifications.at(-1).level, "error");
   assert.match(harness.notifications.at(-1).message, /still did not compact/i);
   assert.match(harness.notifications.at(-1).message, /settings.*authentication/i);

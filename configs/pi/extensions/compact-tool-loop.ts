@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export const COMPACTION_HEADROOM_TOKENS = 32_000;
+export const COMPACT_TOOL_LOOP_PAUSED_EVENT = "compact-tool-loop:paused";
 const STATUS_ID = "compact-tool-loop";
 const RESUME_MESSAGE =
   "Automatic context compaction completed during the tool loop. Continue the same task from the summary and recent context without waiting for further user input.";
@@ -112,6 +113,9 @@ export default function (pi: ExtensionAPI) {
 
     resetRecovery();
     clearCompactionStatus(ctx);
+    pi.events.emit(COMPACT_TOOL_LOOP_PAUSED_EVENT, {
+      reason: "recovery-boundary-did-not-compact",
+    });
     if (ctx.hasUI) {
       ctx.ui.notify(
         "Pi still did not compact after creating a safe turn boundary; automatic continuation stopped. Check auto-compaction settings, model authentication, and Pi errors.",
