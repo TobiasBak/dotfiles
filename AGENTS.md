@@ -15,6 +15,7 @@ Check relevant links before or after config edits:
   - `~/.pi/agent/extensions` -> `configs/pi/extensions`
   - `~/.pi/agent/prompts` -> `configs/pi/prompts`
   - `~/.pi/agent/keybindings.json` -> `configs/pi/keybindings.json`
+  - `~/.hypa-pi/config.json` -> `configs/pi/hypa.json`
 - NixOS WSL and native NixOS Codex CLI config:
   - `~/.codex/AGENTS.md` -> `configs/codex/AGENTS.md`
   - `~/.codex/config.toml` -> `configs/codex/config.toml`

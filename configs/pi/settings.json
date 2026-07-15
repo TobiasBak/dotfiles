@@ -10,7 +10,10 @@
   },
   "packages": [
     "npm:@hypabolic/pi-hypa",
-    "npm:pi-web-access"
+    {
+      "source": "npm:pi-web-access",
+      "skills": []
+    }
   ],
   "defaultProjectTrust": "always",
   "enableInstallTelemetry": true
