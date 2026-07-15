@@ -25,6 +25,7 @@ import {
   type SubtaskStatus,
   type SubtaskStatusItem,
   type SubtaskThinkingLevel,
+  appendSubtaskChildSystemPrompt,
   buildChildArgs,
   executeBatchMode,
   formatSubtaskGroupResult,
@@ -263,7 +264,12 @@ export function createSubtasksExtension(
   const runChildProcess = dependencies.runChild ?? runChild;
 
   return function subtasksExtension(pi: ExtensionAPI): void {
-    if (process.env[SUBTASK_CHILD_ENV] === "1") return;
+    if (process.env[SUBTASK_CHILD_ENV] === "1") {
+      pi.on("before_agent_start", (event) => ({
+        systemPrompt: appendSubtaskChildSystemPrompt(event.systemPrompt),
+      }));
+      return;
+    }
 
     const runtime = getSubtaskRuntimeState();
     let registered = false;
@@ -375,7 +381,7 @@ export function createSubtasksExtension(
         fork: Type.Optional(
           Type.Boolean({
             description:
-              "Replays the full parent conversation and may add substantial uncached input cost. Forked requests are blocked when parent context usage is 65% or higher. Omit unless the child cannot complete from the assignment and filesystem alone. Prefer a self-contained task. Default: false.",
+              "Replays the parent conversation through the current user message, excluding the current assistant turn, and may add substantial uncached input cost. Forked requests are blocked when parent context usage is 65% or higher. Omit unless the child cannot complete from the assignment and filesystem alone. Prefer a self-contained task. Default: false.",
             default: false,
           }),
         ),

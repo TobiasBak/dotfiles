@@ -12,7 +12,7 @@ export const SUBTASKS_TOOL_NAME = "subtasks";
 export const SUBTASKS_WAIT_TOOL_NAME = "subtasks_wait";
 export const SUBTASKS_CONTROL_TOOL_NAME = "subtasks_control";
 export const SUBTASKS_TOOL_DESCRIPTION =
-  "Run focused subtasks in isolated Pi processes that share the current working directory. Each call creates one group. Tasks in one call run in parallel; each task selects its model, thinking, and optional conversation fork. Children receive all active eligible tools. The call returns a group ID for later waiting and task IDs for listing or cancellation.";
+  "Run focused subtasks in isolated Pi processes that share the current working directory. Each call creates one group. Tasks in one call run in parallel; each task selects its model, thinking, and optional conversation fork. Children receive all active eligible tools and independently rediscover normal Pi resources, including skills; parent runtime state and parent-only CLI resources are not copied. The call returns a group ID for later waiting and task IDs for listing or cancellation.";
 export const SUBTASKS_WAIT_TOOL_DESCRIPTION =
   "Wait once for one or more subtask groups to finish. This blocks until every task in every requested group is terminal; aborting the wait does not cancel the subtasks. Use this instead of polling subtasks_control.";
 export const SUBTASKS_CONTROL_TOOL_DESCRIPTION =
@@ -41,6 +41,11 @@ export const SUBTASK_CHILD_SYSTEM_PROMPT = `## Subtask execution contract
 - Keep the final report compact and conclusion-first: result, relevant evidence, checks performed, and material limitations. Do not list changed paths or reproduce diffs, because file changes are captured automatically. Do not paste raw logs or large file excerpts. If verification cannot run, explain why and identify the next-best check.
 - Report blockers, ambiguity, or conflicting instructions rather than guessing.
 `.trim();
+
+export function appendSubtaskChildSystemPrompt(systemPrompt: string): string {
+  return `${systemPrompt}\n\n${SUBTASK_CHILD_SYSTEM_PROMPT}`;
+}
+
 export const MAX_RESULT_BYTES = 50 * 1024;
 export const MAX_RESULT_LINES = 2_000;
 export const MAX_INLINE_CHILD_RESULT_BYTES = 50 * 1024;
@@ -455,7 +460,6 @@ export function buildChildArgs(options: {
   if (options.tools.length === 0) args.push("--no-tools");
   else args.push("--tools", options.tools.join(","));
 
-  args.push("--append-system-prompt", SUBTASK_CHILD_SYSTEM_PROMPT);
   args.push(`Task:\n${options.task}`);
   return args;
 }

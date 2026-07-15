@@ -33,6 +33,7 @@ import {
   SUBTASKS_TOOL_NAME,
   SUBTASKS_TOOL_PROMPT_GUIDELINES,
   SUBTASKS_WAIT_TOOL_NAME,
+  appendSubtaskChildSystemPrompt,
   buildChildArgs,
   combineChildOutputWithObservedChanges,
   executeBatchMode,
@@ -117,6 +118,8 @@ test("keeps execution metadata mechanical and delegation guidance tool-owned", (
   assert.match(SUBTASKS_TOOL_DESCRIPTION, /share the current working directory/i);
   assert.match(SUBTASKS_TOOL_DESCRIPTION, /Tasks in one call run in parallel/i);
   assert.match(SUBTASKS_TOOL_DESCRIPTION, /all active eligible tools/i);
+  assert.match(SUBTASKS_TOOL_DESCRIPTION, /independently rediscover.*skills/i);
+  assert.match(SUBTASKS_TOOL_DESCRIPTION, /parent-only CLI resources are not copied/i);
   assert.doesNotMatch(
     SUBTASKS_TOOL_DESCRIPTION,
     /1-16|research|implementation|\bLuna\b|\bSol\b|retrieval|architecture|high-consequence/i,
@@ -233,7 +236,7 @@ test("formats child costs compactly with small-cost precision", () => {
   assert.equal(formatSubtaskCost(0.00042), "$0.000");
 });
 
-test("builds a fresh child invocation with the fixed system contract", () => {
+test("builds a fresh child invocation without overriding discovered append prompts", () => {
   const args = buildChildArgs({
     task: "Inspect the target",
     model: "openai-codex/gpt-5.6-luna",
@@ -248,15 +251,11 @@ test("builds a fresh child invocation with the fixed system contract", () => {
     "--tools",
     "read,grep",
   ]);
-  const appendIndex = args.indexOf("--append-system-prompt");
-  assert.notEqual(appendIndex, -1);
-  assert.equal(args.filter((arg) => arg === "--append-system-prompt").length, 1);
-  assert.equal(args[appendIndex + 1], SUBTASK_CHILD_SYSTEM_PROMPT);
+  assert.equal(args.includes("--append-system-prompt"), false);
   assert.equal(args.at(-1), "Task:\nInspect the target");
-  assert.ok(args.indexOf("--append-system-prompt") < args.indexOf("Task:\nInspect the target"));
 });
 
-test("keeps caller task unchanged and adds one contract to a forked child", () => {
+test("keeps caller task unchanged in a forked child", () => {
   const task = "Review the prior decision\n\nDo not edit files.";
   const args = buildChildArgs({
     task,
@@ -266,11 +265,17 @@ test("keeps caller task unchanged and adds one contract to a forked child", () =
     sessionFile: "/tmp/fork.jsonl",
   });
 
-  assert.equal(args.filter((arg) => arg === "--append-system-prompt").length, 1);
-  assert.equal(args[args.indexOf("--append-system-prompt") + 1], SUBTASK_CHILD_SYSTEM_PROMPT);
+  assert.equal(args.includes("--append-system-prompt"), false);
   assert.equal(args.at(-1), `Task:\n${task}`);
   assert.equal(args.includes("--session"), true);
   assert.equal(args.includes("--no-session"), false);
+});
+
+test("appends the child contract after the discovered system prompt", () => {
+  assert.equal(
+    appendSubtaskChildSystemPrompt("discovered prompt"),
+    `discovered prompt\n\n${SUBTASK_CHILD_SYSTEM_PROMPT}`,
+  );
 });
 
 test("blocks forked subtasks at 65 percent parent context usage", () => {
@@ -329,7 +334,7 @@ test("supports no tools while preserving the forked child contract", () => {
   ]);
   assert.ok(args.includes("--no-tools"));
   assert.ok(!args.includes("--no-session"));
-  assert.equal(args.filter((arg) => arg === "--append-system-prompt").length, 1);
+  assert.equal(args.includes("--append-system-prompt"), false);
 });
 
 test("extension keeps fork and wait guidance with their parameters", () => {
@@ -339,6 +344,8 @@ test("extension keeps fork and wait guidance with their parameters", () => {
   );
 
   assert.match(source, /wait: Type\.Optional\(\s*Type\.Boolean/);
+  assert.match(source, /appendSubtaskChildSystemPrompt\(event\.systemPrompt\)/);
+  assert.match(source, /through the current user message, excluding the current assistant turn/);
   assert.match(source, /name: SUBTASKS_WAIT_TOOL_NAME/);
   assert.match(source, /runtime\.waitForGroups\(params\.groupIds, signal\)/);
   assert.doesNotMatch(source, /async: Type\.Optional\(\s*Type\.Boolean/);
