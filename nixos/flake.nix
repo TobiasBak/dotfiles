@@ -1,5 +1,5 @@
 {
-  description = "NixOS server configurations";
+  description = "NixOS configurations for developer machines and servers";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
@@ -24,32 +24,40 @@
     }:
     let
       system = "x86_64-linux";
+      mkDeveloperSystem =
+        modules:
+        nixpkgs.lib.nixosSystem {
+          inherit system;
+          specialArgs = { inherit hunk; };
+          modules = [ home-manager.nixosModules.home-manager ] ++ modules;
+        };
     in
     {
-      nixosConfigurations.wsl = nixpkgs.lib.nixosSystem {
-        inherit system;
-        modules = [
+      formatter.${system} = nixpkgs.legacyPackages.${system}.nixfmt-rfc-style;
+
+      nixosConfigurations = {
+        wsl = mkDeveloperSystem [
           nixos-wsl.nixosModules.default
-          home-manager.nixosModules.home-manager
           ./hosts/wsl/configuration.nix
         ];
-        specialArgs = {
-          inherit hunk;
+
+        tobias-stationary = mkDeveloperSystem [
+          ./hosts/tobias-stationary/configuration.nix
+        ];
+
+        tobias-laptop = mkDeveloperSystem [
+          ./hosts/tobias-laptop/configuration.nix
+        ];
+
+        laptop-server = nixpkgs.lib.nixosSystem {
+          inherit system;
+          modules = [ ./hosts/laptop-server/configuration.nix ];
         };
-      };
 
-      nixosConfigurations.laptop-server = nixpkgs.lib.nixosSystem {
-        inherit system;
-        modules = [
-          ./hosts/laptop-server/configuration.nix
-        ];
-      };
-
-      nixosConfigurations.tobias-serv01 = nixpkgs.lib.nixosSystem {
-        inherit system;
-        modules = [
-          ./hosts/tobias-serv01/configuration.nix
-        ];
+        tobias-serv01 = nixpkgs.lib.nixosSystem {
+          inherit system;
+          modules = [ ./hosts/tobias-serv01/configuration.nix ];
+        };
       };
     };
 }

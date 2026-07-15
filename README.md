@@ -1,15 +1,15 @@
 # Dotfiles
 
-This repository contains configuration files (dotfiles) for Windows, NixOS, NixOS WSL, and Arch Linux environments.
+This repository contains configuration files for Windows, native NixOS developer machines, NixOS WSL, and NixOS servers.
 
 ## Structure
 
 - `configs/`: Shared program configs used by both OS installers where applicable.
   - Home Manager links NixOS WSL user configs from here into the home directory.
-  - The Arch Linux installer symlinks XDG configs into `~/.config` plus zsh files into `$HOME` / Oh My Zsh.
+  - Native NixOS Home Manager modules explicitly link desktop and developer configs from here.
   - Windows installers symlink host configs like WezTerm and VS Code into their Windows locations.
-- `arch-linux/`: Arch Linux installer and Linux-only assets (for example wallpapers).
-- `nixos/`: Flake-based NixOS host configs, including NixOS WSL and server profiles.
+- `assets/`: Shared non-configuration assets such as wallpapers.
+- `nixos/`: Flake-based NixOS host configs for WSL, native developer machines, and servers.
 - `windows/`: Windows setup scripts.
 - `.env`: Environment-specific variables (not tracked by Git if sensitive).
 
@@ -43,22 +43,32 @@ Inside NixOS WSL, refresh the system profile and Home Manager user config with:
 ./rebuild-wsl.sh
 ```
 
-### Arch Linux
+### Native NixOS
 
-Run `./arch-linux/install.sh` to install the desktop packages, create `~/.dotfiles`, symlink shared configs from `configs/`, and install Pi skills from the sibling skills repo into `~/.pi/agent/skills`.
+The native developer hosts are:
 
-The Arch installer also enables the `multilib` pacman repository so optional packages like Steam are available to install later.
+- `tobias-stationary`: NVIDIA desktop workstation.
+- `tobias-laptop`: integrated-graphics laptop.
 
-The Arch installer does not install or configure optional AI CLI tools such as Claude Code, Gemini CLI, or OpenCode.
+Both use Niri, Quickshell, Home Manager, Docker, and the shared developer
+profile. See `nixos/README.md` for the Arch replacement and installation flow.
+After installation, rebuild the current native host with:
 
-### NixOS
+```bash
+./rebuild-nixos.sh
+```
 
-See `nixos/README.md` for the flake-based laptop server config and install notes.
+Use `./rebuild-nixos.sh --bootstrap` when Pi, Codex, and agent skill links also
+need to be refreshed.
+
+### NixOS servers
+
+See `nixos/README.md` for server build, installation, and remote-operation notes.
 
 ## Nix Direction
 
 - Use NixOS WSL as the default Windows developer shell.
-- Keep machine/system packages in `nixos/hosts/<host>/configuration.nix` instead of shell bootstrap scripts.
-- Keep user-level NixOS WSL configuration in Home Manager and system-level configuration in the host module.
+- Use native NixOS for the laptop and stationary developer environments.
+- Keep shared system behavior in `nixos/modules/` and machine-specific behavior in `nixos/hosts/<host>/`.
+- Keep user configuration in `nixos/home/` and shared source files in `configs/`.
 - Add project-level `flake.nix` dev shells where reproducible tooling matters.
-- Use standalone Nix on non-NixOS Linux machines when replacing the OS is not worth it.

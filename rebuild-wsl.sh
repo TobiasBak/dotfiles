@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_DIR="$SCRIPT_DIR"
 STABLE_REPO_DIR="$HOME/.dotfiles"
-BOOTSTRAP_SCRIPT="$REPO_DIR/windows/scripts/bootstrap-nixos-wsl.sh"
+BOOTSTRAP_SCRIPT="$REPO_DIR/scripts/bootstrap-developer-tools.sh"
 NIXOS_ONLY=false
 
 log() { printf '\033[0;36m[rebuild-wsl]\033[0m %s\n' "$*"; }

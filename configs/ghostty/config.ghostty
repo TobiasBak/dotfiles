@@ -1,4 +1,4 @@
-command = /usr/bin/zsh
+command = zsh
 working-directory = home
 window-inherit-working-directory = false
 tab-inherit-working-directory = false

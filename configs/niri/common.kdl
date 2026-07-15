@@ -1,0 +1,187 @@
+// Portable Niri settings shared by native NixOS desktop hosts.
+// Host-specific outputs and placement belong in nixos/hosts/<hostname>/niri.kdl.
+
+input {
+    keyboard {
+        xkb {
+            layout "dk"
+            // Use Left Alt as AltGr (Level 3 switch) for 60% keyboards.
+            options "lv3:lalt_switch"
+        }
+    }
+
+    mod-key "Super"
+
+    touchpad {
+        tap
+        natural-scroll
+        accel-speed 0.4
+        accel-profile "flat"
+    }
+
+    mouse { }
+
+    warp-mouse-to-focus
+    focus-follows-mouse max-scroll-amount="0%"
+}
+
+workspace "main"
+workspace "extra"
+
+layout {
+    gaps 16
+    center-focused-column "never"
+
+    preset-column-widths {
+        proportion 0.5
+        proportion 0.25
+    }
+
+    default-column-width { proportion 0.5; }
+
+    focus-ring {
+        width 2
+        active-color "#4a8ab8"
+        inactive-color "#505050"
+    }
+
+    border {
+        off
+        width 4
+        active-color "#ffc87f"
+        inactive-color "#505050"
+    }
+
+    // Layer-shell panels and regular gaps.
+    struts { }
+}
+
+// Niri starts xwayland-satellite on demand. Quickshell, Mako, Swaybg, and
+// Polkit are started by systemd user services from the NixOS desktop module.
+prefer-no-csd
+screenshot-path "~/Pictures/Screenshots/Screenshot from %Y-%m-%d %H-%M-%S.png"
+
+animations {
+    off
+}
+
+window-rule {
+    match app-id=r#"^org\.wezfurlong\.wezterm$"#
+    default-column-width {}
+}
+
+window-rule {
+    geometry-corner-radius 8
+    clip-to-geometry true
+}
+
+window-rule {
+    match app-id="discord"
+    default-column-width { proportion 1.0; }
+    default-window-height { proportion 0.33; }
+}
+
+window-rule {
+    match app-id="spotify"
+    default-column-width { proportion 1.0; }
+    default-window-height { proportion 0.33; }
+}
+
+binds {
+    Mod+Escape { show-hotkey-overlay; }
+    Mod+Q { close-window; }
+
+    // Applications
+    Mod+Space { spawn "ghostty"; }
+    Mod+D { spawn "fuzzel"; }
+    Super+Alt+L { spawn "swaylock"; }
+    Mod+1 { spawn "chromium"; }
+    // TODO: Add a host-provided voice-input command when one is available.
+
+    // Settings
+    XF86AudioRaiseVolume allow-when-locked=true { spawn "wpctl" "set-volume" "-l" "1.5" "@DEFAULT_AUDIO_SINK@" "10%+"; }
+    XF86AudioLowerVolume allow-when-locked=true { spawn "wpctl" "set-volume" "@DEFAULT_AUDIO_SINK@" "10%-"; }
+    XF86AudioMute        allow-when-locked=true { spawn "wpctl" "set-mute" "@DEFAULT_AUDIO_SINK@" "toggle"; }
+    XF86AudioMicMute     allow-when-locked=true { spawn "wpctl" "set-mute" "@DEFAULT_AUDIO_SOURCE@" "toggle"; }
+
+    XF86MonBrightnessUp allow-when-locked=true { spawn "brightnessctl" "set" "1%+"; }
+    XF86MonBrightnessDown allow-when-locked=true { spawn "brightnessctl" "set" "1%-"; }
+
+    Mod+Left  { focus-column-left; }
+    Mod+Down  { focus-window-or-workspace-down; }
+    Mod+Up    { focus-window-or-workspace-up; }
+    Mod+Right { focus-column-right; }
+
+    Mod+Ctrl+Left  { move-column-left; }
+    Mod+Ctrl+Down  { move-window-down-or-to-workspace-down; }
+    Mod+Ctrl+Up    { move-window-up-or-to-workspace-up; }
+    Mod+Ctrl+Right { move-column-right; }
+
+    Mod+Home { focus-column-first; }
+    Mod+End  { focus-column-last; }
+    Mod+Ctrl+Home { move-column-to-first; }
+    Mod+Ctrl+End  { move-column-to-last; }
+
+    Mod+Shift+Left  { focus-monitor-left; }
+    Mod+Shift+Down  { focus-monitor-down; }
+    Mod+Shift+Up    { focus-monitor-up; }
+    Mod+Shift+Right { focus-monitor-right; }
+    Mod+Shift+H     { focus-monitor-left; }
+    Mod+Shift+J     { focus-monitor-down; }
+    Mod+Shift+K     { focus-monitor-up; }
+    Mod+Shift+L     { focus-monitor-right; }
+
+    Mod+Shift+Ctrl+Left  { move-column-to-monitor-left; }
+    Mod+Shift+Ctrl+Down  { move-column-to-monitor-down; }
+    Mod+Shift+Ctrl+Up    { move-column-to-monitor-up; }
+    Mod+Shift+Ctrl+Right { move-column-to-monitor-right; }
+    Mod+Shift+Ctrl+H     { move-column-to-monitor-left; }
+    Mod+Shift+Ctrl+J     { move-column-to-monitor-down; }
+    Mod+Shift+Ctrl+K     { move-column-to-monitor-up; }
+    Mod+Shift+Ctrl+L     { move-column-to-monitor-right; }
+
+    // Scrollwheel
+    Mod+WheelScrollDown      cooldown-ms=150 { focus-workspace-down; }
+    Mod+WheelScrollUp        cooldown-ms=150 { focus-workspace-up; }
+    Mod+Ctrl+WheelScrollDown cooldown-ms=150 { move-column-to-workspace-down; }
+    Mod+Ctrl+WheelScrollUp   cooldown-ms=150 { move-column-to-workspace-up; }
+
+    Mod+WheelScrollRight      { focus-column-right; }
+    Mod+WheelScrollLeft       { focus-column-left; }
+    Mod+Ctrl+WheelScrollRight { move-column-right; }
+    Mod+Ctrl+WheelScrollLeft  { move-column-left; }
+
+    Mod+Shift+WheelScrollDown      { focus-column-right; }
+    Mod+Shift+WheelScrollUp        { focus-column-left; }
+    Mod+Ctrl+Shift+WheelScrollDown { move-column-right; }
+    Mod+Ctrl+Shift+WheelScrollUp   { move-column-left; }
+
+    Mod+Comma  { consume-window-into-column; }
+    Mod+Period { expel-window-from-column; }
+    Mod+K  { consume-or-expel-window-left; }
+    Mod+L { consume-or-expel-window-right; }
+
+    Mod+R { switch-preset-column-width; }
+    Mod+Shift+R { switch-preset-window-height; }
+    Mod+Ctrl+R { reset-window-height; }
+    Mod+F { maximize-column; }
+    Mod+Shift+F { fullscreen-window; }
+    Mod+C { center-column; }
+    Mod+Shift+Space { toggle-window-floating; }
+
+    Mod+Minus { set-column-width "-10%"; }
+    Mod+plus { set-column-width "+10%"; }
+    Mod+Shift+Equal { set-window-height "-10%"; }
+    Mod+Shift+ae { set-window-height "+10%"; }
+
+    Mod+S { screenshot; }
+    Ctrl+Print { screenshot-screen; }
+    Alt+Print { screenshot-window; }
+
+    Mod+Shift+E { quit; }
+    Mod+Shift+P { power-off-monitors; }
+}
+
+hotkey-overlay {
+    skip-at-startup
+}

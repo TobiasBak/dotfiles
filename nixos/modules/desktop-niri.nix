@@ -1,0 +1,131 @@
+{
+  config,
+  pkgs,
+  ...
+}:
+
+let
+  mkNiriService = description: execStart: {
+    inherit description;
+    wantedBy = [ "niri.service" ];
+    partOf = [ "niri.service" ];
+    after = [ "niri.service" ];
+    serviceConfig = {
+      ExecStart = execStart;
+      Restart = "on-failure";
+    };
+  };
+in
+{
+  networking.networkmanager.enable = true;
+
+  boot.loader = {
+    efi = {
+      canTouchEfiVariables = true;
+      efiSysMountPoint = "/boot/efi";
+    };
+    grub = {
+      enable = true;
+      device = "nodev";
+      efiSupport = true;
+      useOSProber = true;
+    };
+  };
+
+  hardware.enableRedistributableFirmware = true;
+  hardware.graphics.enable = true;
+  security.rtkit.enable = true;
+  security.polkit.enable = true;
+  security.pam.services = {
+    greetd.enableGnomeKeyring = true;
+    swaylock = { };
+  };
+
+  services = {
+    greetd = {
+      enable = true;
+      settings.default_session = {
+        command = "${pkgs.tuigreet}/bin/tuigreet --time --remember --cmd ${config.programs.niri.package}/bin/niri-session";
+        user = "greeter";
+      };
+    };
+
+    pipewire = {
+      enable = true;
+      alsa.enable = true;
+      pulse.enable = true;
+      wireplumber.enable = true;
+    };
+
+    gvfs.enable = true;
+    udisks2.enable = true;
+    fwupd.enable = true;
+    fstrim.enable = true;
+  };
+
+  programs = {
+    dconf.enable = true;
+    niri.enable = true;
+  };
+
+  virtualisation.docker.enable = true;
+  users.users.tobias.extraGroups = [
+    "docker"
+    "networkmanager"
+    "video"
+  ];
+
+  console.keyMap = "dk-latin1";
+
+  environment.sessionVariables.NIXOS_OZONE_WL = "1";
+
+  nixpkgs.config.allowUnfree = true;
+
+  fonts.packages = with pkgs; [
+    hack-font
+    jetbrains-mono
+    nerd-fonts.hack
+    nerd-fonts.jetbrains-mono
+    noto-fonts
+    noto-fonts-cjk-sans
+    noto-fonts-cjk-serif
+    noto-fonts-color-emoji
+  ];
+
+  environment.systemPackages = with pkgs; [
+    adwaita-icon-theme
+    brightnessctl
+    discord
+    docker-compose
+    fuzzel
+    ghostty
+    htop
+    libnotify
+    mako
+    networkmanagerapplet
+    papirus-icon-theme
+    pavucontrol
+    playerctl
+    quickshell
+    swaybg
+    swaylock
+    vscode
+    wayland-utils
+    wezterm
+    wl-clipboard
+    xwayland-satellite
+  ];
+
+  systemd.user.services = {
+    # Let niri-session provide the complete user PATH, including system and
+    # Home Manager packages used by Niri key bindings.
+    niri.enableDefaultPath = false;
+
+    quickshell = mkNiriService "Quickshell desktop shell" "${pkgs.quickshell}/bin/quickshell";
+    mako = mkNiriService "Mako notification daemon" "${pkgs.mako}/bin/mako";
+    swaybg = mkNiriService "Desktop wallpaper" "${pkgs.swaybg}/bin/swaybg -i %h/Pictures/Wallpapers/wallpaper.jpg -m fill";
+    polkit-gnome-authentication-agent = mkNiriService "Polkit authentication agent" "${pkgs.polkit_gnome}/libexec/polkit-gnome-authentication-agent-1";
+  };
+
+  home-manager.users.tobias.imports = [ ../home/tobias/desktop.nix ];
+}

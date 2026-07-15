@@ -1,9 +1,7 @@
-{ config, lib, pkgs, ... }:
+{ pkgs, ... }:
 
 {
-  nix.settings.experimental-features = [ "nix-command" "flakes" ];
-
-  time.timeZone = "Europe/Copenhagen";
+  imports = [ ./base.nix ];
 
   networking.networkmanager.enable = true;
 
@@ -39,25 +37,9 @@
     AllowSuspendThenHibernate=no
   '';
 
-  nix.gc = {
-    automatic = true;
-    dates = "weekly";
-    options = "--delete-older-than 14d";
-  };
-
-  nix.optimise = {
-    automatic = true;
-    dates = [ "weekly" ];
-  };
-
   environment.systemPackages = with pkgs; [
     btop
-    curl
-    git
     htop
-    jq
-    ripgrep
     tailscale
-    vim
   ];
 }

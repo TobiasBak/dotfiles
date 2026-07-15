@@ -1,0 +1,3 @@
+// Machine-specific Niri output configuration belongs here.
+// Start with automatic output placement, then add output blocks after running:
+//   niri msg outputs

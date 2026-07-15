@@ -4,9 +4,6 @@ import Quickshell
 import "components"
 
 ShellRoot {
-    // Voice recording indicator (floating overlay)
-    VoiceIndicator {}
-
     // Clipboard copy indicator
     ClipboardPopup {}
 

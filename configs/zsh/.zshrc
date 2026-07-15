@@ -60,10 +60,20 @@ _bind_word_navigation_keys() {
 }
 
 finder() {
-  local path="${1:-.}"
+  local target="${1:-.}"
+
+  if ! _is_wsl_shell; then
+    if command -v xdg-open >/dev/null 2>&1; then
+      xdg-open "$target"
+      return
+    fi
+
+    print -u2 "finder could not find xdg-open."
+    return 1
+  fi
+
   local windows_path
   local wslpath_bin
-
   wslpath_bin="$(command -v wslpath 2>/dev/null || true)"
   if [[ -z "$wslpath_bin" && -x /bin/wslpath ]]; then
     wslpath_bin=/bin/wslpath
@@ -76,7 +86,7 @@ finder() {
     return 1
   fi
 
-  windows_path="$("$wslpath_bin" -w "$path")" || return
+  windows_path="$("$wslpath_bin" -w "$target")" || return
 
   if command -v explorer.exe >/dev/null 2>&1; then
     explorer.exe "$windows_path"
@@ -98,13 +108,13 @@ cy() {
   codex_path="$(command -v codex 2>/dev/null || true)"
 
   if [[ -z "$codex_path" ]]; then
-    print -u2 "codex CLI is not installed for this Linux environment. Run ~/.dotfiles/windows/scripts/bootstrap-nixos-wsl.sh."
+    print -u2 "codex CLI is not installed for this Linux environment. Run ~/.dotfiles/scripts/bootstrap-developer-tools.sh."
     return 127
   fi
 
   if _codex_path_is_windows "$codex_path"; then
     print -u2 "Refusing to run Windows Codex from WSL: $codex_path"
-    print -u2 "Run ~/.dotfiles/windows/scripts/bootstrap-nixos-wsl.sh to install native Linux Codex."
+    print -u2 "Run ~/.dotfiles/scripts/bootstrap-developer-tools.sh to install native Linux Codex."
     return 127
   fi
 

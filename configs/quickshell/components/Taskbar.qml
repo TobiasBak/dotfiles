@@ -211,12 +211,12 @@ RowLayout {
                         var id = appId.toLowerCase();
 
                         // Specific remappings
-                        if (id === "ghostty" || id === "com.mitchellh.ghostty") return "file:///usr/share/icons/hicolor/512x512/apps/com.mitchellh.ghostty.png";
+                        if (id === "ghostty" || id === "com.mitchellh.ghostty") return "image://icon/com.mitchellh.ghostty";
                         if (id === "code-oss" || id === "code") return "image://icon/com.visualstudio.code.oss";
                         if (id === "chromium") return "image://icon/chromium";
                         if (id === "firefox") return "image://icon/firefox";
                         if (id === "spotify") return "image://icon/spotify-launcher";
-                        if (id === "codex" || id === "codex-app") return "file:///home/tobias/.local/share/icons/hicolor/512x512/apps/codex-app.png";
+                        if (id === "codex" || id === "codex-app") return "image://icon/codex-app";
 
                         return "image://icon/" + appId;
                     }
@@ -227,10 +227,10 @@ RowLayout {
                         if (status === Image.Error) {
                             var appId = windowData && windowData.app_id ? windowData.app_id : "";
                             var id = appId.toLowerCase();
-                            if (id.includes("ghostty")) source = "file:///usr/share/icons/hicolor/512x512/apps/com.mitchellh.ghostty.png";
+                            if (id.includes("ghostty")) source = "image://icon/com.mitchellh.ghostty";
                             else if (id.includes("terminal")) source = "image://icon/utilities-terminal";
                             else if (id.includes("code")) source = "image://icon/code";
-                            else if (id.includes("codex")) source = "file:///home/tobias/.local/share/icons/hicolor/512x512/apps/codex-app.png";
+                            else if (id.includes("codex")) source = "image://icon/codex-app";
                             else if (id.includes("browser") || id.includes("chromium") || id.includes("firefox")) source = "image://icon/internet-web-browser";
                             else source = "image://icon/application-x-executable";
                         }
