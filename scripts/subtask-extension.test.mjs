@@ -52,10 +52,6 @@ import {
   SubtaskRuntimeState,
   getSubtaskRuntimeState,
 } from "../configs/pi/extensions/subtask/runtime.ts";
-import {
-  ParentHandoffTracker,
-  formatParentHandoffTiming,
-} from "../configs/pi/extensions/subtask/handoff.ts";
 
 function deferred() {
   let resolve;
@@ -209,98 +205,6 @@ test("updates a registered widget in place without changing widget order", () =>
 
   widget.clear();
   assert.equal(widgets.has("subtasks:first"), false);
-});
-
-test("tracks parent handoff boundaries without confusing response completion with request delivery", () => {
-  const tracker = new ParentHandoffTracker();
-  tracker.accept({
-    groupId: "g-a1b2c3",
-    batchId: "call-1",
-    resultBytes: 46_059,
-    resultQueuedAt: 1_000,
-    resultAcceptedAt: 1_004,
-  });
-
-  assert.deepEqual(tracker.markPayloadBuilt(1_020), ["g-a1b2c3"]);
-  tracker.markStreamStarted(2_500);
-  const completed = tracker.markResponseCompleted(8_000);
-
-  assert.equal(completed.length, 1);
-  assert.deepEqual(completed[0], {
-    groupId: "g-a1b2c3",
-    batchId: "call-1",
-    resultBytes: 46_059,
-    resultQueuedAt: 1_000,
-    resultAcceptedAt: 1_004,
-    payloadBuiltAt: 1_020,
-    streamStartedAt: 2_500,
-    responseCompletedAt: 8_000,
-  });
-  assert.deepEqual(tracker.list(), completed);
-  assert.deepEqual(tracker.drainCompleted(), completed);
-  assert.deepEqual(tracker.list(), []);
-});
-
-test("assigns all queued subtask groups to one parent provider request", () => {
-  const tracker = new ParentHandoffTracker();
-  tracker.accept({
-    groupId: "g-111111",
-    resultBytes: 100,
-    resultQueuedAt: 100,
-    resultAcceptedAt: 101,
-  });
-  tracker.accept({
-    groupId: "g-222222",
-    resultBytes: 200,
-    resultQueuedAt: 110,
-    resultAcceptedAt: 111,
-  });
-
-  assert.deepEqual(tracker.markPayloadBuilt(120), ["g-111111", "g-222222"]);
-  tracker.markStreamStarted(150);
-  assert.deepEqual(
-    tracker.markResponseCompleted(200).map((timing) => timing.groupId),
-    ["g-111111", "g-222222"],
-  );
-});
-
-test("does not attach a result queued during an active response to that response", () => {
-  const tracker = new ParentHandoffTracker();
-  tracker.accept({
-    groupId: "g-first1",
-    resultBytes: 100,
-    resultQueuedAt: 100,
-    resultAcceptedAt: 101,
-  });
-  tracker.markPayloadBuilt(110);
-  tracker.accept({
-    groupId: "g-second",
-    resultBytes: 200,
-    resultQueuedAt: 120,
-    resultAcceptedAt: 121,
-  });
-  tracker.markStreamStarted(130);
-
-  assert.deepEqual(
-    tracker.markResponseCompleted(140).map((timing) => timing.groupId),
-    ["g-first1"],
-  );
-  assert.deepEqual(tracker.markPayloadBuilt(150), ["g-second"]);
-});
-
-test("formats parent handoff timing as cumulative boundaries", () => {
-  assert.equal(
-    formatParentHandoffTiming({
-      groupId: "g-a1b2c3",
-      resultBytes: 46_059,
-      resultQueuedAt: 1_000,
-      resultAcceptedAt: 1_004,
-      payloadBuiltAt: 1_020,
-      streamStartedAt: 2_500,
-      responseCompletedAt: 8_000,
-    }),
-    "g-a1b2c3 · 45.0KB · accepted +4ms · payload +20ms · stream +1.5s · done +7.0s",
-  );
 });
 
 test("puts a bounded task summary after all status metadata", () => {

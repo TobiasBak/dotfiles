@@ -6,7 +6,7 @@ import {
   type ExtensionContext,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
   FORK_CONTEXT_BLOCK_PERCENT,
@@ -38,11 +38,6 @@ import {
   shouldBlockForkedSubtasks,
   truncateResult,
 } from "./core.ts";
-import {
-  ParentHandoffTracker,
-  formatParentHandoffTiming,
-  type ParentHandoffTiming,
-} from "./handoff.ts";
 import { createOverflowResultWriter } from "./overflow.ts";
 import { getSubtaskRuntimeState } from "./runtime.ts";
 
@@ -50,9 +45,7 @@ const MAX_SUBTASKS = 16;
 const MAX_ERROR_BYTES = 4 * 1024;
 const MAX_ERROR_LINES = 40;
 const WIDGET_PREFIX = "subtasks:";
-const PARENT_HANDOFF_WIDGET_ID = `${WIDGET_PREFIX}parent-handoff`;
 const SUBTASK_RESULT_MESSAGE_TYPE = "subtasks-result";
-const SUBTASK_HANDOFF_TIMING_ENTRY_TYPE = "subtasks-handoff-timing";
 
 interface SubtaskRequest {
   task: string;
@@ -242,30 +235,6 @@ function registerSubtaskWidget(
   });
 }
 
-function registerParentHandoffWidget(
-  ctx: ExtensionContext,
-  timings: ParentHandoffTiming[],
-): { update(timings: ParentHandoffTiming[]): void; clear(): void } {
-  if (ctx.mode !== "tui") return { update() {}, clear() {} };
-
-  return registerMutableWidget({
-    setWidget: (key, content, options) => ctx.ui.setWidget(key, content, options),
-    key: PARENT_HANDOFF_WIDGET_ID,
-    initialValue: timings,
-    placement: "belowEditor",
-    createComponent: (getTimings, theme) => ({
-      render(width: number): string[] {
-        return getTimings().map((timing) => {
-          const color = timing.responseCompletedAt === undefined ? "accent" : "success";
-          const line = `${theme.fg(color, "↪ parent handoff")}  ${formatParentHandoffTiming(timing)}`;
-          return truncateToWidth(line, width);
-        });
-      },
-      invalidate() {},
-    }),
-  });
-}
-
 function clearSubtaskWidget(ctx: ExtensionContext, widgetId: string): void {
   if (ctx.mode === "tui") ctx.ui.setWidget(widgetId, undefined);
 }
@@ -301,9 +270,6 @@ export function createSubtasksExtension(
     let shuttingDown = false;
     let inheritedWidgetTimer: NodeJS.Timeout | undefined;
     let inheritedWidget: ReturnType<typeof registerSubtaskWidget> | undefined;
-    let handoffWidgetTimer: NodeJS.Timeout | undefined;
-    let handoffWidget: ReturnType<typeof registerParentHandoffWidget> | undefined;
-    const handoffTracker = new ParentHandoffTracker();
     const activeWidgetIds = new Set<string>();
     const inheritedWidgetId = `${WIDGET_PREFIX}inherited`;
 
@@ -339,69 +305,17 @@ export function createSubtasksExtension(
       inheritedWidgetTimer.unref();
     };
 
-    const stopHandoffWidgetTimer = () => {
-      if (handoffWidgetTimer) clearInterval(handoffWidgetTimer);
-      handoffWidgetTimer = undefined;
-    };
-
-    const clearHandoffWidget = () => {
-      stopHandoffWidgetTimer();
-      activeWidgetIds.delete(PARENT_HANDOFF_WIDGET_ID);
-      handoffWidget?.clear();
-      handoffWidget = undefined;
-    };
-
-    const refreshHandoffWidget = (ctx: ExtensionContext) => {
-      const timings = handoffTracker.list();
-      if (timings.length === 0) {
-        clearHandoffWidget();
-        return;
-      }
-      if (handoffWidget) handoffWidget.update(timings);
-      else {
-        activeWidgetIds.add(PARENT_HANDOFF_WIDGET_ID);
-        handoffWidget = registerParentHandoffWidget(ctx, timings);
-      }
-    };
-
-    const animateHandoffWidget = (ctx: ExtensionContext) => {
-      refreshHandoffWidget(ctx);
-      if (handoffWidgetTimer) return;
-      handoffWidgetTimer = setInterval(() => refreshHandoffWidget(ctx), 250);
-      handoffWidgetTimer.unref();
-    };
-
-    const bindRuntimeDelivery = (ctx: ExtensionContext) => {
+    const bindRuntimeDelivery = () => {
       runtime.bindDelivery(({ content, details }) => {
-        const acceptedAt = Date.now();
-        const queuedAt =
-          typeof details.parentHandoff === "object" &&
-          details.parentHandoff !== null &&
-          typeof (details.parentHandoff as { resultQueuedAt?: unknown }).resultQueuedAt === "number"
-            ? (details.parentHandoff as { resultQueuedAt: number }).resultQueuedAt
-            : acceptedAt;
-        const groupId = typeof details.groupId === "string" ? details.groupId : undefined;
-        const batchId = typeof details.batchId === "string" ? details.batchId : undefined;
-        const timing = groupId
-          ? handoffTracker.accept({
-              groupId,
-              batchId,
-              resultBytes: Buffer.byteLength(content, "utf8"),
-              resultQueuedAt: queuedAt,
-              resultAcceptedAt: acceptedAt,
-            })
-          : undefined;
-
         pi.sendMessage(
           {
             customType: SUBTASK_RESULT_MESSAGE_TYPE,
             content,
             display: true,
-            details: timing ? { ...details, parentHandoff: timing } : details,
+            details,
           },
           { deliverAs: "steer", triggerTurn: true },
         );
-        if (timing) animateHandoffWidget(ctx);
       });
     };
 
@@ -421,52 +335,13 @@ export function createSubtasksExtension(
       pi.setActiveTools(activeToolNames.filter((toolName) => !coordinationTools.includes(toolName)));
     };
 
-    pi.registerEntryRenderer<ParentHandoffTiming>(
-      SUBTASK_HANDOFF_TIMING_ENTRY_TYPE,
-      (entry, _options, theme) => {
-        const timing = entry.data;
-        const text = timing
-          ? `${theme.fg("success", "↪ parent handoff")}  ${formatParentHandoffTiming(timing)}`
-          : theme.fg("muted", "Parent handoff timing unavailable");
-        return new Text(text, 0, 0);
-      },
-    );
-
-    pi.on("before_provider_request", (_event, ctx) => {
-      if (handoffTracker.markPayloadBuilt().length > 0) refreshHandoffWidget(ctx);
-    });
-
-    pi.on("message_start", (event, ctx) => {
-      if (event.message.role !== "assistant") return;
-      handoffTracker.markStreamStarted();
-      refreshHandoffWidget(ctx);
-    });
-
-    pi.on("message_end", (event, ctx) => {
-      if (event.message.role !== "assistant") return;
-      if (handoffTracker.markResponseCompleted().length === 0) return;
-      stopHandoffWidgetTimer();
-      refreshHandoffWidget(ctx);
-    });
-
-    pi.on("turn_end", (_event, ctx) => {
-      const completed = handoffTracker.drainCompleted();
-      for (const timing of completed) {
-        pi.appendEntry<ParentHandoffTiming>(SUBTASK_HANDOFF_TIMING_ENTRY_TYPE, timing);
-      }
-      if (completed.length > 0) refreshHandoffWidget(ctx);
-    });
-
     pi.on("session_shutdown", async (event, ctx) => {
       shuttingDown = true;
       if (inheritedWidgetTimer) clearInterval(inheritedWidgetTimer);
       inheritedWidgetTimer = undefined;
-      stopHandoffWidgetTimer();
       for (const widgetId of activeWidgetIds) clearSubtaskWidget(ctx, widgetId);
       activeWidgetIds.clear();
       inheritedWidget = undefined;
-      handoffWidget = undefined;
-      handoffTracker.clear();
 
       if (event.reason === "reload") {
         runtime.suspendForReload();
@@ -479,7 +354,7 @@ export function createSubtasksExtension(
       shuttingDown = false;
       const finishSessionStart = () => {
         if (event.reason === "reload") startInheritedWidget(ctx);
-        bindRuntimeDelivery(ctx);
+        bindRuntimeDelivery();
       };
       if (registered) {
         finishSessionStart();
@@ -894,13 +769,7 @@ export function createSubtasksExtension(
             content: string,
             details: Record<string, unknown>,
           ): void => {
-            runtime.deliver({
-              content,
-              details: {
-                ...details,
-                parentHandoff: { resultQueuedAt: Date.now() },
-              },
-            });
+            runtime.deliver({ content, details });
           };
           let deliveryStatus: "running" | "completed" | "failed" = "running";
 
