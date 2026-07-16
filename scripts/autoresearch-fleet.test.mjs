@@ -785,7 +785,19 @@ class FakeRpcClient {
   }
   async prompt(message) {
     this.records.order.push(`prompt:${this.options.env.AUTORESEARCH_WORKER_ID}`);
-    this.records.prompts.push(message);
+    if (message.startsWith("Campaign admission is accepted.")) {
+      this.records.executionPrompts.push(message);
+      const env = this.options.env;
+      const store = new FleetStore(env.AUTORESEARCH_FLEET_DB, {
+        canonicalRoot: env.AUTORESEARCH_CANONICAL_ROOT,
+        workerId: env.AUTORESEARCH_WORKER_ID,
+        sessionId: env.AUTORESEARCH_SESSION_ID,
+        generation: Number(env.AUTORESEARCH_GENERATION),
+        token: env.AUTORESEARCH_WORKER_TOKEN,
+      });
+      store.workerHeartbeat({ status: "running" });
+      store.close();
+    } else this.records.prompts.push(message);
     if (this.records.autoAdmission && message.includes("bounded admission planner")) this.admit();
   }
   admit(settle = true) {
@@ -859,6 +871,7 @@ function createSupervisorFixture(options = {}) {
     clients: [],
     order: [],
     prompts: [],
+    executionPrompts: [],
     steers: [],
     followUps: [],
     syncs: [],
@@ -913,9 +926,9 @@ function createSupervisorFixture(options = {}) {
     admissionMaxCostUsd: options.admissionMaxCostUsd,
     admissionMaxTurns: options.admissionMaxTurns,
     admissionMaxToolCalls: options.admissionMaxToolCalls,
-    planningProvider: "test-provider",
-    planningModel: "test-model",
-    planningThinking: "high",
+    planningProvider: options.useParentPlanningModel ? undefined : "test-provider",
+    planningModel: options.useParentPlanningModel ? undefined : "test-model",
+    planningThinking: options.useParentPlanningModel ? undefined : "high",
     token: (() => { let id = 0; return () => `token-${++id}`; })(),
     sessionId: (() => {
       let id = 0;
@@ -1103,7 +1116,7 @@ test("fleet capacity resumes noncontiguous active portfolio owners before alloca
     assert.equal(snapshot.fleet.max_workers, 1);
     assert.deepEqual(snapshot.workers.map((worker) => worker.worker_id), ["w4"]);
     assert.equal(snapshot.admissions[0].state, "admitted");
-    assert.equal(snapshot.workers[0].status, "idle");
+    assert.equal(snapshot.workers[0].status, "running");
     store.close();
   } finally {
     await fixture.harness.emit("session_shutdown", { reason: "quit" });
@@ -1112,7 +1125,7 @@ test("fleet capacity resumes noncontiguous active portfolio owners before alloca
 });
 
 test("/autoresearch 4 starts isolated persistent RPC workers asynchronously without taking over the parent", async () => {
-  const fixture = createSupervisorFixture();
+  const fixture = createSupervisorFixture({ useParentPlanningModel: true });
   try {
     await fixture.harness.emit("session_start", { reason: "startup" });
     assert.ok(!fixture.harness.activeTools().includes("autoresearch_control"));
@@ -1120,6 +1133,7 @@ test("/autoresearch 4 starts isolated persistent RPC workers asynchronously with
     const commandPromise = fixture.harness.commands.get("autoresearch").handler("4", fixture.harness.ctx);
     await commandPromise;
     await waitFor(() => fixture.records.prompts.length === 4);
+    await waitFor(() => fixture.records.executionPrompts.length === 4);
 
     assert.equal(fixture.records.clients.length, 4);
     assert.deepEqual(fixture.records.launchSyncs, ["w1", "w2", "w3", "w4"]);
@@ -1188,6 +1202,7 @@ test("/autoresearch 4 starts isolated persistent RPC workers asynchronously with
     assert.ok(persisted.workers.every((worker) => worker.session_dir === join(fixture.root, ".autoresearch", "sessions", "generation-1")));
     assert.ok(persisted.workers.every((worker) => worker.model === "test-provider/test-model"));
     assert.ok(persisted.workers.every((worker) => worker.thinking === "high"));
+    assert.ok(fixture.records.executionPrompts.every((prompt) => prompt.includes("Begin a fresh execution phase")));
     assert.deepEqual(persisted.workers.map((worker) => worker.task), ["hypothesis-w1", "hypothesis-w2", "hypothesis-w3", "hypothesis-w4"]);
     store.close();
     assert.ok(existsSync(join(fixture.root, ".autoresearch", "artifacts", "runs")));
@@ -1206,7 +1221,7 @@ test("/autoresearch 4 starts isolated persistent RPC workers asynchronously with
     const widgetLines = component.render(220);
     assert.equal(widgetLines.length, 5);
     assert.match(widgetLines[0], /^┌─ autoresearch · active · 4 workers · evidence 0\/2/);
-    assert.match(widgetLines[1], new RegExp(`^├─ \\[w1:${sessionIds[0].slice(0, 8)}\\] ○ idle\\s+`));
+    assert.match(widgetLines[1], new RegExp(`^├─ \\[w1:${sessionIds[0].slice(0, 8)}\\] ● running\\s+`));
     assert.match(widgetLines[1], /0 turns │ hypothesis-w1 · Admitted w1 │ test-model · High · \$0\.000 · 0 tools/);
     assert.match(component.render(100)[1], /0 turns │ hypothesis-w1/);
     assert.match(widgetLines.at(-1), /^└─ \[w4:/);
@@ -1251,10 +1266,34 @@ test("fleet workers enter campaign admission sequentially", async () => {
     assert.equal(fixture.records.clients.length, 2);
     store = new FleetStore(join(fixture.root, ".autoresearch", "fleet.sqlite"));
     workers = store.snapshot(fixture.root).workers;
-    assert.equal(workers[0].status, "idle");
+    assert.equal(workers[0].status, "running");
     assert.equal(store.snapshot(fixture.root, { workerId: "w1", recent: 1 }).admissions[0].state, "admitted");
     assert.equal(workers[1].status, "idle");
     assert.ok(workers.slice(2).every((worker) => worker.status === "queued"));
+    store.close();
+  } finally {
+    await fixture.harness.emit("session_shutdown", { reason: "quit" });
+    rmSync(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("stopping an active planner reconciles its admission and starts the next queued lane", async () => {
+  const fixture = createSupervisorFixture({ autoAdmission: false, admissionTimeoutMs: 60_000 });
+  try {
+    await fixture.harness.emit("session_start", { reason: "startup" });
+    await fixture.harness.commands.get("autoresearch").handler("2", fixture.harness.ctx);
+    await waitFor(() => fixture.records.prompts.length === 1);
+
+    const control = fixture.harness.tools.get("autoresearch_control");
+    await control.execute("stop-planner", { action: "stop", target: "w1" });
+    await waitFor(() => fixture.records.prompts.length === 2);
+
+    const store = new FleetStore(join(fixture.root, ".autoresearch", "fleet.sqlite"));
+    const snapshot = store.snapshot(fixture.root);
+    assert.equal(snapshot.workers.find((worker) => worker.worker_id === "w1").status, "stopped");
+    assert.equal(snapshot.admissions.find((admission) => admission.worker_id === "w1").state, "blocked");
+    assert.equal(snapshot.workers.find((worker) => worker.worker_id === "w2").status, "idle");
+    assert.equal(snapshot.admissions.find((admission) => admission.worker_id === "w2").state, "planning");
     store.close();
   } finally {
     await fixture.harness.emit("session_shutdown", { reason: "quit" });
@@ -1429,7 +1468,7 @@ test("session reload restores a paused fleet dashboard before the first user mes
       const store = new FleetStore(join(fixture.root, ".autoresearch", "fleet.sqlite"));
       const status = store.snapshot(fixture.root, { workerId: "w1", recent: 1 }).workers[0]?.status;
       store.close();
-      return status === "idle";
+      return status === "running";
     });
     for (const listener of fixture.records.clients[0].events) {
       listener({ type: "extension_error", error: "terminal worker failure" });

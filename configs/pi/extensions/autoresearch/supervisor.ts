@@ -706,9 +706,9 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
     this.setToolsActive(true);
     const model = ctx.model;
     const thinking = this.pi.getThinkingLevel();
-    const planningProvider = this.options.planningProvider ?? "openai-codex";
-    const planningModel = this.options.planningModel ?? "gpt-5.6-luna";
-    const planningThinking = this.options.planningThinking ?? "medium";
+    const planningProvider = this.options.planningProvider ?? model?.provider ?? "openai-codex";
+    const planningModel = this.options.planningModel ?? model?.id ?? "gpt-5.6-sol";
+    const planningThinking = this.options.planningThinking ?? this.pi.getThinkingLevel();
     for (const [index, seed] of seeds.entries()) {
       this.workerSeeds.set(seed.workerId, seed);
       this.store.parentUpdateWorker(repository.canonicalRoot, seed.workerId, {
@@ -931,12 +931,15 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
       if (model && client.setModel) await client.setModel(model.provider, model.id);
       if (client.setThinkingLevel) await client.setThinkingLevel(thinking);
       this.store.parentUpdateWorker(this.repository.canonicalRoot, workerId, {
-        status: "idle",
+        status: "launching",
         model: model ? `${model.provider}/${model.id}` : undefined,
         thinking,
         contextWindow: model?.contextWindow,
       });
-      await client.followUp("Campaign admission is accepted. Begin a fresh execution phase from the durable admission checkpoint. Reread program.md and shared state, remain within the accepted scopes, and reserve evidence before scarce or paid work.");
+      const executionPrompt = "Campaign admission is accepted. Begin a fresh execution phase from the durable admission checkpoint. Reread program.md and shared state, remain within the accepted scopes, and reserve evidence before scarce or paid work.";
+      const state = await client.getState();
+      if (state.isStreaming) await client.followUp(executionPrompt);
+      else await client.prompt(executionPrompt);
     } catch (error) {
       this.store.parentUpdateWorker(this.repository.canonicalRoot, workerId, {
         status: "failed",
@@ -962,7 +965,7 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
   }
 
   private async launchNextQueuedWorker(): Promise<void> {
-    if (!this.fleetReadyForAdmission || this.admissionLaunchInFlight || this.admissionStartedAt.size > 0
+    if (!this.active || !this.fleetReadyForAdmission || this.admissionLaunchInFlight || this.admissionStartedAt.size > 0
       || !this.store || !this.repository || !this.generation || this.shuttingDown) return;
     const row = this.store.claimNextQueuedAdmission(
       this.repository.canonicalRoot,
@@ -988,9 +991,9 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
     try {
       await this.launchWorker(
         seed,
-        this.options.planningProvider ?? "openai-codex",
-        this.options.planningModel ?? "gpt-5.6-luna",
-        this.options.planningThinking ?? "medium",
+        this.options.planningProvider ?? this.currentCtx?.model?.provider ?? "openai-codex",
+        this.options.planningModel ?? this.currentCtx?.model?.id ?? "gpt-5.6-sol",
+        this.options.planningThinking ?? this.pi.getThinkingLevel(),
         this.operation,
       );
     } catch (error) {
@@ -1241,9 +1244,9 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
     if (admitted) store.parentUpdateWorker(root, workerId, { status: "launching", error: null });
     await this.launchWorker(
       seed,
-      admitted ? this.currentCtx?.model?.provider : this.options.planningProvider ?? "openai-codex",
-      admitted ? this.currentCtx?.model?.id : this.options.planningModel ?? "gpt-5.6-luna",
-      admitted ? this.pi.getThinkingLevel() : this.options.planningThinking ?? "medium",
+      admitted ? this.currentCtx?.model?.provider : this.options.planningProvider ?? this.currentCtx?.model?.provider ?? "openai-codex",
+      admitted ? this.currentCtx?.model?.id : this.options.planningModel ?? this.currentCtx?.model?.id ?? "gpt-5.6-sol",
+      admitted ? this.pi.getThinkingLevel() : this.options.planningThinking ?? this.pi.getThinkingLevel(),
       this.operation,
     );
     this.fleetReadyForAdmission = true;
@@ -1268,6 +1271,9 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
       if (status === "paused" && openAdmission) {
         this.store.pauseAdmission(this.repository.canonicalRoot, workerId, this.generation, (this.options.now ?? Date.now)());
         this.store.parentUpdateWorker(this.repository.canonicalRoot, workerId, { status: "queued", currentTool: null });
+      } else if (status === "stopped" && openAdmission) {
+        this.store.blockAdmission(this.repository.canonicalRoot, workerId, this.generation, "stopped by supervisor", (this.options.now ?? Date.now)());
+        this.store.parentUpdateWorker(this.repository.canonicalRoot, workerId, { status: "stopped", currentTool: null });
       } else if (status === "paused" && snapshot.admissions[0]?.state === "admitted"
         && !["blocked", "failed", "complete", "stopped"].includes(currentStatus)) {
         this.store.parentUpdateWorker(this.repository.canonicalRoot, workerId, { status: "paused", currentTool: null });
@@ -1275,6 +1281,7 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
         this.store.parentUpdateWorker(this.repository.canonicalRoot, workerId, { status });
       }
     }
+    if (status === "stopped" && this.active && !this.shuttingDown) void this.launchNextQueuedWorker();
     if (stopError) throw stopError;
   }
 
