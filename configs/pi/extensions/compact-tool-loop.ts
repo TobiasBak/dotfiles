@@ -13,6 +13,12 @@ export default function (pi: ExtensionAPI) {
   let boundaryRecoveryPending = false;
   let boundaryRecoveryAttempted = false;
   let continuationPending = false;
+  let deferredMessage: ReturnType<typeof setTimeout> | undefined;
+
+  const cancelDeferredMessage = () => {
+    if (deferredMessage !== undefined) clearTimeout(deferredMessage);
+    deferredMessage = undefined;
+  };
 
   const resetRecovery = () => {
     boundaryRecoveryPending = false;
@@ -23,23 +29,45 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setStatus(STATUS_ID, undefined);
   };
 
-  const sendUserMessage = (ctx: ExtensionContext, message: string) => {
-    if (ctx.isIdle()) pi.sendUserMessage(message);
-    else pi.sendUserMessage(message, { deliverAs: "followUp" });
+  const sendUserMessage = (
+    ctx: ExtensionContext,
+    message: string,
+    onError: (error: unknown) => void,
+  ) => {
+    const send = () => {
+      try {
+        if (ctx.isIdle()) pi.sendUserMessage(message);
+        else pi.sendUserMessage(message, { deliverAs: "followUp" });
+      } catch (error) {
+        onError(error);
+      }
+    };
+
+    if (!ctx.isIdle()) {
+      send();
+      return;
+    }
+
+    // Pi's compaction-end listener can still be finishing a queued prompt's
+    // async preflight when agent_settled reports idle. Yield one event-loop turn
+    // so that prompt wins the race, then recheck and queue this as a follow-up.
+    cancelDeferredMessage();
+    deferredMessage = setTimeout(() => {
+      deferredMessage = undefined;
+      send();
+    }, 0);
   };
 
   const continueAutomatically = (ctx: ExtensionContext, notification: string) => {
     if (ctx.hasUI) ctx.ui.notify(notification, "info");
-    try {
-      sendUserMessage(ctx, RESUME_MESSAGE);
-    } catch (error) {
+    sendUserMessage(ctx, RESUME_MESSAGE, (error) => {
       if (ctx.hasUI) {
         ctx.ui.notify(
           `Compaction completed, but automatic continuation failed: ${error instanceof Error ? error.message : String(error)}`,
           "error",
         );
       }
-    }
+    });
   };
 
   const requestBoundaryRecovery = (ctx: ExtensionContext) => {
@@ -52,9 +80,7 @@ export default function (pi: ExtensionAPI) {
       );
     }
 
-    try {
-      sendUserMessage(ctx, BOUNDARY_MESSAGE);
-    } catch (error) {
+    sendUserMessage(ctx, BOUNDARY_MESSAGE, (error) => {
       resetRecovery();
       if (ctx.hasUI) {
         ctx.ui.notify(
@@ -62,43 +88,53 @@ export default function (pi: ExtensionAPI) {
           "error",
         );
       }
-    }
+    });
   };
 
   pi.on("session_start", () => {
+    cancelDeferredMessage();
     compactionInFlight = false;
     continuationPending = false;
     resetRecovery();
   });
 
+  pi.on("session_shutdown", () => {
+    cancelDeferredMessage();
+  });
+
   pi.on("session_compact", (event, ctx) => {
     if (event.reason === "manual") return;
-    if (!compactionInFlight && !boundaryRecoveryPending) return;
+    if (!compactionInFlight && !boundaryRecoveryPending && deferredMessage === undefined) return;
 
+    cancelDeferredMessage();
     compactionInFlight = false;
     clearCompactionStatus(ctx);
 
+    resetRecovery();
     if (event.willRetry) {
       continuationPending = false;
-      resetRecovery();
       return;
     }
 
-    // session_compact can fire while Pi is preparing a prompt, before it marks
-    // the agent as busy. Starting the resume prompt here would be reentrant.
-    // Wait for the current prompt lifecycle to settle before continuing.
-    continuationPending = true;
-    resetRecovery();
+    if (ctx.isIdle()) {
+      // Pre-prompt compaction can finish while async input or before_agent_start
+      // hooks are still running. agent_start is the first guaranteed busy
+      // boundary where a follow-up can be queued without racing that prompt.
+      continuationPending = true;
+      return;
+    }
+
+    continuationPending = false;
+    continueAutomatically(ctx, "Tool-loop compaction completed. Continuing automatically.");
+  });
+
+  pi.on("agent_start", (_event, ctx) => {
+    if (!continuationPending) return;
+    continuationPending = false;
+    continueAutomatically(ctx, "Tool-loop compaction completed. Continuing automatically.");
   });
 
   pi.on("agent_settled", (_event, ctx) => {
-    if (continuationPending) {
-      continuationPending = false;
-      clearCompactionStatus(ctx);
-      continueAutomatically(ctx, "Tool-loop compaction completed. Continuing automatically.");
-      return;
-    }
-
     if (compactionInFlight) {
       compactionInFlight = false;
       clearCompactionStatus(ctx);
@@ -134,6 +170,7 @@ export default function (pi: ExtensionAPI) {
     const threshold = Math.max(0, usage.contextWindow - COMPACTION_HEADROOM_TOKENS);
     if (usage.tokens <= threshold) return;
 
+    cancelDeferredMessage();
     compactionInFlight = true;
     ctx.ui.setStatus(STATUS_ID, `compacting at ${Math.round(usage.percent ?? 0)}%`);
     if (ctx.hasUI) {

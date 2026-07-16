@@ -16,6 +16,10 @@ function createHarness({ usage = HIGH_USAGE } = {}) {
   const emittedEvents = [];
   let abortCalls = 0;
   let idle = false;
+  let directPromptStarted = false;
+  let queuedPromptPreflight = false;
+  const queuedMessageErrors = [];
+  const runtimeErrors = [];
 
   const pi = {
     events: {
@@ -27,7 +31,14 @@ function createHarness({ usage = HIGH_USAGE } = {}) {
       handlers.set(event, handler);
     },
     sendUserMessage(message, options) {
-      sentMessages.push({ message, options });
+      if (idle || options?.deliverAs === "followUp") {
+        if (options === undefined) directPromptStarted = true;
+        sentMessages.push({ message, options });
+        return;
+      }
+      runtimeErrors.push(
+        "Agent is already processing a prompt. Use steer() or followUp() to queue messages, or wait for completion.",
+      );
     },
   };
 
@@ -59,7 +70,25 @@ function createHarness({ usage = HIGH_USAGE } = {}) {
     emittedEvents,
     handlers,
     notifications,
+    queuedMessageErrors,
+    runtimeErrors,
     sentMessages,
+    startQueuedPromptPreflight(delayMs = 0) {
+      queuedPromptPreflight = true;
+      const finishPreflight = () => {
+        if (!queuedPromptPreflight) return;
+        queuedPromptPreflight = false;
+        if (directPromptStarted) {
+          queuedMessageErrors.push(
+            "Failed to send queued message: Agent is already processing a prompt. Use steer() or followUp() to queue messages, or wait for completion.",
+          );
+          return;
+        }
+        idle = false;
+      };
+      if (delayMs > 0) setTimeout(finishPreflight, delayMs);
+      else queueMicrotask(finishPreflight);
+    },
     setIdle(value) {
       idle = value;
     },
@@ -104,17 +133,18 @@ test("does not stop below the compaction threshold", () => {
   assert.equal(harness.notifications.length, 0);
 });
 
-test("continues automatically after core threshold compaction settles", () => {
+test("queues continuation through Pi core after threshold compaction", () => {
   const harness = createHarness();
 
   emitToolTurn(harness);
   emitCoreCompaction(harness);
-  assert.equal(harness.sentMessages.length, 0);
 
-  harness.handlers.get("agent_settled")({}, harness.ctx);
   assert.equal(harness.sentMessages.length, 1);
   assert.match(harness.sentMessages[0].message, /continue the same task/i);
   assert.deepEqual(harness.sentMessages[0].options, { deliverAs: "followUp" });
+
+  harness.handlers.get("agent_settled")({}, harness.ctx);
+  assert.equal(harness.sentMessages.length, 1);
   assert.doesNotMatch(harness.notifications.at(-1).message, /failed/i);
 });
 
@@ -141,18 +171,42 @@ test("creates a safe turn boundary when core cannot compact the stopped tool loo
   assert.equal(harness.notifications.at(-1).level, "warning");
 });
 
-test("continues after the compacted recovery boundary settles", () => {
+test("queues continuation when the compacted recovery boundary starts", async () => {
   const harness = createHarness();
+  harness.setIdle(true);
+
+  emitToolTurn(harness);
+  harness.handlers.get("agent_settled")({}, harness.ctx);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  emitCoreCompaction(harness);
+
+  assert.equal(harness.sentMessages.length, 1);
+  assert.match(harness.sentMessages[0].message, /reply with exactly "READY"/i);
+
+  harness.setIdle(false);
+  harness.handlers.get("agent_start")({}, harness.ctx);
+
+  assert.equal(harness.sentMessages.length, 2);
+  assert.match(harness.sentMessages[1].message, /continue the same task/i);
+  assert.deepEqual(harness.sentMessages[1].options, { deliverAs: "followUp" });
+});
+
+test("replaces a deferred recovery message when compaction wins the race", async () => {
+  const harness = createHarness();
+  harness.setIdle(true);
 
   emitToolTurn(harness);
   harness.handlers.get("agent_settled")({}, harness.ctx);
   emitCoreCompaction(harness);
-  assert.equal(harness.sentMessages.length, 1);
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
-  harness.handlers.get("agent_settled")({}, harness.ctx);
-  assert.equal(harness.sentMessages.length, 2);
-  assert.match(harness.sentMessages[1].message, /continue the same task/i);
-  assert.deepEqual(harness.sentMessages[1].options, { deliverAs: "followUp" });
+  assert.equal(harness.sentMessages.length, 0);
+
+  harness.setIdle(false);
+  harness.handlers.get("agent_start")({}, harness.ctx);
+
+  assert.equal(harness.sentMessages.length, 1);
+  assert.match(harness.sentMessages[0].message, /continue the same task/i);
 });
 
 test("stops clearly when core still does not compact the recovery boundary", () => {
@@ -183,7 +237,7 @@ test("ignores unrelated and duplicate compaction events", () => {
   emitToolTurn(harness);
   emitCoreCompaction(harness);
   emitCoreCompaction(harness);
-  assert.equal(harness.sentMessages.length, 0);
+  assert.equal(harness.sentMessages.length, 1);
 
   harness.handlers.get("agent_settled")({}, harness.ctx);
   assert.equal(harness.sentMessages.length, 1);
@@ -200,18 +254,22 @@ test("does not treat manual compaction as the requested core auto-compaction", (
   assert.match(harness.sentMessages[0].message, /reply with exactly "READY"/i);
 });
 
-test("does not start a reentrant prompt when pre-prompt compaction appears idle", () => {
+test("waits for agent_start through a delayed queued-prompt preflight", async () => {
   const harness = createHarness();
   harness.setIdle(true);
 
   emitToolTurn(harness);
   emitCoreCompaction(harness);
+  harness.startQueuedPromptPreflight(10);
 
-  // session_compact can run inside prompt preflight while ctx.isIdle() is true.
-  // Prompting here races the original prompt and produces "Agent is already processing".
+  await new Promise((resolve) => setTimeout(resolve, 15));
+
+  assert.deepEqual(harness.queuedMessageErrors, []);
+  assert.deepEqual(harness.runtimeErrors, []);
   assert.equal(harness.sentMessages.length, 0);
 
-  harness.handlers.get("agent_settled")({}, harness.ctx);
+  harness.handlers.get("agent_start")({}, harness.ctx);
+
   assert.equal(harness.sentMessages.length, 1);
-  assert.equal(harness.sentMessages[0].options, undefined);
+  assert.deepEqual(harness.sentMessages[0].options, { deliverAs: "followUp" });
 });

@@ -35,4 +35,12 @@ in
       ".codex/prompts" = linkFromDotfiles "configs/codex/prompts";
     };
   };
+
+  programs.git = {
+    enable = true;
+    settings.user = {
+      name = "Tobias Bak";
+      email = "tobiasbak@live.dk";
+    };
+  };
 }
