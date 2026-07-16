@@ -1748,11 +1748,12 @@ test("worker role exposes only worker coordination, checkpoints through the tool
     AUTORESEARCH_FLEET_DB: fleet.dbPath,
     AUTORESEARCH_GENERATION: String(fleet.generation),
   };
+  let aborts = 0;
   const ctx = {
     cwd: fleet.root,
     isIdle: () => false,
     hasPendingMessages: () => false,
-    abort() {},
+    abort() { aborts += 1; },
   };
   try {
     registerWorkerAutoresearch(pi, { env, continuationDelayMs: 0 });
@@ -1863,7 +1864,9 @@ test("worker role exposes only worker coordination, checkpoints through the tool
     for (const handler of handlers.get("message_end") ?? []) {
       await handler({ message: { role: "assistant", content: [{ type: "text", text: "Late summary" }] } }, ctx);
     }
+    await tick();
     const terminalWorker = fleet.parent.snapshot(fleet.root, { workerId: "w1" }).workers[0];
+    assert.equal(aborts, 1, "a terminal checkpoint immediately aborts the current agent turn");
     assert.equal(terminalWorker.status, "decision");
     assert.equal(terminalWorker.summary, "Terminal worker decision");
     assert.equal(terminalWorker.error, "preserved worker blocker");

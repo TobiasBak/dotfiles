@@ -85,6 +85,7 @@ export function registerWorkerAutoresearch(pi: ExtensionAPI, options: WorkerRegi
   };
 
   const ownWorker = () => store.snapshot(parsed.identity.canonicalRoot, { workerId: parsed.identity.workerId, recent: 1 }).workers[0];
+  const stopCurrentTurn = () => queueMicrotask(() => currentCtx?.abort());
   const canContinue = () => {
     const status = ownWorker()?.status as WorkerStatus | undefined;
     return status !== undefined && !TERMINAL_STATUSES.has(status);
@@ -208,6 +209,7 @@ export function registerWorkerAutoresearch(pi: ExtensionAPI, options: WorkerRegi
           claimedScopes: params.claimedScopes,
           summary: params.summary,
         });
+        stopCurrentTurn();
         return {
           content: [{ type: "text", text: `Admission offer checkpoint ${offer.checkpointId} published. End this turn and wait for supervisor acceptance before mutation.` }],
           details: offer,
@@ -230,6 +232,7 @@ export function registerWorkerAutoresearch(pi: ExtensionAPI, options: WorkerRegi
           continuationCommand: params.continuationCommand,
           launchReceipt: params.launchReceipt,
         });
+        if (params.status && TERMINAL_STATUSES.has(params.status as WorkerStatus)) stopCurrentTurn();
         return { content: [{ type: "text", text: `Checkpoint ${checkpointId} recorded.` }], details: { checkpointId } };
       }
       if (params.action === "reserve_evidence") {
