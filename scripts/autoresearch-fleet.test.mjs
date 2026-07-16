@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -79,6 +79,31 @@ function workerStore(fleet, index, token = fleet.workers[index].token) {
   });
 }
 
+function writePortfolio(root, workers) {
+  mkdirSync(join(root, ".autoresearch"), { recursive: true });
+  const active_assignments = {};
+  const hypotheses = {};
+  for (const worker of workers) {
+    const hypothesis = `hypothesis-${worker.workerId}`;
+    hypotheses[hypothesis] = { status: "active" };
+    active_assignments[worker.workerId] = {
+      worker_id: worker.workerId,
+      campaign_id: `campaign-${worker.workerId}`,
+      hypothesis_id: hypothesis,
+      worker_token_sha256: createHash("sha256").update(worker.token).digest("hex"),
+    };
+  }
+  writeFileSync(join(root, ".autoresearch", "portfolio.json"), `${JSON.stringify({
+    schema_version: 2,
+    revision: 1,
+    active_assignments,
+    paused: false,
+    pause_reason: null,
+    hypotheses,
+    history: [],
+  })}\n`);
+}
+
 test("SQLite checkpoints are structured, fenced, WAL-backed, and evidence capacity is atomic", () => {
   const fleet = createFleetDb();
   const w1 = workerStore(fleet, 0);
@@ -144,6 +169,62 @@ test("SQLite checkpoints are structured, fenced, WAL-backed, and evidence capaci
     w3.close();
     w2.close();
     w1.close();
+    fleet.parent.close();
+    rmSync(fleet.dir, { recursive: true, force: true });
+  }
+});
+
+test("durable admission offers require portfolio ownership and reject conflicting scopes", () => {
+  const fleet = createFleetDb(2);
+  const w1 = workerStore(fleet, 0);
+  const w2 = workerStore(fleet, 1);
+  try {
+    fleet.parent.beginAdmission(fleet.root, "w1", fleet.generation, { head: "base", dirty: false }, 110);
+    assert.throws(() => w1.offerAdmission({
+      campaign: "campaign-w1",
+      hypothesis: "hypothesis-w1",
+      stage: "scout",
+      claimedScopes: ["scope:shared"],
+    }, 120), /portfolio assignment is required/i);
+
+    writePortfolio(fleet.root, fleet.workers);
+    assert.throws(() => w1.offerAdmission({
+      campaign: "campaign-w1",
+      hypothesis: "wrong-hypothesis",
+      stage: "scout",
+      claimedScopes: ["scope:shared"],
+    }, 121), FenceError);
+    const offer = w1.offerAdmission({
+      campaign: "campaign-w1",
+      hypothesis: "hypothesis-w1",
+      stage: "scout",
+      claimedScopes: ["scope:shared", "scope:shared"],
+    }, 122);
+    assert.ok(offer.checkpointId > 0);
+    assert.deepEqual(fleet.parent.admitOfferedCampaign(fleet.root, "w1", fleet.generation, 123), { admitted: true });
+
+    fleet.parent.beginAdmission(fleet.root, "w2", fleet.generation, { head: "base", dirty: false }, 124);
+    w2.checkpoint({ campaign: "generic", hypothesis: "generic", stage: "theory", status: "running", claimedScopes: ["scope:other"] }, 125);
+    assert.equal(fleet.parent.snapshot(fleet.root, { workerId: "w2", recent: 1 }).admissions[0].state, "planning");
+    w2.offerAdmission({
+      campaign: "campaign-w2",
+      hypothesis: "hypothesis-w2",
+      stage: "scout",
+      claimedScopes: ["scope:shared"],
+    }, 126);
+    assert.deepEqual(fleet.parent.admitOfferedCampaign(fleet.root, "w2", fleet.generation, 127), {
+      admitted: false,
+      reason: "claimed scope conflicts with w1",
+    });
+    w2.recordTurnUsage({ cost: 0.51 }, 128);
+    assert.match(fleet.parent.admissionBudgetViolation(fleet.root, "w2", fleet.generation, 129), /cost.*exceeded/i);
+    assert.deepEqual(fleet.parent.admitOfferedCampaign(fleet.root, "w2", fleet.generation, 129), {
+      admitted: false,
+      reason: "campaign admission cost budget exhausted",
+    });
+  } finally {
+    w1.close();
+    w2.close();
     fleet.parent.close();
     rmSync(fleet.dir, { recursive: true, force: true });
   }
@@ -295,7 +376,9 @@ test("durable launching and active fleets recover only after every lane is termi
       assert.equal(parent.beginFleet({ canonicalRoot: root, workers: nextWorkers, now: 30 }), 2);
       const snapshot = parent.snapshot(root);
       assert.equal(snapshot.fleet.status, "launching");
-      assert.ok(snapshot.workers.every((worker) => worker.generation === 2 && worker.status === "launching"));
+      assert.equal(snapshot.workers[0].status, "launching");
+      assert.ok(snapshot.workers.slice(1).every((worker) => worker.generation === 2 && worker.status === "queued"));
+      assert.equal(snapshot.fleet.max_workers, 4);
       assert.deepEqual(snapshot.workers.map((worker) => worker.session_id), nextWorkers.map((worker) => worker.sessionId));
     } finally {
       parent.close();
@@ -391,6 +474,41 @@ test("paused fleets cannot be resized around an omitted active reservation", () 
   }
 });
 
+test("existing fleet schemas migrate elastic admission capacity additively", () => {
+  const dir = mkdtempSync(join(tmpdir(), "autoresearch-fleet-migration-"));
+  const dbPath = join(dir, "fleet.sqlite");
+  const old = new DatabaseSync(dbPath);
+  old.exec(`
+    CREATE TABLE fleets (
+      canonical_root TEXT PRIMARY KEY,
+      generation INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      parent_session TEXT,
+      canonical_head TEXT,
+      protocol_version INTEGER NOT NULL,
+      max_evidence_stages INTEGER NOT NULL,
+      started_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      stopped_at INTEGER
+    );
+    INSERT INTO fleets VALUES('/repo',3,'stopped',NULL,'abc',1,2,1,2,2);
+  `);
+  old.close();
+  const migrated = new FleetStore(dbPath);
+  try {
+    const fleetColumns = migrated.db.prepare("PRAGMA table_info(fleets)").all().map((column) => column.name);
+    assert.ok(fleetColumns.includes("max_workers"));
+    assert.equal(migrated.db.prepare("SELECT max_workers FROM fleets WHERE canonical_root='/repo'").get().max_workers, 1);
+    const admissionColumns = migrated.db.prepare("PRAGMA table_info(admissions)").all().map((column) => column.name);
+    for (const column of ["state", "claimed_scopes", "baseline_cost", "baseline_head", "baseline_dirty", "timeout_ms", "elapsed_ms"]) {
+      assert.ok(admissionColumns.includes(column), column);
+    }
+  } finally {
+    migrated.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("existing workers schemas migrate session identity additively", () => {
   const dir = mkdtempSync(join(tmpdir(), "autoresearch-worker-migration-"));
   const dbPath = join(dir, "fleet.sqlite");
@@ -408,8 +526,15 @@ test("existing workers schemas migrate session identity additively", () => {
   const migrated = new FleetStore(dbPath);
   try {
     const columns = migrated.db.prepare("PRAGMA table_info(workers)").all().map((column) => column.name);
-    assert.ok(columns.includes("session_id"));
-    assert.equal(migrated.db.prepare("SELECT session_id FROM workers WHERE worker_id='w1'").get().session_id, null);
+    for (const column of ["session_id", "task", "model", "thinking", "context_window", "context_tokens", "cost", "turns", "tool_calls"]) {
+      assert.ok(columns.includes(column), column);
+    }
+    const row = migrated.db.prepare("SELECT session_id,task,turns,tool_calls,cost FROM workers WHERE worker_id='w1'").get();
+    assert.equal(row.session_id, null);
+    assert.equal(row.task, null);
+    assert.equal(row.turns, 0);
+    assert.equal(row.tool_calls, 0);
+    assert.equal(row.cost, 0);
     const indexes = migrated.db.prepare("PRAGMA index_list(workers)").all().map((index) => index.name);
     assert.ok(indexes.includes("workers_unique_session"));
   } finally {
@@ -583,6 +708,7 @@ function createParentHarness(options) {
   const widgets = [];
   const statuses = [];
   const sentMessages = [];
+  const sentMessageOptions = [];
   let activeTools = ["read", "bash"];
 
   const addHandler = (name, handler) => {
@@ -598,7 +724,7 @@ function createParentHarness(options) {
     setActiveTools(names) { activeTools = [...names]; },
     getThinkingLevel: () => "high",
     appendEntry() {},
-    sendUserMessage(message) { sentMessages.push(message); },
+    sendUserMessage(message, options) { sentMessages.push(message); sentMessageOptions.push(options); },
     events: { on: () => () => {} },
   };
   const ctx = {
@@ -625,7 +751,7 @@ function createParentHarness(options) {
   };
 
   registerAutoresearch(pi, { supervisor: options.supervisor });
-  return { pi, ctx, handlers, commands, tools, notifications, widgets, statuses, sentMessages, emit, activeTools: () => activeTools };
+  return { pi, ctx, handlers, commands, tools, notifications, widgets, statuses, sentMessages, sentMessageOptions, emit, activeTools: () => activeTools };
 }
 
 class FakeRpcClient {
@@ -638,13 +764,76 @@ class FakeRpcClient {
     records.clients.push(this);
   }
   onEvent(listener) { this.records.order.push(`listen:${this.options.env.AUTORESEARCH_WORKER_ID}`); this.events.push(listener); return () => { this.events = []; }; }
-  async start() { this.records.order.push(`start:${this.options.env.AUTORESEARCH_WORKER_ID}`); }
+  async start() {
+    const sessionDir = this.options.args[this.options.args.indexOf("--session-dir") + 1];
+    const sessionId = this.options.args[this.options.args.indexOf("--session-id") + 1];
+    const header = readdirSync(sessionDir).map((file) => {
+      try {
+        const firstLine = readFileSync(join(sessionDir, file), "utf8").split("\n", 1)[0];
+        return JSON.parse(firstLine);
+      } catch {
+        return undefined;
+      }
+    }).find((value) => value?.id === sessionId);
+    this.records.sessionPreparedAtStart.push({ sessionId, header });
+    this.records.order.push(`start:${this.options.env.AUTORESEARCH_WORKER_ID}`);
+  }
   async getState() {
     const sessionDir = this.options.args[this.options.args.indexOf("--session-dir") + 1];
     const sessionId = this.options.args[this.options.args.indexOf("--session-id") + 1];
     return { isStreaming: false, sessionFile: join(sessionDir, `fixture_${sessionId}.jsonl`) };
   }
-  async prompt(message) { this.records.order.push(`prompt:${this.options.env.AUTORESEARCH_WORKER_ID}`); this.records.prompts.push(message); }
+  async prompt(message) {
+    this.records.order.push(`prompt:${this.options.env.AUTORESEARCH_WORKER_ID}`);
+    this.records.prompts.push(message);
+    if (this.records.autoAdmission && message.includes("bounded admission planner")) this.admit();
+  }
+  admit(settle = true) {
+    const env = this.options.env;
+    const portfolioPath = join(env.AUTORESEARCH_CANONICAL_ROOT, ".autoresearch", "portfolio.json");
+    let portfolio = {
+      schema_version: 2,
+      revision: 0,
+      active_assignments: {},
+      paused: false,
+      pause_reason: null,
+      hypotheses: {},
+      history: [],
+    };
+    if (existsSync(portfolioPath)) portfolio = JSON.parse(readFileSync(portfolioPath, "utf8"));
+    const hypothesis = `hypothesis-${env.AUTORESEARCH_WORKER_ID}`;
+    const campaign = `campaign-${env.AUTORESEARCH_WORKER_ID}`;
+    portfolio.revision += 1;
+    portfolio.hypotheses[hypothesis] = { status: "active" };
+    portfolio.active_assignments[env.AUTORESEARCH_WORKER_ID] = {
+      worker_id: env.AUTORESEARCH_WORKER_ID,
+      campaign_id: campaign,
+      hypothesis_id: hypothesis,
+      worker_token_sha256: createHash("sha256").update(env.AUTORESEARCH_WORKER_TOKEN).digest("hex"),
+    };
+    writeFileSync(portfolioPath, `${JSON.stringify(portfolio)}\n`);
+    const store = new FleetStore(env.AUTORESEARCH_FLEET_DB, {
+      canonicalRoot: env.AUTORESEARCH_CANONICAL_ROOT,
+      workerId: env.AUTORESEARCH_WORKER_ID,
+      sessionId: env.AUTORESEARCH_SESSION_ID,
+      generation: Number(env.AUTORESEARCH_GENERATION),
+      token: env.AUTORESEARCH_WORKER_TOKEN,
+    });
+    store.offerAdmission({
+      campaign,
+      hypothesis,
+      stage: "admission",
+      summary: `Admitted ${env.AUTORESEARCH_WORKER_ID}`,
+      claimedScopes: [`campaign:${env.AUTORESEARCH_WORKER_ID}`],
+    }, 5_000);
+    store.close();
+    for (const listener of this.events) listener({ type: "tool_execution_end", toolName: "autoresearch_worker_state", isError: false });
+    for (const listener of this.events) listener({
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "Admission offer published." }] },
+    });
+    if (settle) for (const listener of this.events) listener({ type: "agent_settled" });
+  }
   async steer(message) { this.records.steers.push(message); }
   async followUp(message) { this.records.followUps.push(message); }
   async abort() { this.aborted = true; }
@@ -676,6 +865,8 @@ function createSupervisorFixture(options = {}) {
     launchSyncs: [],
     ensuredLanes: [],
     storePaths: [],
+    sessionPreparedAtStart: [],
+    autoAdmission: options.autoAdmission ?? true,
   };
   const extensionPath = resolve("configs/pi/extensions/autoresearch.ts");
   const supervisor = {
@@ -695,7 +886,7 @@ function createSupervisorFixture(options = {}) {
       writeFileSync(join(lane.path, "controller.py"), "STALE_CONTROLLER = True\n");
       return lane;
     },
-    laneState: () => ({ head: "candidate", dirty: false }),
+    laneState: () => options.laneState?.() ?? ({ head: options.laneHead ?? "1234567890abcdef", dirty: options.laneDirty ?? false }),
     syncLane: (input) => {
       if (input.canonicalHead) {
         records.launchSyncs.push(input.lane.workerId);
@@ -717,6 +908,14 @@ function createSupervisorFixture(options = {}) {
     cliPath: process.execPath,
     extensionPath,
     dashboardIntervalMs: 0,
+    sessionVersion: 3,
+    admissionTimeoutMs: options.admissionTimeoutMs ?? 0,
+    admissionMaxCostUsd: options.admissionMaxCostUsd,
+    admissionMaxTurns: options.admissionMaxTurns,
+    admissionMaxToolCalls: options.admissionMaxToolCalls,
+    planningProvider: "test-provider",
+    planningModel: "test-model",
+    planningThinking: "high",
     token: (() => { let id = 0; return () => `token-${++id}`; })(),
     sessionId: (() => {
       let id = 0;
@@ -730,7 +929,7 @@ function createSupervisorFixture(options = {}) {
     now: () => 5_000,
   };
   const harness = createParentHarness({ cwd: root, supervisor });
-  return { dir, root, records, harness };
+  return { dir, root, records, harness, supervisor };
 }
 
 test("worker role requires and exposes a valid session UUID independently of its fence token", () => {
@@ -873,6 +1072,45 @@ test("/autoresearch N fails before launch when the canonical checkout is dirty",
   }
 });
 
+test("fleet capacity resumes noncontiguous active portfolio owners before allocating fresh lanes", async () => {
+  const fixture = createSupervisorFixture({ laneHead: "retained-campaign-head" });
+  const stateDir = join(fixture.root, ".autoresearch");
+  mkdirSync(stateDir, { recursive: true });
+  const previous = new FleetStore(join(stateDir, "fleet.sqlite"));
+  const previousWorker = {
+    workerId: "w4",
+    sessionId: testSessionId(44),
+    token: "retained-w4-token",
+    worktree: join(fixture.dir, "old-w4"),
+    branch: "autoresearch/worker-4",
+    sessionsRoot: join(stateDir, "sessions"),
+  };
+  const generation = previous.beginFleet({ canonicalRoot: fixture.root, workers: [previousWorker], now: 100 });
+  previous.parentUpdateWorker(fixture.root, "w4", { status: "stopped" }, 101);
+  previous.setFleetStatus(fixture.root, "stopped", 102);
+  previous.close();
+  writePortfolio(fixture.root, [previousWorker]);
+  try {
+    await fixture.harness.emit("session_start", { reason: "startup" });
+    await fixture.harness.commands.get("autoresearch").handler("1", fixture.harness.ctx);
+    await waitFor(() => fixture.records.prompts.length === 1);
+    const client = fixture.records.clients[0];
+    assert.equal(client.options.env.AUTORESEARCH_WORKER_ID, "w4");
+    assert.equal(client.options.env.AUTORESEARCH_WORKER_TOKEN, "retained-w4-token");
+    assert.equal(Number(client.options.env.AUTORESEARCH_GENERATION), generation + 1);
+    const store = new FleetStore(join(stateDir, "fleet.sqlite"));
+    const snapshot = store.snapshot(fixture.root);
+    assert.equal(snapshot.fleet.max_workers, 1);
+    assert.deepEqual(snapshot.workers.map((worker) => worker.worker_id), ["w4"]);
+    assert.equal(snapshot.admissions[0].state, "admitted");
+    assert.equal(snapshot.workers[0].status, "idle");
+    store.close();
+  } finally {
+    await fixture.harness.emit("session_shutdown", { reason: "quit" });
+    rmSync(fixture.dir, { recursive: true, force: true });
+  }
+});
+
 test("/autoresearch 4 starts isolated persistent RPC workers asynchronously without taking over the parent", async () => {
   const fixture = createSupervisorFixture();
   try {
@@ -927,10 +1165,30 @@ test("/autoresearch 4 starts isolated persistent RPC workers asynchronously with
     const sessionIds = fixture.records.clients.map((client) => client.options.env.AUTORESEARCH_SESSION_ID);
     assert.equal(new Set(sessionIds).size, 4);
     assert.ok(sessionIds.every((id) => UUID_V4.test(id)));
+    assert.deepEqual(
+      fixture.records.sessionPreparedAtStart.map(({ sessionId, header }) => ({
+        sessionId,
+        type: header?.type,
+        version: header?.version,
+        id: header?.id,
+        cwd: header?.cwd,
+      })),
+      fixture.records.clients.map((client) => ({
+        sessionId: client.options.env.AUTORESEARCH_SESSION_ID,
+        type: "session",
+        version: 3,
+        id: client.options.env.AUTORESEARCH_SESSION_ID,
+        cwd: client.options.cwd,
+      })),
+      "each valid persistent session header exists before its RPC process starts",
+    );
     const store = new FleetStore(join(fixture.root, ".autoresearch", "fleet.sqlite"));
     const persisted = store.snapshot(fixture.root);
     assert.deepEqual(persisted.workers.map((worker) => worker.session_id), sessionIds);
     assert.ok(persisted.workers.every((worker) => worker.session_dir === join(fixture.root, ".autoresearch", "sessions", "generation-1")));
+    assert.ok(persisted.workers.every((worker) => worker.model === "test-provider/test-model"));
+    assert.ok(persisted.workers.every((worker) => worker.thinking === "high"));
+    assert.deepEqual(persisted.workers.map((worker) => worker.task), ["hypothesis-w1", "hypothesis-w2", "hypothesis-w3", "hypothesis-w4"]);
     store.close();
     assert.ok(existsSync(join(fixture.root, ".autoresearch", "artifacts", "runs")));
 
@@ -939,11 +1197,19 @@ test("/autoresearch 4 starts isolated persistent RPC workers asynchronously with
     assert.equal(fixture.records.clients.length, 4, "duplicate command did not launch more clients");
     assert.match(fixture.harness.notifications.at(-1).message, /already launching or active/i);
 
-    const widget = fixture.harness.widgets.findLast((item) => Array.isArray(item.value));
+    const widget = fixture.harness.widgets.find((item) => typeof item.value === "function");
     assert.equal(widget.options.placement, "belowEditor");
-    assert.equal(widget.value.filter((line) => /^w\d [0-9a-f]{8} /.test(line)).length, 4);
-    assert.match(widget.value[1], new RegExp(`w1 ${sessionIds[0].slice(0, 8)} idle`));
-    assert.match(widget.value.at(-1), /evidence 0\/2/);
+    const component = widget.value(
+      { requestRender() {} },
+      { fg: (_color, value) => value, bold: (value) => value },
+    );
+    const widgetLines = component.render(220);
+    assert.equal(widgetLines.length, 5);
+    assert.match(widgetLines[0], /^┌─ autoresearch · active · 4 workers · evidence 0\/2/);
+    assert.match(widgetLines[1], new RegExp(`^├─ \\[w1:${sessionIds[0].slice(0, 8)}\\] ○ idle\\s+`));
+    assert.match(widgetLines[1], /0 turns │ hypothesis-w1 · Admitted w1 │ test-model · High · \$0\.000 · 0 tools/);
+    assert.match(component.render(100)[1], /0 turns │ hypothesis-w1/);
+    assert.match(widgetLines.at(-1), /^└─ \[w4:/);
 
     const inspect = fixture.harness.tools.get("autoresearch_inspect");
     const inspection = await inspect.execute("inspect", { scope: "all", view: "summary" });
@@ -953,6 +1219,169 @@ test("/autoresearch 4 starts isolated persistent RPC workers asynchronously with
     const context = contextResults.find((value) => value?.message?.customType === "autoresearch-fleet-snapshot");
     assert.match(context.message.content, /Evidence capacity: 0\/2/);
     assert.doesNotMatch(context.message.content, /Safe worker test program/);
+
+    await fixture.harness.commands.get("autoresearch").handler("", fixture.harness.ctx);
+    assert.match(fixture.harness.notifications.at(-1).message, /stopped autoresearch fleet/i);
+    assert.ok(fixture.records.clients.every((client) => client.stopped));
+    assert.ok(!fixture.harness.activeTools().includes("autoresearch_control"));
+  } finally {
+    await fixture.harness.emit("session_shutdown", { reason: "quit" });
+    rmSync(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("fleet workers enter campaign admission sequentially", async () => {
+  const fixture = createSupervisorFixture({ autoAdmission: false, admissionTimeoutMs: 60_000 });
+  try {
+    await fixture.harness.emit("session_start", { reason: "startup" });
+    await fixture.harness.commands.get("autoresearch").handler("4", fixture.harness.ctx);
+    await waitFor(() => fixture.records.prompts.length === 1);
+
+    assert.equal(fixture.records.clients.length, 1);
+    assert.match(fixture.records.prompts[0], /bounded admission planner/);
+    assert.match(fixture.records.prompts[0], /60 seconds, 8 model turns, 16 tool calls, and \$0\.50/);
+    let store = new FleetStore(join(fixture.root, ".autoresearch", "fleet.sqlite"));
+    let workers = store.snapshot(fixture.root).workers;
+    assert.equal(workers[0].status, "idle");
+    assert.ok(workers.slice(1).every((worker) => worker.status === "queued"));
+    store.close();
+
+    fixture.records.clients[0].admit();
+    await waitFor(() => fixture.records.prompts.length === 2);
+    assert.equal(fixture.records.clients.length, 2);
+    store = new FleetStore(join(fixture.root, ".autoresearch", "fleet.sqlite"));
+    workers = store.snapshot(fixture.root).workers;
+    assert.equal(workers[0].status, "idle");
+    assert.equal(store.snapshot(fixture.root, { workerId: "w1", recent: 1 }).admissions[0].state, "admitted");
+    assert.equal(workers[1].status, "idle");
+    assert.ok(workers.slice(2).every((worker) => worker.status === "queued"));
+    store.close();
+  } finally {
+    await fixture.harness.emit("session_shutdown", { reason: "quit" });
+    rmSync(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("accepted admission decisions stay internal while later scientific decisions reach the parent", async () => {
+  const fixture = createSupervisorFixture({ autoAdmission: false });
+  let worker;
+  try {
+    await fixture.harness.emit("session_start", { reason: "startup" });
+    await fixture.harness.commands.get("autoresearch").handler("1", fixture.harness.ctx);
+    await waitFor(() => fixture.records.prompts.length === 1);
+    const client = fixture.records.clients[0];
+    client.admit(false);
+    await waitFor(() => {
+      const store = new FleetStore(join(fixture.root, ".autoresearch", "fleet.sqlite"));
+      const state = store.snapshot(fixture.root, { workerId: "w1", recent: 2 }).admissions[0]?.state;
+      store.close();
+      return state === "admitted";
+    });
+    assert.equal(fixture.harness.sentMessages.length, 0, "admission handshake is not parent attention work");
+
+    worker = new FleetStore(client.options.env.AUTORESEARCH_FLEET_DB, {
+      canonicalRoot: fixture.root,
+      workerId: "w1",
+      sessionId: client.options.env.AUTORESEARCH_SESSION_ID,
+      generation: Number(client.options.env.AUTORESEARCH_GENERATION),
+      token: client.options.env.AUTORESEARCH_WORKER_TOKEN,
+    });
+    worker.checkpoint({
+      campaign: "campaign-w1",
+      hypothesis: "hypothesis-w1",
+      stage: "scout",
+      status: "decision",
+      summary: "Scientific review required",
+      claimedScopes: ["campaign:w1"],
+    }, 5_100);
+    for (const listener of client.events) listener({
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "Scientific review required" }] },
+    });
+    await waitFor(() => fixture.harness.sentMessages.length === 1);
+    assert.match(fixture.harness.sentMessages[0], /w1 decision: Scientific review required/);
+  } finally {
+    worker?.close();
+    await fixture.harness.emit("session_shutdown", { reason: "quit" });
+    rmSync(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("planner mutation rejects an otherwise valid offer before starting the next lane", async () => {
+  let laneState = { head: "1234567890abcdef", dirty: false };
+  const fixture = createSupervisorFixture({ autoAdmission: false, laneState: () => laneState });
+  try {
+    await fixture.harness.emit("session_start", { reason: "startup" });
+    await fixture.harness.commands.get("autoresearch").handler("2", fixture.harness.ctx);
+    await waitFor(() => fixture.records.prompts.length === 1);
+    laneState = { ...laneState, dirty: true };
+    fixture.records.clients[0].admit();
+    await waitFor(() => fixture.records.prompts.length === 2);
+    const store = new FleetStore(join(fixture.root, ".autoresearch", "fleet.sqlite"));
+    const snapshot = store.snapshot(fixture.root, { recent: 1 });
+    assert.equal(snapshot.workers[0].status, "blocked");
+    assert.match(String(snapshot.workers[0].error), /mutated candidate state/i);
+    assert.equal(snapshot.admissions[1].state, "planning");
+    store.close();
+  } finally {
+    await fixture.harness.emit("session_shutdown", { reason: "quit" });
+    rmSync(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("admission budget exhaustion blocks one planner before starting the next", async () => {
+  const fixture = createSupervisorFixture({ autoAdmission: false, admissionMaxCostUsd: 0.1 });
+  let worker;
+  try {
+    await fixture.harness.emit("session_start", { reason: "startup" });
+    await fixture.harness.commands.get("autoresearch").handler("2", fixture.harness.ctx);
+    await waitFor(() => fixture.records.prompts.length === 1);
+    const client = fixture.records.clients[0];
+    worker = new FleetStore(client.options.env.AUTORESEARCH_FLEET_DB, {
+      canonicalRoot: fixture.root,
+      workerId: "w1",
+      sessionId: client.options.env.AUTORESEARCH_SESSION_ID,
+      generation: Number(client.options.env.AUTORESEARCH_GENERATION),
+      token: client.options.env.AUTORESEARCH_WORKER_TOKEN,
+    });
+    worker.recordTurnUsage({ cost: 0.11, contextTokens: 100 }, 5_001);
+    for (const listener of client.events) listener({
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "still planning" }] },
+    });
+    await waitFor(() => fixture.records.prompts.length === 2);
+    const store = new FleetStore(join(fixture.root, ".autoresearch", "fleet.sqlite"));
+    const snapshot = store.snapshot(fixture.root, { recent: 1 });
+    assert.equal(snapshot.workers[0].status, "blocked");
+    assert.equal(snapshot.admissions[0].state, "blocked");
+    assert.equal(snapshot.admissions[1].state, "planning");
+    store.close();
+  } finally {
+    worker?.close();
+    await fixture.harness.emit("session_shutdown", { reason: "quit" });
+    rmSync(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("worker failures are queued to the parent as follow-ups instead of UI errors", async () => {
+  const fixture = createSupervisorFixture({ autoAdmission: false });
+  try {
+    await fixture.harness.emit("session_start", { reason: "startup" });
+    await fixture.harness.commands.get("autoresearch").handler("1", fixture.harness.ctx);
+    await waitFor(() => fixture.records.prompts.length === 1);
+
+    const client = fixture.records.clients[0];
+    for (const listener of client.events) listener({ type: "extension_error", error: "integrity boundary reached" });
+    await waitFor(() => fixture.harness.sentMessages.length === 1);
+
+    assert.match(fixture.harness.sentMessages[0], /^\[autoresearch fleet transition; operational state, not Git truth\]/);
+    assert.match(fixture.harness.sentMessages[0], /w1 failed: integrity boundary reached/);
+    assert.deepEqual(fixture.harness.sentMessageOptions[0], { deliverAs: "followUp" });
+    assert.ok(!fixture.harness.notifications.some(({ message, type }) => type === "error" && /w1 failed/i.test(message)));
+
+    for (const listener of client.events) listener({ type: "extension_error", error: "integrity boundary reached" });
+    await tick();
+    assert.equal(fixture.harness.sentMessages.length, 1, "a terminal state is queued only once");
   } finally {
     await fixture.harness.emit("session_shutdown", { reason: "quit" });
     rmSync(fixture.dir, { recursive: true, force: true });
@@ -979,6 +1408,55 @@ test("parent shutdown aborts and stops every RPC worker, pauses durable state, a
     assert.ok(snapshot.workers.every((worker) => worker.status === "paused"));
     store.close();
   } finally {
+    rmSync(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("session reload restores a paused fleet dashboard before the first user message", async () => {
+  const fixture = createSupervisorFixture();
+  let restored;
+  try {
+    await fixture.harness.emit("session_start", { reason: "startup" });
+    await fixture.harness.commands.get("autoresearch").handler("2", fixture.harness.ctx);
+    await waitFor(() => fixture.records.prompts.length === 2);
+    await waitFor(() => {
+      const store = new FleetStore(join(fixture.root, ".autoresearch", "fleet.sqlite"));
+      const admitted = store.snapshot(fixture.root, { recent: 1 }).admissions.every((item) => item.state === "admitted");
+      store.close();
+      return admitted;
+    });
+    await waitFor(() => {
+      const store = new FleetStore(join(fixture.root, ".autoresearch", "fleet.sqlite"));
+      const status = store.snapshot(fixture.root, { workerId: "w1", recent: 1 }).workers[0]?.status;
+      store.close();
+      return status === "idle";
+    });
+    for (const listener of fixture.records.clients[0].events) {
+      listener({ type: "extension_error", error: "terminal worker failure" });
+    }
+    await waitFor(() => fixture.harness.sentMessages.length === 1);
+    await fixture.harness.emit("session_shutdown", { reason: "reload" });
+
+    restored = createParentHarness({ cwd: fixture.root, supervisor: fixture.supervisor });
+    await restored.emit("session_start", { reason: "reload" });
+
+    assert.equal(restored.sentMessages.length, 0);
+    assert.ok(restored.activeTools().includes("autoresearch_inspect"));
+    assert.ok(restored.activeTools().includes("autoresearch_control"));
+    const widget = restored.widgets.find((item) => typeof item.value === "function");
+    const component = widget.value(
+      { requestRender() {} },
+      { fg: (_color, value) => value, bold: (value) => value },
+    );
+    const lines = component.render(220);
+    assert.match(lines[0], /^┌─ autoresearch · paused · 2 workers/);
+    assert.match(lines[1], /× failed/, "reload preserves terminal worker state");
+    assert.match(lines[2], /■ paused/);
+
+    await restored.commands.get("autoresearch").handler("status", restored.ctx);
+    assert.match(restored.notifications.at(-1).message, /fleet is paused, generation 1, 2 workers/i);
+  } finally {
+    if (restored) await restored.emit("session_shutdown", { reason: "quit" });
     rmSync(fixture.dir, { recursive: true, force: true });
   }
 });
@@ -1038,6 +1516,42 @@ test("parent control rejects ambiguous session UUID prefixes", async () => {
   }
 });
 
+test("parent RPC progress events do not overwrite a worker terminal checkpoint", async () => {
+  const fixture = createSupervisorFixture();
+  let workerStore;
+  try {
+    await fixture.harness.emit("session_start", { reason: "startup" });
+    await fixture.harness.commands.get("autoresearch").handler("1", fixture.harness.ctx);
+    await waitFor(() => fixture.records.prompts.length === 1);
+    const client = fixture.records.clients[0];
+    workerStore = new FleetStore(client.options.env.AUTORESEARCH_FLEET_DB, {
+      canonicalRoot: fixture.root,
+      workerId: "w1",
+      sessionId: client.options.env.AUTORESEARCH_SESSION_ID,
+      generation: Number(client.options.env.AUTORESEARCH_GENERATION),
+      token: client.options.env.AUTORESEARCH_WORKER_TOKEN,
+    });
+    workerStore.checkpoint({
+      campaign: "campaign",
+      hypothesis: "hypothesis",
+      stage: "decision",
+      status: "decision",
+      summary: "Awaiting operator decision",
+    });
+    for (const listener of client.events) listener({ type: "tool_execution_start", toolName: "autoresearch_worker_state" });
+    const inspection = await fixture.harness.tools.get("autoresearch_inspect").execute("inspect", {
+      scope: "worker",
+      worker: "w1",
+      view: "summary",
+    });
+    assert.equal(inspection.details.workers[0].status, "decision");
+  } finally {
+    workerStore?.close();
+    await fixture.harness.emit("session_shutdown", { reason: "quit" });
+    rmSync(fixture.dir, { recursive: true, force: true });
+  }
+});
+
 test("parent RPC errors do not overwrite a terminal worker checkpoint", async () => {
   const fixture = createSupervisorFixture();
   let workerStore;
@@ -1080,7 +1594,7 @@ test("parent RPC errors do not overwrite a terminal worker checkpoint", async ()
 });
 
 test("sync fails closed with active evidence and preserves a candidate ref after explicit reconciliation", async () => {
-  const fixture = createSupervisorFixture();
+  const fixture = createSupervisorFixture({ autoAdmission: false });
   try {
     await fixture.harness.emit("session_start", { reason: "startup" });
     await fixture.harness.commands.get("autoresearch").handler("1", fixture.harness.ctx);
@@ -1236,6 +1750,28 @@ test("worker role exposes only worker coordination, checkpoints through the tool
     assert.equal(structured.champion_commit, "champion-sha");
     assert.equal(structured.continuation_command, "scripts/launch-evidence run-1");
     assert.deepEqual(structured.launch_receipt, { pid: 42 });
+    assert.equal(fleet.parent.snapshot(fleet.root, { workerId: "w1" }).workers[0].task, "campaign");
+
+    for (const handler of handlers.get("tool_execution_start") ?? []) {
+      await handler({ toolName: "bash" }, ctx);
+    }
+    for (const handler of handlers.get("tool_execution_end") ?? []) {
+      await handler({ toolName: "bash", isError: false }, ctx);
+    }
+    for (const handler of handlers.get("message_end") ?? []) {
+      await handler({
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Measured candidate behavior" }],
+          usage: { totalTokens: 12_345, cost: { total: 0.012 } },
+        },
+      }, ctx);
+    }
+    const metrics = fleet.parent.snapshot(fleet.root, { workerId: "w1" }).workers[0];
+    assert.equal(metrics.turns, 1);
+    assert.equal(metrics.tool_calls, 1);
+    assert.equal(metrics.context_tokens, 12_345);
+    assert.equal(metrics.cost, 0.012);
 
     await assert.rejects(
       () => workerTool.execute("call", { action: "reserve_evidence", stage: "screen" }),
@@ -1264,6 +1800,7 @@ test("worker role exposes only worker coordination, checkpoints through the tool
       reservationId,
       receipt: { terminalStatus: "complete" },
     });
+
     const contexts = [];
     for (const handler of handlers.get("before_agent_start") ?? []) contexts.push(await handler({}, ctx));
     assert.match(contexts[0].message.content, /shared snapshot for w1/);
@@ -1322,6 +1859,15 @@ test("fleet status, restart, and off use supervisor semantics with stable genera
     assert.equal(restarted.options.args[restarted.options.args.indexOf("--session-id") + 1], firstSession);
     assert.equal(restarted.options.args[restarted.options.args.indexOf("--session-dir") + 1], firstSessionDir);
     assert.ok(firstClient.stopped);
+    const matchingHeaders = readdirSync(firstSessionDir).filter((file) => {
+      try {
+        const header = JSON.parse(readFileSync(join(firstSessionDir, file), "utf8").split("\n", 1)[0]);
+        return header.type === "session" && header.id === firstSession;
+      } catch {
+        return false;
+      }
+    });
+    assert.equal(matchingHeaders.length, 1, "restart reuses the prepared session instead of creating a duplicate");
 
     await fixture.harness.commands.get("autoresearch").handler("off", fixture.harness.ctx);
     assert.match(fixture.harness.notifications.at(-1).message, /stopped autoresearch fleet/i);
@@ -1332,6 +1878,12 @@ test("fleet status, restart, and off use supervisor semantics with stable genera
     const stoppedStore = new FleetStore(join(fixture.root, ".autoresearch", "fleet.sqlite"));
     assert.equal(stoppedStore.snapshot(fixture.root).fleet.status, "stopped");
     stoppedStore.close();
+
+    const portfolioPath = join(fixture.root, ".autoresearch", "portfolio.json");
+    const portfolio = JSON.parse(readFileSync(portfolioPath, "utf8"));
+    portfolio.active_assignments = {};
+    for (const hypothesis of Object.values(portfolio.hypotheses)) hypothesis.status = "complete";
+    writeFileSync(portfolioPath, `${JSON.stringify(portfolio)}\n`);
 
     await fixture.harness.commands.get("autoresearch").handler("1", fixture.harness.ctx);
     await waitFor(() => fixture.records.prompts.length === 4);
@@ -1506,21 +2058,45 @@ test("worker terminal toolUse and compaction timeout never trigger automatic rei
   }
 });
 
-test("dashboard and compact contexts expose bounded summaries rather than transcripts", () => {
+test("dashboard mirrors subtask rows with duration, turns, task, and autoresearch metadata", () => {
+  const workers = Array.from({ length: 4 }, (_, index) => ({
+    worker_id: `w${index + 1}`,
+    session_id: testSessionId(index + 1),
+    status: index === 2 ? "blocked" : index === 3 ? "failed" : "running",
+    stage: index === 0 ? "screen" : "scout",
+    current_tool: index === 0 ? "bash" : null,
+    task: `hypothesis-${index + 1}`,
+    summary: `brief result ${index + 1}`,
+    model: "openai-codex/gpt-5.6-luna",
+    thinking: "medium",
+    started_at: 1_000,
+    last_seen: index === 3 ? 61_000 : 120_000,
+    turns: index + 1,
+    tool_calls: index + 3,
+    context_tokens: 12_300,
+    context_window: 272_000,
+    cost: 0.012,
+  }));
   const snapshot = {
     fleet: { status: "active", generation: 2 },
-    workers: [{ worker_id: "w1", session_id: testSessionId(1), status: "running", stage: "test", current_tool: "bash", summary: "brief result", last_seen: 900 }],
+    workers,
     reservations: [{ worker_id: "w1" }],
     checkpoints: [],
     events: [],
     evidence: { active: 1, max: 2 },
   };
-  const lines = fleetDashboardLines(snapshot, { now: 1_000, canonicalHead: "abcdef123456", canonicalDirty: true });
-  assert.match(lines[0], /canonical abcdef12 dirty/);
-  assert.match(lines[1], /w1 00000001 running \| bash/);
-  assert.match(lines.at(-1), /evidence 1\/2/);
+  const lines = fleetDashboardLines(snapshot, { now: 126_000, canonicalHead: "abcdef123456", canonicalDirty: true });
+  assert.equal(lines.length, 5, "one group header plus exactly four worker rows");
+  assert.match(lines[0], /^┌─ autoresearch · active · 4 workers · evidence 1\/2 · canonical abcdef12 dirty/);
+  assert.match(lines[1], /^├─ \[w1:00000001\] ● running\s+02:05/);
+  assert.match(lines[1], /1 turn │ hypothesis-1 · brief result 1 │ Luna · Medium · \$0\.012 · 3 tools · 12\.3k\/272k ctx · screen\/bash · evidence$/);
+  assert.match(lines[3], /! blocked/);
+  assert.match(lines[4], /^└─ \[w4:.*× failed\s+01:00/, "terminal duration freezes at the final heartbeat");
+  assert.doesNotMatch(lines[1], /00:06/, "active duration must not use the recent heartbeat");
+
   const context = compactFleetContext(snapshot);
-  assert.match(context, /brief result/);
+  assert.match(context, /brief result 1/);
+  assert.match(context, /task=hypothesis-1/);
   assert.match(context, /evidence=reserved/);
-  assert.ok(context.length < 1_000);
+  assert.ok(context.length < 2_000);
 });

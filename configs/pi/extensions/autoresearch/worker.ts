@@ -159,17 +159,18 @@ export function registerWorkerAutoresearch(pi: ExtensionAPI, options: WorkerRegi
   pi.registerTool({
     name: AUTORESEARCH_WORKER_TOOL,
     label: "Autoresearch Worker State",
-    description: "Read shared fleet state, checkpoint structured campaign progress, and atomically reserve or release scarce evidence-stage capacity.",
+    description: "Read shared fleet state, publish a structured bounded admission offer, checkpoint campaign progress, and atomically reserve or release scarce evidence-stage capacity.",
     promptSnippet: "Coordinate autoresearch worker state and evidence capacity",
     promptGuidelines: [
-      "Use autoresearch_worker_state to checkpoint material progress and claimed scopes.",
+      "During bounded planning, claim portfolio authority and then use offer_admission exactly once with the assigned campaign ID, hypothesis ID, next stage, and concrete exclusive mutable-resource scopes. Do not use broad track names, campaign themes, model targets, or descriptive labels as claimed scopes. Stop that turn after the offer and wait for supervisor acceptance.",
+      "After acceptance, use autoresearch_worker_state to checkpoint material progress and claimed scopes.",
       "Claim portfolio authority first, then reserve evidence with the exact campaign and stage before paid, detached, or scarce work.",
       "Checkpoint the launch receipt with its reservation_id immediately after launch, and release the reservation with a terminal receipt when finished.",
     ],
     parameters: {
       type: "object",
       properties: {
-        action: { type: "string", enum: ["snapshot", "checkpoint", "reserve_evidence", "release_evidence"] },
+        action: { type: "string", enum: ["snapshot", "offer_admission", "checkpoint", "reserve_evidence", "release_evidence"] },
         campaign: { type: "string" },
         hypothesis: { type: "string" },
         stage: { type: "string" },
@@ -194,6 +195,23 @@ export function registerWorkerAutoresearch(pi: ExtensionAPI, options: WorkerRegi
     async execute(_toolCallId, params) {
       if (params.action === "snapshot") {
         return { content: [{ type: "text", text: toolText(store.snapshot(parsed.identity.canonicalRoot, { recent: params.recent })) }], details: {} };
+      }
+      if (params.action === "offer_admission") {
+        if (!params.campaign?.trim() || !params.hypothesis?.trim() || !params.stage?.trim()
+          || !Array.isArray(params.claimedScopes) || params.claimedScopes.length === 0) {
+          throw new Error("offer_admission requires campaign, hypothesis, stage, and claimedScopes");
+        }
+        const offer = store.offerAdmission({
+          campaign: params.campaign,
+          hypothesis: params.hypothesis,
+          stage: params.stage,
+          claimedScopes: params.claimedScopes,
+          summary: params.summary,
+        });
+        return {
+          content: [{ type: "text", text: `Admission offer checkpoint ${offer.checkpointId} published. End this turn and wait for supervisor acceptance before mutation.` }],
+          details: offer,
+        };
       }
       if (params.action === "checkpoint") {
         const checkpointId = store.checkpoint({
@@ -263,6 +281,7 @@ export function registerWorkerAutoresearch(pi: ExtensionAPI, options: WorkerRegi
   });
   pi.on("tool_execution_start", (event) => {
     if (!canContinue()) return;
+    store.recordToolCall();
     store.workerHeartbeat({ status: "running", currentTool: event.toolName });
     store.addEvent("tool_start", event.toolName);
   });
@@ -272,9 +291,17 @@ export function registerWorkerAutoresearch(pi: ExtensionAPI, options: WorkerRegi
     if (event.isError) store.addEvent("tool_failed", event.toolName);
   });
   pi.on("message_end", (event) => {
-    if (!canContinue()) return;
+    const admissionOffered = store.snapshot(parsed.identity.canonicalRoot, { workerId: parsed.identity.workerId, recent: 1 })
+      .admissions[0]?.state === "offered";
+    if (!canContinue() && !admissionOffered) return;
+    if (event.message.role === "assistant") {
+      store.recordTurnUsage({
+        contextTokens: event.message.usage?.totalTokens,
+        cost: event.message.usage?.cost?.total,
+      });
+    }
     const snippet = assistantSnippet(event.message);
-    if (snippet) {
+    if (snippet && canContinue()) {
       store.workerHeartbeat({ summary: snippet });
       store.addEvent("assistant_final", snippet);
     }

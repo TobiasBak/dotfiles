@@ -1,8 +1,41 @@
 import type { FleetSnapshot } from "./state.ts";
 
+export type FleetWidgetSegmentRole = "frame" | "group" | "status" | "model" | "metadata" | "summary";
+
+export interface FleetWidgetLine {
+  kind: "group" | "worker";
+  status?: string;
+  segments: Array<{ role: FleetWidgetSegmentRole; text: string }>;
+}
+
+export interface FleetDashboardOptions {
+  now?: number;
+  canonicalHead?: string;
+  canonicalDirty?: boolean;
+  canonicalChanged?: boolean;
+  protocolChanged?: boolean;
+}
+
+const STATUS_PRESENTATION: Record<string, { marker: string; label: string }> = {
+  queued: { marker: "○", label: "queued" },
+  launching: { marker: "○", label: "launching" },
+  running: { marker: "●", label: "running" },
+  idle: { marker: "○", label: "idle" },
+  paused: { marker: "■", label: "paused" },
+  blocked: { marker: "!", label: "blocked" },
+  decision: { marker: "!", label: "decision" },
+  failed: { marker: "×", label: "failed" },
+  complete: { marker: "✓", label: "done" },
+  stopped: { marker: "■", label: "stopped" },
+};
+
 function text(value: unknown, fallback = "-"): string {
   if (typeof value !== "string" || value.trim().length === 0) return fallback;
   return value.replace(/\s+/g, " ").trim();
+}
+
+function finiteNumber(value: unknown, fallback = 0): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
 function shortSessionId(value: unknown): string {
@@ -15,39 +48,111 @@ function clip(value: unknown, length: number): string {
 }
 
 export function formatElapsed(since: unknown, now = Date.now()): string {
-  if (typeof since !== "number" || !Number.isFinite(since)) return "-";
-  const seconds = Math.max(0, Math.floor((now - since) / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  return `${Math.floor(minutes / 60)}h${minutes % 60}m`;
+  if (typeof since !== "number" || !Number.isFinite(since)) return "--:--";
+  const totalSeconds = Math.max(0, Math.floor((now - since) / 1_000));
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  const clock = [minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
+  return hours > 0 ? `${String(hours).padStart(2, "0")}:${clock}` : clock;
 }
 
-export function fleetDashboardLines(snapshot: FleetSnapshot, options: {
-  now?: number;
-  canonicalHead?: string;
-  canonicalDirty?: boolean;
-  canonicalChanged?: boolean;
-  protocolChanged?: boolean;
-} = {}): string[] {
+function formatTokens(value: unknown): string {
+  const tokens = Math.max(0, finiteNumber(value));
+  if (tokens < 1_000) return String(Math.floor(tokens));
+  const thousands = tokens / 1_000;
+  return `${Number.isInteger(thousands) ? thousands : thousands.toFixed(1)}k`;
+}
+
+function formatModel(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  const id = value.split("/").at(-1) ?? value;
+  if (id.endsWith("-sol")) return "Sol";
+  if (id.endsWith("-luna")) return "Luna";
+  return id;
+}
+
+function formatThinking(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  return `${value[0]?.toUpperCase()}${value.slice(1)}`;
+}
+
+function workerTask(worker: Record<string, unknown>): string {
+  const task = text(worker.task, text(worker.summary, "Claiming a campaign"));
+  const summary = text(worker.summary, "");
+  return summary && summary !== task ? `${task} · ${summary}` : task;
+}
+
+export function fleetDashboardWidgetLines(
+  snapshot: FleetSnapshot,
+  options: FleetDashboardOptions = {},
+): FleetWidgetLine[] {
   const now = options.now ?? Date.now();
   const fleetStatus = text(snapshot.fleet?.status, "off");
   const canonical = options.canonicalHead ? options.canonicalHead.slice(0, 8) : "unknown";
   const markers = `${options.canonicalDirty ? " dirty" : ""}${options.canonicalChanged ? " head-changed" : ""}${options.protocolChanged ? " protocol-change" : ""}`;
-  const lines = [`autoresearch fleet ${fleetStatus} | canonical ${canonical}${markers}`];
-  for (const worker of snapshot.workers) {
-    const stage = text(worker.current_tool, text(worker.stage, "idle"));
-    const elapsed = formatElapsed(worker.last_seen ?? worker.started_at, now);
-    lines.push(`${text(worker.worker_id)} ${shortSessionId(worker.session_id)} ${text(worker.status)} | ${clip(stage, 22)} | ${elapsed} | ${clip(worker.summary, 56)}`);
-  }
-  lines.push(`evidence ${snapshot.evidence.active}/${snapshot.evidence.max} active`);
+  const workerCount = snapshot.workers.length;
+  const lines: FleetWidgetLine[] = [{
+    kind: "group",
+    segments: [
+      { role: "frame", text: "┌─ " },
+      { role: "group", text: "autoresearch" },
+      { role: "metadata", text: ` · ${fleetStatus} · ${workerCount} worker${workerCount === 1 ? "" : "s"} · evidence ${snapshot.evidence.active}/${snapshot.evidence.max} · canonical ${canonical}${markers}` },
+    ],
+  }];
+
+  const reservedWorkers = new Set(snapshot.reservations.map((reservation) => String(reservation.worker_id)));
+  snapshot.workers.forEach((worker, index) => {
+    const statusValue = text(worker.status, "idle");
+    const status = STATUS_PRESENTATION[statusValue] ?? { marker: "?", label: statusValue };
+    const connector = index === snapshot.workers.length - 1 ? "└─" : "├─";
+    const turns = Math.max(0, Math.floor(finiteNumber(worker.turns)));
+    const tools = Math.max(0, Math.floor(finiteNumber(worker.tool_calls)));
+    const model = formatModel(worker.model);
+    const thinking = formatThinking(worker.thinking);
+    const contextWindow = Math.max(0, finiteNumber(worker.context_window));
+    const stage = text(worker.stage, "");
+    const currentTool = text(worker.current_tool, "");
+    const activity = [stage, currentTool].filter(Boolean).join("/");
+    const modelLabel = model && [model, thinking].filter(Boolean).join(" · ");
+    const metadata = [
+      `$${Math.max(0, finiteNumber(worker.cost)).toFixed(3)}`,
+      `${tools} tool${tools === 1 ? "" : "s"}`,
+      contextWindow > 0 ? `${formatTokens(worker.context_tokens)}/${formatTokens(contextWindow)} ctx` : undefined,
+      activity || undefined,
+      reservedWorkers.has(String(worker.worker_id)) ? "evidence" : undefined,
+    ].filter((item): item is string => Boolean(item));
+    const elapsedUntil = ["complete", "failed", "stopped"].includes(statusValue)
+      ? finiteNumber(worker.last_seen, now)
+      : now;
+    const statusText = `${status.marker} ${status.label.padEnd(9)} ${formatElapsed(worker.started_at, elapsedUntil)}`;
+
+    lines.push({
+      kind: "worker",
+      status: statusValue,
+      segments: [
+        { role: "frame", text: `${connector} [${text(worker.worker_id)}:${shortSessionId(worker.session_id)}] ` },
+        { role: "status", text: statusText },
+        { role: "metadata", text: `  ${turns} turn${turns === 1 ? "" : "s"}` },
+        { role: "frame", text: " │ " },
+        { role: "summary", text: workerTask(worker) },
+        ...(modelLabel || metadata.length > 0 ? [{ role: "frame" as const, text: " │ " }] : []),
+        ...(modelLabel ? [{ role: "model" as const, text: modelLabel }] : []),
+        ...(metadata.length > 0 ? [{ role: "metadata" as const, text: `${modelLabel ? " · " : ""}${metadata.join(" · ")}` }] : []),
+      ],
+    });
+  });
   return lines;
+}
+
+export function fleetDashboardLines(snapshot: FleetSnapshot, options: FleetDashboardOptions = {}): string[] {
+  return fleetDashboardWidgetLines(snapshot, options).map((line) => line.segments.map((segment) => segment.text).join(""));
 }
 
 export function compactFleetContext(snapshot: FleetSnapshot): string {
   const rows = snapshot.workers.map((worker) => {
     const reservation = snapshot.reservations.some((item) => item.worker_id === worker.worker_id) ? " evidence=reserved" : "";
-    return `- ${text(worker.worker_id)} ${shortSessionId(worker.session_id)}: ${text(worker.status)}; stage=${text(worker.stage)}; tool=${text(worker.current_tool)}; summary=${clip(worker.summary, 180)}${reservation}`;
+    return `- ${text(worker.worker_id)} ${shortSessionId(worker.session_id)}: ${text(worker.status)}; stage=${text(worker.stage)}; tool=${text(worker.current_tool)}; task=${clip(worker.task, 120)}; summary=${clip(worker.summary, 180)}${reservation}`;
   });
   return [
     `[autoresearch fleet snapshot; operational state, not Git truth; generation ${String(snapshot.fleet?.generation ?? "?")}]`,

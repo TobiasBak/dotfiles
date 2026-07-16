@@ -156,7 +156,7 @@ export function registerLegacyAutoresearch(
   {
     startTimeoutMs = 30_000,
     compactionTimeoutMs = 180_000,
-    statusIntervalMs = 1_000,
+    statusIntervalMs = 5_000,
     loadProgram = (ctx) => readFileSync(resolve(ctx.cwd, "program.md"), "utf8"),
     now = Date.now,
     fleetCommandHandler,
@@ -413,6 +413,15 @@ export function registerLegacyAutoresearch(
           return;
         }
         fleetCommandHandler.start(fleetCount, ctx);
+        return;
+      }
+      if (!requestedAction && fleetCommandHandler && await fleetCommandHandler.stop(ctx)) {
+        if (enabled) persist(false);
+        runtimeGeneration += 1;
+        clearScheduled();
+        clearStartWatchdog();
+        cancelCompaction();
+        setPhase(ctx, "off");
         return;
       }
       const action = requestedAction || (enabled ? "off" : "on");

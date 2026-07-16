@@ -3,10 +3,11 @@ import { closeSync, constants as fsConstants, fstatSync, mkdirSync, openSync, re
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-export const AUTORESEARCH_PROTOCOL_VERSION = 1;
+export const AUTORESEARCH_PROTOCOL_VERSION = 2;
 export const DEFAULT_MAX_EVIDENCE_STAGES = 2;
 
 export type WorkerStatus =
+  | "queued"
   | "launching"
   | "running"
   | "idle"
@@ -34,6 +35,14 @@ export interface WorkerSeed {
   sessionsRoot: string;
 }
 
+export interface AdmissionOfferInput {
+  campaign: string;
+  hypothesis: string;
+  stage: string;
+  claimedScopes: string[];
+  summary?: string;
+}
+
 export interface CheckpointInput {
   campaign?: string;
   hypothesis?: string;
@@ -55,6 +64,7 @@ export interface FleetSnapshot {
   fleet: Record<string, unknown> | null;
   workers: Array<Record<string, unknown>>;
   reservations: Array<Record<string, unknown>>;
+  admissions: Array<Record<string, unknown>>;
   checkpoints: Array<Record<string, unknown>>;
   events: Array<Record<string, unknown>>;
   evidence: { active: number; max: number };
@@ -106,13 +116,14 @@ function requireTerminalReceipt(value: unknown): Record<string, unknown> {
   throw new Error("release_evidence requires a non-empty structured terminal receipt");
 }
 
-function requirePortfolioCampaign(identity: WorkerIdentity, campaign: string): void {
+function requirePortfolioAssignment(identity: WorkerIdentity, campaign: string, hypothesis?: string, required = false): void {
   const portfolioPath = join(identity.canonicalRoot, ".autoresearch", "portfolio.json");
   let descriptor: number;
   try {
     descriptor = openSync(portfolioPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" && !required) return;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new FenceError("portfolio assignment is required for campaign admission");
     throw new Error("portfolio assignment is unavailable or unsafe", { cause: error });
   }
   try {
@@ -126,15 +137,22 @@ function requirePortfolioCampaign(identity: WorkerIdentity, campaign: string): v
     } catch (error) {
       throw new Error("portfolio assignment is malformed", { cause: error });
     }
-    if (!isNonEmptyRecord(state) || state.schema_version !== 2 || !isNonEmptyRecord(state.active_assignments)) {
+    if (!isNonEmptyRecord(state) || state.schema_version !== 2 || !isNonEmptyRecord(state.active_assignments)
+      || (required && (!Number.isInteger(state.revision) || !isNonEmptyRecord(state.hypotheses)))) {
       throw new Error("portfolio assignment schema is incompatible with fleet admission");
     }
     const assignment = state.active_assignments[identity.workerId];
+    const assignedHypothesis = required && isNonEmptyRecord(state.hypotheses)
+      && isNonEmptyRecord(assignment) && typeof assignment.hypothesis_id === "string"
+      ? state.hypotheses[assignment.hypothesis_id]
+      : undefined;
     const tokenDigest = createHash("sha256").update(identity.token).digest("hex");
     if (!isNonEmptyRecord(assignment)
       || assignment.worker_id !== identity.workerId
       || assignment.campaign_id !== campaign
-      || assignment.worker_token_sha256 !== tokenDigest) {
+      || (hypothesis !== undefined && assignment.hypothesis_id !== hypothesis)
+      || assignment.worker_token_sha256 !== tokenDigest
+      || (required && (!isNonEmptyRecord(assignedHypothesis) || assignedHypothesis.status !== "active"))) {
       throw new FenceError("evidence campaign is not owned by the fenced portfolio worker");
     }
   } finally {
@@ -160,6 +178,7 @@ export class FleetStore {
         canonical_head TEXT,
         protocol_version INTEGER NOT NULL,
         max_evidence_stages INTEGER NOT NULL,
+        max_workers INTEGER NOT NULL DEFAULT 1,
         started_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         stopped_at INTEGER
@@ -179,6 +198,14 @@ export class FleetStore {
         current_tool TEXT,
         summary TEXT,
         error TEXT,
+        task TEXT,
+        model TEXT,
+        thinking TEXT,
+        context_window INTEGER NOT NULL DEFAULT 0,
+        context_tokens INTEGER NOT NULL DEFAULT 0,
+        cost REAL NOT NULL DEFAULT 0,
+        turns INTEGER NOT NULL DEFAULT 0,
+        tool_calls INTEGER NOT NULL DEFAULT 0,
         started_at INTEGER NOT NULL,
         last_seen INTEGER NOT NULL,
         head TEXT,
@@ -187,6 +214,36 @@ export class FleetStore {
         PRIMARY KEY (canonical_root, worker_id),
         FOREIGN KEY (canonical_root) REFERENCES fleets(canonical_root) ON DELETE CASCADE
       );
+      CREATE TABLE IF NOT EXISTS admissions (
+        canonical_root TEXT NOT NULL,
+        worker_id TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        token TEXT NOT NULL,
+        state TEXT NOT NULL,
+        campaign TEXT,
+        hypothesis TEXT,
+        stage TEXT,
+        claimed_scopes TEXT NOT NULL DEFAULT '[]',
+        checkpoint_id INTEGER,
+        reason TEXT,
+        started_at INTEGER,
+        elapsed_ms INTEGER NOT NULL DEFAULT 0,
+        resolved_at INTEGER,
+        baseline_cost REAL NOT NULL DEFAULT 0,
+        baseline_turns INTEGER NOT NULL DEFAULT 0,
+        baseline_tool_calls INTEGER NOT NULL DEFAULT 0,
+        baseline_head TEXT,
+        baseline_dirty INTEGER NOT NULL DEFAULT 0,
+        max_cost REAL NOT NULL DEFAULT 0.5,
+        max_turns INTEGER NOT NULL DEFAULT 8,
+        max_tool_calls INTEGER NOT NULL DEFAULT 16,
+        timeout_ms INTEGER NOT NULL DEFAULT 60000,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (canonical_root, worker_id),
+        FOREIGN KEY (canonical_root, worker_id) REFERENCES workers(canonical_root, worker_id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS admissions_generation_state
+        ON admissions(canonical_root, generation, state, worker_id);
       CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         canonical_root TEXT NOT NULL,
@@ -234,9 +291,28 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS evidence_active
         ON evidence_reservations(canonical_root, status, id);
     `);
+    this.ensureFleetAdmissionColumns();
+    this.ensureAdmissionColumns();
     this.ensureWorkerSessionColumn();
+    this.ensureWorkerDashboardColumns();
     this.ensureCheckpointColumns();
     this.ensureEvidenceReservationColumns();
+  }
+
+  private ensureFleetAdmissionColumns(): void {
+    const existing = new Set(
+      (this.db.prepare("PRAGMA table_info(fleets)").all() as Array<{ name: string }>).map((column) => column.name),
+    );
+    if (!existing.has("max_workers")) this.db.exec("ALTER TABLE fleets ADD COLUMN max_workers INTEGER NOT NULL DEFAULT 1");
+  }
+
+  private ensureAdmissionColumns(): void {
+    const existing = new Set(
+      (this.db.prepare("PRAGMA table_info(admissions)").all() as Array<{ name: string }>).map((column) => column.name),
+    );
+    if (!existing.has("elapsed_ms")) this.db.exec("ALTER TABLE admissions ADD COLUMN elapsed_ms INTEGER NOT NULL DEFAULT 0");
+    if (!existing.has("baseline_head")) this.db.exec("ALTER TABLE admissions ADD COLUMN baseline_head TEXT");
+    if (!existing.has("baseline_dirty")) this.db.exec("ALTER TABLE admissions ADD COLUMN baseline_dirty INTEGER NOT NULL DEFAULT 0");
   }
 
   private ensureWorkerSessionColumn(): void {
@@ -248,6 +324,25 @@ export class FleetStore {
       CREATE UNIQUE INDEX IF NOT EXISTS workers_unique_session
         ON workers(canonical_root, lower(session_id)) WHERE session_id IS NOT NULL;
     `);
+  }
+
+  private ensureWorkerDashboardColumns(): void {
+    const existing = new Set(
+      (this.db.prepare("PRAGMA table_info(workers)").all() as Array<{ name: string }>).map((column) => column.name),
+    );
+    const columns = [
+      ["task", "TEXT"],
+      ["model", "TEXT"],
+      ["thinking", "TEXT"],
+      ["context_window", "INTEGER NOT NULL DEFAULT 0"],
+      ["context_tokens", "INTEGER NOT NULL DEFAULT 0"],
+      ["cost", "REAL NOT NULL DEFAULT 0"],
+      ["turns", "INTEGER NOT NULL DEFAULT 0"],
+      ["tool_calls", "INTEGER NOT NULL DEFAULT 0"],
+    ] as const;
+    for (const [name, type] of columns) {
+      if (!existing.has(name)) this.db.exec(`ALTER TABLE workers ADD COLUMN ${name} ${type}`);
+    }
   }
 
   private ensureCheckpointColumns(): void {
@@ -301,10 +396,15 @@ export class FleetStore {
 
   private assertFence(): WorkerIdentity {
     const identity = this.requireIdentity();
-    const row = this.db
-      .prepare("SELECT generation, token FROM workers WHERE canonical_root=? AND worker_id=?")
-      .get(identity.canonicalRoot, identity.workerId) as { generation?: number; token?: string } | undefined;
-    if (!row || row.generation !== identity.generation || row.token !== identity.token) {
+    const row = this.db.prepare(`
+      SELECT w.generation,w.token,f.status AS fleet_status,f.generation AS fleet_generation
+      FROM workers w JOIN fleets f ON f.canonical_root=w.canonical_root
+      WHERE w.canonical_root=? AND w.worker_id=?
+    `).get(identity.canonicalRoot, identity.workerId) as {
+      generation?: number; token?: string; fleet_status?: string; fleet_generation?: number;
+    } | undefined;
+    if (!row || row.generation !== identity.generation || row.fleet_generation !== identity.generation
+      || row.token !== identity.token || !["launching", "active"].includes(row.fleet_status ?? "")) {
       throw new FenceError(`Stale autoresearch worker fence for ${identity.workerId}`);
     }
     return identity;
@@ -315,6 +415,7 @@ export class FleetStore {
     parentSession?: string;
     canonicalHead?: string;
     maxEvidenceStages?: number;
+    admission?: { timeoutMs: number; maxCost: number; maxTurns: number; maxToolCalls: number };
     workers: WorkerSeed[];
     now?: number;
   }): number {
@@ -358,30 +459,46 @@ export class FleetStore {
       }
       const generation = (previous?.generation ?? 0) + 1;
       this.db.prepare(`
-        INSERT INTO fleets(canonical_root,generation,status,parent_session,canonical_head,protocol_version,max_evidence_stages,started_at,updated_at,stopped_at)
-        VALUES(?,?,?,?,?,?,?,?,?,NULL)
+        INSERT INTO fleets(canonical_root,generation,status,parent_session,canonical_head,protocol_version,max_evidence_stages,max_workers,started_at,updated_at,stopped_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,NULL)
         ON CONFLICT(canonical_root) DO UPDATE SET
           generation=excluded.generation,status=excluded.status,parent_session=excluded.parent_session,
           canonical_head=excluded.canonical_head,protocol_version=excluded.protocol_version,
-          max_evidence_stages=excluded.max_evidence_stages,started_at=excluded.started_at,
-          updated_at=excluded.updated_at,stopped_at=NULL
+          max_evidence_stages=excluded.max_evidence_stages,max_workers=excluded.max_workers,
+          started_at=excluded.started_at,updated_at=excluded.updated_at,stopped_at=NULL
       `).run(input.canonicalRoot, generation, "launching", input.parentSession ?? null, input.canonicalHead ?? null,
-        AUTORESEARCH_PROTOCOL_VERSION, maxEvidence, now, now);
+        AUTORESEARCH_PROTOCOL_VERSION, maxEvidence, input.workers.length, now, now);
       const upsert = this.db.prepare(`
         INSERT INTO workers(canonical_root,worker_id,generation,token,worktree,branch,session_id,session_dir,status,started_at,last_seen,protocol_version)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(canonical_root,worker_id) DO UPDATE SET
           generation=excluded.generation,token=excluded.token,worktree=excluded.worktree,branch=excluded.branch,
           session_id=excluded.session_id,session_dir=excluded.session_dir,session_file=NULL,status=excluded.status,
-          stage=NULL,current_tool=NULL,summary=NULL,error=NULL,started_at=excluded.started_at,last_seen=excluded.last_seen,
+          stage=NULL,current_tool=NULL,summary=NULL,error=NULL,task=NULL,model=NULL,thinking=NULL,
+          context_window=0,context_tokens=0,cost=0,turns=0,tool_calls=0,
+          started_at=excluded.started_at,last_seen=excluded.last_seen,
           head=NULL,dirty=0,protocol_version=excluded.protocol_version
       `);
-      for (const worker of input.workers) {
+      const admission = input.admission ?? { timeoutMs: 60_000, maxCost: 0.5, maxTurns: 8, maxToolCalls: 16 };
+      const upsertAdmission = this.db.prepare(`
+        INSERT INTO admissions(canonical_root,worker_id,generation,token,state,claimed_scopes,baseline_cost,baseline_turns,baseline_tool_calls,max_cost,max_turns,max_tool_calls,timeout_ms,updated_at)
+        VALUES(?,?,?,?,?,'[]',0,0,0,?,?,?,?,?)
+        ON CONFLICT(canonical_root,worker_id) DO UPDATE SET
+          generation=excluded.generation,token=excluded.token,state=excluded.state,campaign=NULL,hypothesis=NULL,
+          stage=NULL,claimed_scopes='[]',checkpoint_id=NULL,reason=NULL,started_at=NULL,elapsed_ms=0,resolved_at=NULL,
+          baseline_cost=0,baseline_turns=0,baseline_tool_calls=0,baseline_head=NULL,baseline_dirty=0,
+          max_cost=excluded.max_cost,
+          max_turns=excluded.max_turns,max_tool_calls=excluded.max_tool_calls,timeout_ms=excluded.timeout_ms,
+          updated_at=excluded.updated_at
+      `);
+      for (const [index, worker] of input.workers.entries()) {
         upsert.run(input.canonicalRoot, worker.workerId, generation, worker.token, worker.worktree,
           worker.branch, worker.sessionId, join(worker.sessionsRoot, `generation-${generation}`),
-          "launching", now, now, AUTORESEARCH_PROTOCOL_VERSION);
+          index === 0 ? "launching" : "queued", now, now, AUTORESEARCH_PROTOCOL_VERSION);
+        upsertAdmission.run(input.canonicalRoot, worker.workerId, generation, worker.token, "queued",
+          admission.maxCost, admission.maxTurns, admission.maxToolCalls, admission.timeoutMs, now);
       }
-      this.addEventUnsafe(input.canonicalRoot, null, generation, "fleet_launch", `${input.workers.length} workers launching`, now);
+      this.addEventUnsafe(input.canonicalRoot, null, generation, "fleet_launch", `${input.workers.length} worker slots reserved; w1 admission launching`, now);
       return generation;
     });
   }
@@ -397,6 +514,196 @@ export class FleetStore {
       .run(status, now, ["off", "stopped"].includes(status) ? now : null, canonicalRoot);
   }
 
+  claimNextQueuedAdmission(canonicalRoot: string, generation: number, now = Date.now()): Record<string, unknown> | undefined {
+    return this.transaction(() => {
+      const row = this.db.prepare(`
+        SELECT w.* FROM admissions a JOIN workers w
+          ON w.canonical_root=a.canonical_root AND w.worker_id=a.worker_id AND w.generation=a.generation
+        WHERE a.canonical_root=? AND a.generation=? AND a.state='queued' AND w.status='queued'
+        ORDER BY a.worker_id LIMIT 1
+      `).get(canonicalRoot, generation) as Record<string, unknown> | undefined;
+      if (!row) return undefined;
+      const result = this.db.prepare(`
+        UPDATE workers SET status='launching',last_seen=?
+        WHERE canonical_root=? AND worker_id=? AND generation=? AND token=? AND status='queued'
+      `).run(now, canonicalRoot, String(row.worker_id), generation, String(row.token));
+      if (Number(result.changes) !== 1) return undefined;
+      row.status = "launching";
+      this.addEventUnsafe(canonicalRoot, String(row.worker_id), generation, "admission_claimed", "queued planner claimed", now);
+      return row;
+    });
+  }
+
+  beginAdmission(canonicalRoot: string, workerId: string, generation: number, laneState: { head: string; dirty: boolean }, now = Date.now()): void {
+    this.transaction(() => {
+      const worker = this.db.prepare(`
+        SELECT token,cost,turns,tool_calls FROM workers
+        WHERE canonical_root=? AND worker_id=? AND generation=?
+      `).get(canonicalRoot, workerId, generation) as Record<string, unknown> | undefined;
+      if (!worker) throw new FenceError(`Missing current worker fence for ${workerId}`);
+      const admission = this.db.prepare(`
+        SELECT state,token,elapsed_ms,baseline_cost,baseline_turns,baseline_tool_calls,baseline_head,baseline_dirty FROM admissions
+        WHERE canonical_root=? AND worker_id=? AND generation=?
+      `).get(canonicalRoot, workerId, generation) as Record<string, unknown> | undefined;
+      if (!admission || admission.token !== worker.token) throw new FenceError(`Admission fence is unavailable for ${workerId}`);
+      if (admission.state === "admitted" || admission.state === "planning") return;
+      if (!["queued", "blocked"].includes(String(admission.state))) throw new FenceError(`Admission fence is unavailable for ${workerId}`);
+      const retry = admission.state === "blocked";
+      const elapsed = retry ? 0 : Math.max(0, Number(admission.elapsed_ms ?? 0));
+      const result = this.db.prepare(`
+        UPDATE admissions SET state='planning',campaign=NULL,hypothesis=NULL,stage=NULL,claimed_scopes='[]',
+          checkpoint_id=NULL,reason=NULL,started_at=?,elapsed_ms=?,resolved_at=NULL,baseline_cost=?,baseline_turns=?,
+          baseline_tool_calls=?,baseline_head=?,baseline_dirty=?,updated_at=?
+        WHERE canonical_root=? AND worker_id=? AND generation=? AND token=? AND state=?
+      `).run(now - elapsed, elapsed,
+        retry ? Number(worker.cost ?? 0) : Number(admission.baseline_cost ?? 0),
+        retry ? Number(worker.turns ?? 0) : Number(admission.baseline_turns ?? 0),
+        retry ? Number(worker.tool_calls ?? 0) : Number(admission.baseline_tool_calls ?? 0),
+        retry || typeof admission.baseline_head !== "string" ? laneState.head : admission.baseline_head,
+        retry || typeof admission.baseline_head !== "string" ? (laneState.dirty ? 1 : 0) : Number(admission.baseline_dirty ?? 0),
+        now, canonicalRoot, workerId, generation, String(worker.token), String(admission.state));
+      if (Number(result.changes) !== 1) throw new FenceError(`Admission fence is unavailable for ${workerId}`);
+      this.addEventUnsafe(canonicalRoot, workerId, generation, "admission_planning", "bounded campaign admission started", now);
+    });
+  }
+
+  offerAdmission(input: AdmissionOfferInput, now = Date.now()): { offered: true; checkpointId: number } {
+    const campaign = input.campaign.trim();
+    const hypothesis = input.hypothesis.trim();
+    const stage = input.stage.trim();
+    const scopes = [...new Set(input.claimedScopes.map((scope) => scope.trim()))];
+    if (!campaign || !hypothesis || !stage || scopes.length === 0 || scopes.some((scope) => !scope)) {
+      throw new Error("admission offer requires exact campaign, hypothesis, stage, and non-empty claimed scopes");
+    }
+    return this.transaction(() => {
+      const identity = this.assertFence();
+      requirePortfolioAssignment(identity, campaign, hypothesis, true);
+      const admission = this.db.prepare(`
+        SELECT * FROM admissions WHERE canonical_root=? AND worker_id=? AND generation=? AND token=?
+      `).get(identity.canonicalRoot, identity.workerId, identity.generation, identity.token) as Record<string, unknown> | undefined;
+      if (!admission || admission.state !== "planning") throw new FenceError("campaign admission is not in the planning state");
+      const worker = this.db.prepare(`
+        SELECT cost,turns,tool_calls FROM workers
+        WHERE canonical_root=? AND worker_id=? AND generation=? AND token=?
+      `).get(identity.canonicalRoot, identity.workerId, identity.generation, identity.token) as Record<string, unknown>;
+      const elapsed = now - Number(admission.started_at ?? now);
+      const cost = Number(worker.cost ?? 0) - Number(admission.baseline_cost ?? 0);
+      const turns = Number(worker.turns ?? 0) - Number(admission.baseline_turns ?? 0);
+      const toolCalls = Number(worker.tool_calls ?? 0) - Number(admission.baseline_tool_calls ?? 0);
+      if (Number(admission.timeout_ms) > 0 && elapsed > Number(admission.timeout_ms)) throw new Error("campaign admission time budget exhausted");
+      if (Number(admission.max_cost) >= 0 && cost > Number(admission.max_cost)) throw new Error("campaign admission cost budget exhausted");
+      if (Number(admission.max_turns) >= 0 && turns > Number(admission.max_turns)) throw new Error("campaign admission turn budget exhausted");
+      if (Number(admission.max_tool_calls) >= 0 && toolCalls > Number(admission.max_tool_calls)) throw new Error("campaign admission tool budget exhausted");
+      const summary = input.summary?.trim() || `Admission offer for ${campaign}`;
+      const checkpoint = this.db.prepare(`
+        INSERT INTO checkpoints(canonical_root,worker_id,generation,campaign,hypothesis,stage,status,summary,findings,blockers,next_actions,run_ids,claimed_scopes,candidate_commit,champion_commit,continuation_command,launch_receipt,created_at)
+        VALUES(?,?,?,?,?,?,?,?,'[]','[]','[]','[]',?,NULL,NULL,NULL,NULL,?)
+      `).run(identity.canonicalRoot, identity.workerId, identity.generation, campaign, hypothesis, stage,
+        "decision", summary, json(scopes), now);
+      const checkpointId = Number(checkpoint.lastInsertRowid);
+      const updated = this.db.prepare(`
+        UPDATE admissions SET state='offered',campaign=?,hypothesis=?,stage=?,claimed_scopes=?,checkpoint_id=?,
+          reason=NULL,updated_at=? WHERE canonical_root=? AND worker_id=? AND generation=? AND token=? AND state='planning'
+      `).run(campaign, hypothesis, stage, json(scopes), checkpointId, now,
+        identity.canonicalRoot, identity.workerId, identity.generation, identity.token);
+      if (Number(updated.changes) !== 1) throw new FenceError("campaign admission changed while publishing the offer");
+      this.workerHeartbeat({ status: "decision", stage, currentTool: null, task: hypothesis, summary, error: null }, now);
+      this.addEventUnsafe(identity.canonicalRoot, identity.workerId, identity.generation, "admission_offered", campaign.slice(0, 500), now);
+      return { offered: true, checkpointId };
+    });
+  }
+
+  admitOfferedCampaign(canonicalRoot: string, workerId: string, generation: number, now = Date.now()): { admitted: boolean; reason?: string } {
+    return this.transaction(() => {
+      const offer = this.db.prepare(`
+        SELECT a.*,w.session_id,w.cost,w.turns,w.tool_calls FROM admissions a JOIN workers w
+          ON w.canonical_root=a.canonical_root AND w.worker_id=a.worker_id
+        WHERE a.canonical_root=? AND a.worker_id=? AND a.generation=?
+      `).get(canonicalRoot, workerId, generation) as Record<string, unknown> | undefined;
+      if (!offer || offer.state !== "offered") return { admitted: offer?.state === "admitted" };
+      const identity: WorkerIdentity = {
+        canonicalRoot,
+        workerId,
+        generation,
+        token: String(offer.token),
+        sessionId: String(offer.session_id),
+      };
+      requirePortfolioAssignment(identity, String(offer.campaign), String(offer.hypothesis), true);
+      const elapsed = now - Number(offer.started_at ?? now);
+      const cost = Number(offer.cost ?? 0) - Number(offer.baseline_cost ?? 0);
+      const turns = Number(offer.turns ?? 0) - Number(offer.baseline_turns ?? 0);
+      const tools = Number(offer.tool_calls ?? 0) - Number(offer.baseline_tool_calls ?? 0);
+      if (Number(offer.timeout_ms) > 0 && elapsed >= Number(offer.timeout_ms)) return { admitted: false, reason: "campaign admission time budget exhausted" };
+      if (Number(offer.max_cost) >= 0 && cost > Number(offer.max_cost)) return { admitted: false, reason: "campaign admission cost budget exhausted" };
+      if (Number(offer.max_turns) >= 0 && turns > Number(offer.max_turns)) return { admitted: false, reason: "campaign admission turn budget exhausted" };
+      if (Number(offer.max_tool_calls) >= 0 && tools > Number(offer.max_tool_calls)) return { admitted: false, reason: "campaign admission tool budget exhausted" };
+      const scopes = parseJson(offer.claimed_scopes);
+      if (!Array.isArray(scopes) || scopes.length === 0 || scopes.some((scope) => typeof scope !== "string" || !scope.trim())) {
+        return { admitted: false, reason: "admission offer has invalid claimed scopes" };
+      }
+      const occupied = this.db.prepare(`
+        SELECT worker_id,claimed_scopes FROM admissions
+        WHERE canonical_root=? AND generation=? AND state='admitted' AND worker_id<>?
+      `).all(canonicalRoot, generation, workerId) as Array<{ worker_id: string; claimed_scopes: string }>;
+      const claimed = new Set(scopes.map((scope) => String(scope).trim()));
+      for (const row of occupied) {
+        const other = parseJson(row.claimed_scopes);
+        if (Array.isArray(other) && other.some((scope) => typeof scope === "string" && claimed.has(scope.trim()))) {
+          return { admitted: false, reason: `claimed scope conflicts with ${row.worker_id}` };
+        }
+      }
+      const result = this.db.prepare(`
+        UPDATE admissions SET state='admitted',resolved_at=?,updated_at=?
+        WHERE canonical_root=? AND worker_id=? AND generation=? AND token=? AND state='offered'
+      `).run(now, now, canonicalRoot, workerId, generation, String(offer.token));
+      if (Number(result.changes) !== 1) return { admitted: false, reason: "admission offer changed before acceptance" };
+      this.addEventUnsafe(canonicalRoot, workerId, generation, "admission_accepted", String(offer.campaign).slice(0, 500), now);
+      return { admitted: true };
+    });
+  }
+
+  admissionLaneChanged(canonicalRoot: string, workerId: string, generation: number, laneState: { head: string; dirty: boolean }): boolean {
+    const row = this.db.prepare(`
+      SELECT baseline_head,baseline_dirty FROM admissions
+      WHERE canonical_root=? AND worker_id=? AND generation=?
+    `).get(canonicalRoot, workerId, generation) as { baseline_head?: string | null; baseline_dirty?: number } | undefined;
+    return !row || typeof row.baseline_head !== "string"
+      || row.baseline_head !== laneState.head || Boolean(row.baseline_dirty) !== laneState.dirty;
+  }
+
+  admissionBudgetViolation(canonicalRoot: string, workerId: string, generation: number, now = Date.now()): string | undefined {
+    const row = this.db.prepare(`
+      SELECT a.*,w.cost,w.turns,w.tool_calls FROM admissions a JOIN workers w
+        ON w.canonical_root=a.canonical_root AND w.worker_id=a.worker_id
+      WHERE a.canonical_root=? AND a.worker_id=? AND a.generation=?
+    `).get(canonicalRoot, workerId, generation) as Record<string, unknown> | undefined;
+    if (!row || !["planning", "offered"].includes(String(row.state))) return undefined;
+    const elapsed = now - Number(row.started_at ?? now);
+    const cost = Number(row.cost ?? 0) - Number(row.baseline_cost ?? 0);
+    const turns = Number(row.turns ?? 0) - Number(row.baseline_turns ?? 0);
+    const tools = Number(row.tool_calls ?? 0) - Number(row.baseline_tool_calls ?? 0);
+    if (Number(row.timeout_ms) > 0 && elapsed >= Number(row.timeout_ms)) return `campaign admission exceeded ${Math.round(Number(row.timeout_ms) / 1_000)} seconds`;
+    if (Number(row.max_cost) >= 0 && cost > Number(row.max_cost)) return `campaign admission cost $${cost.toFixed(3)} exceeded $${Number(row.max_cost).toFixed(2)}`;
+    if (Number(row.max_turns) >= 0 && turns > Number(row.max_turns)) return `campaign admission used ${turns} model turns, limit ${row.max_turns}`;
+    if (Number(row.max_tool_calls) >= 0 && tools > Number(row.max_tool_calls)) return `campaign admission used ${tools} tool calls, limit ${row.max_tool_calls}`;
+    return undefined;
+  }
+
+  blockAdmission(canonicalRoot: string, workerId: string, generation: number, reason: string, now = Date.now()): void {
+    this.db.prepare(`
+      UPDATE admissions SET state='blocked',reason=?,resolved_at=?,updated_at=?
+      WHERE canonical_root=? AND worker_id=? AND generation=? AND state IN ('planning','offered')
+    `).run(reason.slice(0, 500), now, now, canonicalRoot, workerId, generation);
+  }
+
+  pauseAdmission(canonicalRoot: string, workerId: string, generation: number, now = Date.now()): void {
+    this.db.prepare(`
+      UPDATE admissions SET state='queued',campaign=NULL,hypothesis=NULL,stage=NULL,claimed_scopes='[]',
+        checkpoint_id=NULL,elapsed_ms=MAX(0,?-started_at),started_at=NULL,resolved_at=NULL,reason=NULL,updated_at=?
+      WHERE canonical_root=? AND worker_id=? AND generation=? AND state IN ('planning','offered')
+    `).run(now, now, canonicalRoot, workerId, generation);
+  }
+
   parentUpdateWorker(canonicalRoot: string, workerId: string, patch: {
     status?: WorkerStatus;
     sessionFile?: string | null;
@@ -404,10 +711,12 @@ export class FleetStore {
     error?: string | null;
     stage?: string | null;
     currentTool?: string | null;
+    task?: string;
+    model?: string;
+    thinking?: string;
+    contextWindow?: number;
     head?: string;
     dirty?: boolean;
-    generation?: number;
-    token?: string;
   }, now = Date.now()): void {
     const assignments = ["last_seen=?"];
     const values: unknown[] = [now];
@@ -415,8 +724,9 @@ export class FleetStore {
       ["status", "status", (value) => value], ["sessionFile", "session_file", (value) => value],
       ["summary", "summary", (value) => value], ["error", "error", (value) => value],
       ["stage", "stage", (value) => value], ["currentTool", "current_tool", (value) => value],
+      ["task", "task", (value) => value], ["model", "model", (value) => value],
+      ["thinking", "thinking", (value) => value], ["contextWindow", "context_window", (value) => value],
       ["head", "head", (value) => value], ["dirty", "dirty", (value) => value ? 1 : 0],
-      ["generation", "generation", (value) => value], ["token", "token", (value) => value],
     ];
     for (const [key, column, transform] of fields) {
       if (patch[key] !== undefined) {
@@ -428,13 +738,13 @@ export class FleetStore {
     this.db.prepare(`UPDATE workers SET ${assignments.join(",")} WHERE canonical_root=? AND worker_id=?`).run(...values);
   }
 
-  workerHeartbeat(patch: { status?: WorkerStatus; stage?: string | null; currentTool?: string | null; summary?: string; error?: string | null }, now = Date.now()): void {
+  workerHeartbeat(patch: { status?: WorkerStatus; stage?: string | null; currentTool?: string | null; task?: string; summary?: string; error?: string | null }, now = Date.now()): void {
     const identity = this.assertFence();
     const assignments = ["last_seen=?"];
     const values: unknown[] = [now];
     const mapping: Array<[keyof typeof patch, string]> = [
       ["status", "status"], ["stage", "stage"], ["currentTool", "current_tool"],
-      ["summary", "summary"], ["error", "error"],
+      ["task", "task"], ["summary", "summary"], ["error", "error"],
     ];
     for (const [key, column] of mapping) {
       if (patch[key] !== undefined) {
@@ -444,6 +754,26 @@ export class FleetStore {
     }
     values.push(identity.canonicalRoot, identity.workerId, identity.generation, identity.token);
     const result = this.db.prepare(`UPDATE workers SET ${assignments.join(",")} WHERE canonical_root=? AND worker_id=? AND generation=? AND token=?`).run(...values);
+    if (Number(result.changes) !== 1) throw new FenceError(`Stale autoresearch worker fence for ${identity.workerId}`);
+  }
+
+  recordToolCall(now = Date.now()): void {
+    const identity = this.assertFence();
+    const result = this.db.prepare(`
+      UPDATE workers SET tool_calls=tool_calls+1,last_seen=?
+      WHERE canonical_root=? AND worker_id=? AND generation=? AND token=?
+    `).run(now, identity.canonicalRoot, identity.workerId, identity.generation, identity.token);
+    if (Number(result.changes) !== 1) throw new FenceError(`Stale autoresearch worker fence for ${identity.workerId}`);
+  }
+
+  recordTurnUsage(input: { contextTokens?: number; cost?: number }, now = Date.now()): void {
+    const identity = this.assertFence();
+    const contextTokens = Number.isFinite(input.contextTokens) ? Math.max(0, Math.floor(input.contextTokens!)) : 0;
+    const cost = Number.isFinite(input.cost) ? Math.max(0, input.cost!) : 0;
+    const result = this.db.prepare(`
+      UPDATE workers SET turns=turns+1,context_tokens=?,cost=cost+?,last_seen=?
+      WHERE canonical_root=? AND worker_id=? AND generation=? AND token=?
+    `).run(contextTokens, cost, now, identity.canonicalRoot, identity.workerId, identity.generation, identity.token);
     if (Number(result.changes) !== 1) throw new FenceError(`Stale autoresearch worker fence for ${identity.workerId}`);
   }
 
@@ -491,6 +821,7 @@ export class FleetStore {
         status: input.status,
         stage: input.stage,
         currentTool: null,
+        task: input.hypothesis ?? input.campaign,
         summary: input.summary,
         error: input.blockers?.length ? input.blockers.join("; ").slice(0, 500) : null,
       }, now);
@@ -508,7 +839,7 @@ export class FleetStore {
     if (!normalizedCampaign) throw new Error("evidence reservation campaign must be a non-empty string");
     return this.transaction(() => {
       const identity = this.assertFence();
-      requirePortfolioCampaign(identity, normalizedCampaign);
+      requirePortfolioAssignment(identity, normalizedCampaign);
       const fleet = this.db.prepare("SELECT max_evidence_stages FROM fleets WHERE canonical_root=? AND generation=?")
         .get(identity.canonicalRoot, identity.generation) as { max_evidence_stages?: number } | undefined;
       if (!fleet) throw new FenceError("Fleet generation is no longer active");
@@ -594,16 +925,20 @@ export class FleetStore {
     const reservations = options.workerId
       ? this.db.prepare("SELECT * FROM evidence_reservations WHERE canonical_root=? AND worker_id=? AND status='active' ORDER BY id").all(canonicalRoot, options.workerId)
       : this.db.prepare("SELECT * FROM evidence_reservations WHERE canonical_root=? AND status='active' ORDER BY id").all(canonicalRoot);
+    const admissions = options.workerId
+      ? this.db.prepare("SELECT * FROM admissions WHERE canonical_root=? AND worker_id=? AND generation=?").all(canonicalRoot, options.workerId, generation)
+      : this.db.prepare("SELECT * FROM admissions WHERE canonical_root=? AND generation=? ORDER BY worker_id").all(canonicalRoot, generation);
     const checkpoints = options.workerId
-      ? this.db.prepare("SELECT * FROM checkpoints WHERE canonical_root=? AND worker_id=? ORDER BY id DESC LIMIT ?").all(canonicalRoot, options.workerId, recent)
-      : this.db.prepare("SELECT * FROM checkpoints WHERE canonical_root=? ORDER BY id DESC LIMIT ?").all(canonicalRoot, recent);
+      ? this.db.prepare("SELECT * FROM checkpoints WHERE canonical_root=? AND worker_id=? AND generation=? ORDER BY id DESC LIMIT ?").all(canonicalRoot, options.workerId, generation, recent)
+      : this.db.prepare("SELECT * FROM checkpoints WHERE canonical_root=? AND generation=? ORDER BY id DESC LIMIT ?").all(canonicalRoot, generation, recent);
     const events = options.workerId
-      ? this.db.prepare("SELECT * FROM events WHERE canonical_root=? AND worker_id=? ORDER BY id DESC LIMIT ?").all(canonicalRoot, options.workerId, recent)
-      : this.db.prepare("SELECT * FROM events WHERE canonical_root=? ORDER BY id DESC LIMIT ?").all(canonicalRoot, recent);
+      ? this.db.prepare("SELECT * FROM events WHERE canonical_root=? AND worker_id=? AND generation=? ORDER BY id DESC LIMIT ?").all(canonicalRoot, options.workerId, generation, recent)
+      : this.db.prepare("SELECT * FROM events WHERE canonical_root=? AND generation=? ORDER BY id DESC LIMIT ?").all(canonicalRoot, generation, recent);
     return {
       fleet: fleet ? { ...fleet } : null,
       workers: rowsToObjects(workers),
       reservations: rowsToObjects(reservations),
+      admissions: rowsToObjects(admissions),
       checkpoints: rowsToObjects(checkpoints),
       events: rowsToObjects(events),
       evidence: { active: reservations.length, max: Number(fleet?.max_evidence_stages ?? DEFAULT_MAX_EVIDENCE_STAGES) },
