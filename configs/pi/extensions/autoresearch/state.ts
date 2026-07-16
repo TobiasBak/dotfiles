@@ -185,7 +185,9 @@ export class FleetStore {
         generation INTEGER NOT NULL,
         token TEXT NOT NULL,
         stage TEXT NOT NULL,
+        campaign TEXT,
         status TEXT NOT NULL,
+        launch_receipt TEXT,
         receipt TEXT,
         created_at INTEGER NOT NULL,
         released_at INTEGER
@@ -197,6 +199,7 @@ export class FleetStore {
     `);
     this.ensureWorkerSessionColumn();
     this.ensureCheckpointColumns();
+    this.ensureEvidenceReservationColumns();
   }
 
   private ensureWorkerSessionColumn(): void {
@@ -223,6 +226,19 @@ export class FleetStore {
     for (const [name, type] of columns) {
       if (!existing.has(name)) this.db.exec(`ALTER TABLE checkpoints ADD COLUMN ${name} ${type}`);
     }
+  }
+
+  private ensureEvidenceReservationColumns(): void {
+    const existing = new Set(
+      (this.db.prepare("PRAGMA table_info(evidence_reservations)").all() as Array<{ name: string }>).map((column) => column.name),
+    );
+    if (!existing.has("campaign")) this.db.exec("ALTER TABLE evidence_reservations ADD COLUMN campaign TEXT");
+    if (!existing.has("launch_receipt")) this.db.exec("ALTER TABLE evidence_reservations ADD COLUMN launch_receipt TEXT");
+    this.db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS evidence_one_active_per_campaign
+        ON evidence_reservations(canonical_root, campaign)
+        WHERE status = 'active' AND campaign IS NOT NULL;
+    `);
   }
 
   close(): void {
@@ -397,6 +413,35 @@ export class FleetStore {
   checkpoint(input: CheckpointInput, now = Date.now()): number {
     return this.transaction(() => {
       const identity = this.assertFence();
+      if (input.launchReceipt !== undefined) {
+        const rawReservationId = input.launchReceipt.reservation_id ?? input.launchReceipt.reservationId;
+        if (rawReservationId !== undefined && !Number.isInteger(rawReservationId)) {
+          throw new Error("launch receipt reservation identity must be a positive integer");
+        }
+        const reservationId = rawReservationId === undefined ? undefined : Number(rawReservationId);
+        const campaign = input.campaign?.trim();
+        const stage = input.stage?.trim();
+        if (reservationId !== undefined && (reservationId <= 0 || !campaign || !stage)) {
+          throw new Error("a reservation launch receipt requires positive reservation identity, campaign, and stage");
+        }
+        if (reservationId !== undefined) {
+          const encoded = json(input.launchReceipt);
+          const reservation = this.db.prepare(`
+            SELECT launch_receipt FROM evidence_reservations
+            WHERE id=? AND canonical_root=? AND worker_id=? AND generation=? AND token=?
+              AND campaign=? AND stage=? AND status='active'
+          `).get(reservationId, identity.canonicalRoot, identity.workerId, identity.generation,
+            identity.token, campaign, stage) as { launch_receipt?: string | null } | undefined;
+          if (!reservation) throw new FenceError("Launch receipt does not match an active campaign reservation");
+          if (reservation.launch_receipt !== null && reservation.launch_receipt !== undefined
+            && reservation.launch_receipt !== encoded) {
+            throw new Error("active evidence reservation already has a different launch receipt");
+          }
+          if (reservation.launch_receipt === null || reservation.launch_receipt === undefined) {
+            this.db.prepare("UPDATE evidence_reservations SET launch_receipt=? WHERE id=?").run(encoded, reservationId);
+          }
+        }
+      }
       const result = this.db.prepare(`
         INSERT INTO checkpoints(canonical_root,worker_id,generation,campaign,hypothesis,stage,status,summary,findings,blockers,next_actions,run_ids,claimed_scopes,candidate_commit,champion_commit,continuation_command,launch_receipt,created_at)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -418,30 +463,44 @@ export class FleetStore {
     });
   }
 
-  reserveEvidence(stage: string, now = Date.now()): { reserved: boolean; wait: boolean; reservationId?: number; active: number; max: number; requiresReconciliation?: boolean } {
+  reserveEvidence(stage: string, campaign: string, now = Date.now()): { reserved: boolean; wait: boolean; reservationId?: number; active: number; max: number; requiresReconciliation?: boolean } {
+    const normalizedStage = stage.trim();
+    const normalizedCampaign = campaign.trim();
+    if (!normalizedStage) throw new Error("evidence reservation stage must be a non-empty string");
+    if (!normalizedCampaign) throw new Error("evidence reservation campaign must be a non-empty string");
     return this.transaction(() => {
       const identity = this.assertFence();
       const fleet = this.db.prepare("SELECT max_evidence_stages FROM fleets WHERE canonical_root=? AND generation=?")
         .get(identity.canonicalRoot, identity.generation) as { max_evidence_stages?: number } | undefined;
       if (!fleet) throw new FenceError("Fleet generation is no longer active");
-      const existing = this.db.prepare("SELECT id,generation,token FROM evidence_reservations WHERE canonical_root=? AND worker_id=? AND status='active'")
-        .get(identity.canonicalRoot, identity.workerId) as { id?: number; generation?: number; token?: string } | undefined;
+      const existing = this.db.prepare("SELECT id,generation,token,stage,campaign FROM evidence_reservations WHERE canonical_root=? AND worker_id=? AND status='active'")
+        .get(identity.canonicalRoot, identity.workerId) as { id?: number; generation?: number; token?: string; stage?: string; campaign?: string | null } | undefined;
       const countRow = this.db.prepare("SELECT COUNT(*) AS count FROM evidence_reservations WHERE canonical_root=? AND status='active'")
         .get(identity.canonicalRoot) as { count: number };
       const active = Number(countRow.count);
       const max = Number(fleet.max_evidence_stages ?? DEFAULT_MAX_EVIDENCE_STAGES);
       if (existing?.id !== undefined) {
         if (existing.generation === identity.generation && existing.token === identity.token) {
+          if (existing.stage !== normalizedStage || existing.campaign !== normalizedCampaign) {
+            throw new Error("active evidence reservation belongs to a different stage or campaign");
+          }
           return { reserved: true, wait: false, reservationId: existing.id, active, max };
         }
         return { reserved: false, wait: true, reservationId: existing.id, active, max, requiresReconciliation: true };
       }
+      const campaignReservation = this.db.prepare("SELECT id FROM evidence_reservations WHERE canonical_root=? AND campaign=? AND status='active'")
+        .get(identity.canonicalRoot, normalizedCampaign) as { id?: number } | undefined;
+      if (campaignReservation?.id !== undefined) {
+        return { reserved: false, wait: true, reservationId: campaignReservation.id, active, max };
+      }
       if (active >= max) return { reserved: false, wait: true, active, max };
       const result = this.db.prepare(`
-        INSERT INTO evidence_reservations(canonical_root,worker_id,generation,token,stage,status,created_at)
-        VALUES(?,?,?,?,?,'active',?)
-      `).run(identity.canonicalRoot, identity.workerId, identity.generation, identity.token, stage, now);
-      this.addEventUnsafe(identity.canonicalRoot, identity.workerId, identity.generation, "evidence_reserved", stage.slice(0, 500), now);
+        INSERT INTO evidence_reservations(canonical_root,worker_id,generation,token,stage,campaign,status,created_at)
+        VALUES(?,?,?,?,?,?,'active',?)
+      `).run(identity.canonicalRoot, identity.workerId, identity.generation, identity.token,
+        normalizedStage, normalizedCampaign, now);
+      this.addEventUnsafe(identity.canonicalRoot, identity.workerId, identity.generation, "evidence_reserved",
+        `${normalizedStage}:${normalizedCampaign}`.slice(0, 500), now);
       return { reserved: true, wait: false, reservationId: Number(result.lastInsertRowid), active: active + 1, max };
     });
   }

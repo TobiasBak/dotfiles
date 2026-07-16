@@ -163,7 +163,8 @@ export function registerWorkerAutoresearch(pi: ExtensionAPI, options: WorkerRegi
     promptSnippet: "Coordinate autoresearch worker state and evidence capacity",
     promptGuidelines: [
       "Use autoresearch_worker_state to checkpoint material progress and claimed scopes.",
-      "Use autoresearch_worker_state reserve_evidence before paid, detached, or scarce evidence-stage work, and release it with a receipt when finished.",
+      "Claim portfolio authority first, then reserve evidence with the exact campaign and stage before paid, detached, or scarce work.",
+      "Checkpoint the launch receipt with its reservation_id immediately after launch, and release the reservation with a terminal receipt when finished.",
     ],
     parameters: {
       type: "object",
@@ -215,13 +216,14 @@ export function registerWorkerAutoresearch(pi: ExtensionAPI, options: WorkerRegi
       }
       if (params.action === "reserve_evidence") {
         if (!params.stage?.trim()) throw new Error("reserve_evidence requires stage");
-        const reservation = store.reserveEvidence(params.stage.trim());
+        if (!params.campaign?.trim()) throw new Error("reserve_evidence requires campaign");
+        const reservation = store.reserveEvidence(params.stage.trim(), params.campaign.trim());
         return {
           content: [{ type: "text", text: reservation.requiresReconciliation
             ? `Evidence reservation ${reservation.reservationId} survived an earlier worker generation. Reconcile it and release with a durable receipt; do not relaunch it silently.`
             : reservation.wait
-              ? `Evidence capacity full (${reservation.active}/${reservation.max}); wait and do not start evidence work.`
-              : `Evidence reservation ${reservation.reservationId} active (${reservation.active}/${reservation.max}).` }],
+              ? `Evidence campaign unavailable or capacity full (${reservation.active}/${reservation.max}); wait and do not start evidence work.`
+              : `Evidence reservation ${reservation.reservationId} active for ${params.campaign.trim()} (${reservation.active}/${reservation.max}).` }],
           details: reservation,
         };
       }

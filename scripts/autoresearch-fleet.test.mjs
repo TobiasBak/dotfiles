@@ -107,9 +107,9 @@ test("SQLite checkpoints are structured, fenced, WAL-backed, and evidence capaci
     }, 200);
     assert.ok(checkpointId > 0);
 
-    const first = w1.reserveEvidence("external benchmark", 201);
-    const second = w2.reserveEvidence("independent reproduction", 202);
-    const third = w3.reserveEvidence("third evidence", 203);
+    const first = w1.reserveEvidence("external benchmark", "c1", 201);
+    const second = w2.reserveEvidence("independent reproduction", "c2", 202);
+    const third = w3.reserveEvidence("third evidence", "c3", 203);
     assert.equal(first.reserved, true);
     assert.equal(second.reserved, true);
     assert.deepEqual({ reserved: third.reserved, wait: third.wait, active: third.active, max: third.max }, {
@@ -118,18 +118,53 @@ test("SQLite checkpoints are structured, fenced, WAL-backed, and evidence capaci
 
     assert.throws(() => stale.workerHeartbeat({ status: "running" }), FenceError);
     assert.doesNotThrow(() => sameFenceDifferentSession.workerHeartbeat({ status: "running" }));
+    w1.checkpoint({
+      campaign: "c1",
+      stage: "external benchmark",
+      status: "running",
+      launchReceipt: { reservation_id: first.reservationId, pid: 42 },
+    }, 203);
     assert.equal(w1.releaseEvidence({ reservationId: first.reservationId, receipt: { runId: "run-7", verdict: "pass" } }, 204).released, true);
-    assert.equal(w3.reserveEvidence("third evidence", 205).reserved, true);
+    assert.equal(w3.reserveEvidence("third evidence", "c3", 205).reserved, true);
 
     const snapshot = fleet.parent.snapshot(fleet.root, { workerId: "w1", recent: 10 });
     assert.equal(snapshot.checkpoints[0].campaign, "c1");
-    assert.deepEqual(snapshot.checkpoints[0].findings, ["f1"]);
-    assert.deepEqual(snapshot.checkpoints[0].claimed_scopes, ["parser"]);
+    assert.equal(snapshot.reservations.length, 0);
+    const completedReservation = fleet.parent.db.prepare("SELECT * FROM evidence_reservations WHERE id=?").get(first.reservationId);
+    assert.equal(completedReservation.campaign, "c1");
+    assert.deepEqual(JSON.parse(completedReservation.launch_receipt), { reservation_id: first.reservationId, pid: 42 });
+    assert.deepEqual(JSON.parse(completedReservation.receipt), { runId: "run-7", verdict: "pass" });
+    assert.deepEqual(snapshot.checkpoints[1].findings, ["f1"]);
+    assert.deepEqual(snapshot.checkpoints[1].claimed_scopes, ["parser"]);
     assert.equal(snapshot.workers[0].summary, "candidate improved");
   } finally {
     sameFenceDifferentSession.close();
     stale.close();
     w3.close();
+    w2.close();
+    w1.close();
+    fleet.parent.close();
+    rmSync(fleet.dir, { recursive: true, force: true });
+  }
+});
+
+test("one active evidence reservation is allowed per campaign", () => {
+  const fleet = createFleetDb(2);
+  const w1 = workerStore(fleet, 0);
+  const w2 = workerStore(fleet, 1);
+  try {
+    const first = w1.reserveEvidence("screen", "campaign-shared");
+    const duplicate = w2.reserveEvidence("screen", "campaign-shared");
+    assert.equal(first.reserved, true);
+    assert.deepEqual(
+      { reserved: duplicate.reserved, wait: duplicate.wait, reservationId: duplicate.reservationId },
+      { reserved: false, wait: true, reservationId: first.reservationId },
+    );
+    assert.throws(
+      () => w1.reserveEvidence("confirm", "campaign-shared"),
+      /different stage or campaign/i,
+    );
+  } finally {
     w2.close();
     w1.close();
     fleet.parent.close();
@@ -228,7 +263,7 @@ test("fleet resizing refuses omitted reservations and preserves same-lane reserv
   const fleet = createFleetDb(2);
   const oldW2 = workerStore(fleet, 1);
   try {
-    const reservation = oldW2.reserveEvidence("running external evidence", 200);
+    const reservation = oldW2.reserveEvidence("running external evidence", "campaign-running", 200);
     fleet.parent.parentUpdateWorker(fleet.root, "w1", { status: "paused" });
     fleet.parent.parentUpdateWorker(fleet.root, "w2", { status: "failed" });
     assert.throws(() => fleet.parent.beginFleet({
@@ -249,7 +284,7 @@ test("fleet resizing refuses omitted reservations and preserves same-lane reserv
       token: "new-t2",
     });
     try {
-      const existing = replacement.reserveEvidence("must not relaunch", 302);
+      const existing = replacement.reserveEvidence("running external evidence", "campaign-running", 302);
       assert.equal(existing.requiresReconciliation, true);
       assert.equal(existing.reservationId, reservation.reservationId);
       for (const receipt of [undefined, null, "done", 1, [], {}]) {
@@ -281,7 +316,7 @@ test("paused fleets cannot be resized around an omitted active reservation", () 
   const fleet = createFleetDb(2);
   const worker = workerStore(fleet, 1);
   try {
-    worker.reserveEvidence("screen");
+    worker.reserveEvidence("screen", "campaign-screen");
     fleet.parent.parentUpdateWorker(fleet.root, "w1", { status: "paused" });
     fleet.parent.parentUpdateWorker(fleet.root, "w2", { status: "paused" });
     fleet.parent.setFleetStatus(fleet.root, "paused");
@@ -317,6 +352,43 @@ test("existing workers schemas migrate session identity additively", () => {
     assert.equal(migrated.db.prepare("SELECT session_id FROM workers WHERE worker_id='w1'").get().session_id, null);
     const indexes = migrated.db.prepare("PRAGMA index_list(workers)").all().map((index) => index.name);
     assert.ok(indexes.includes("workers_unique_session"));
+  } finally {
+    migrated.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("existing evidence reservation schemas migrate campaign and launch receipt additively", () => {
+  const dir = mkdtempSync(join(tmpdir(), "autoresearch-reservation-migration-"));
+  const dbPath = join(dir, "fleet.sqlite");
+  const old = new DatabaseSync(dbPath);
+  old.exec(`
+    CREATE TABLE evidence_reservations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      canonical_root TEXT NOT NULL,
+      worker_id TEXT NOT NULL,
+      generation INTEGER NOT NULL,
+      token TEXT NOT NULL,
+      stage TEXT NOT NULL,
+      status TEXT NOT NULL,
+      receipt TEXT,
+      created_at INTEGER NOT NULL,
+      released_at INTEGER
+    );
+    INSERT INTO evidence_reservations(canonical_root,worker_id,generation,token,stage,status,created_at)
+      VALUES('/repo','w1',1,'token','screen','receipt',1);
+  `);
+  old.close();
+  const migrated = new FleetStore(dbPath);
+  try {
+    const columns = migrated.db.prepare("PRAGMA table_info(evidence_reservations)").all().map((column) => column.name);
+    assert.ok(columns.includes("campaign"));
+    assert.ok(columns.includes("launch_receipt"));
+    const row = migrated.db.prepare("SELECT campaign,launch_receipt FROM evidence_reservations WHERE id=1").get();
+    assert.equal(row.campaign, null);
+    assert.equal(row.launch_receipt, null);
+    const indexes = migrated.db.prepare("PRAGMA index_list(evidence_reservations)").all().map((index) => index.name);
+    assert.ok(indexes.includes("evidence_one_active_per_campaign"));
   } finally {
     migrated.close();
     rmSync(dir, { recursive: true, force: true });
@@ -922,7 +994,7 @@ test("sync fails closed with active evidence and preserves a candidate ref after
       generation: Number(client.options.env.AUTORESEARCH_GENERATION),
       token: client.options.env.AUTORESEARCH_WORKER_TOKEN,
     });
-    const reservation = workerStore.reserveEvidence("durable evidence");
+    const reservation = workerStore.reserveEvidence("durable evidence", "campaign-durable");
     await assert.rejects(() => control.execute("sync", { action: "sync", target: "w1" }), /active evidence reservation/i);
     assert.deepEqual(fixture.records.syncs, []);
 
@@ -1064,8 +1136,24 @@ test("worker role exposes only worker coordination, checkpoints through the tool
     assert.equal(structured.continuation_command, "scripts/launch-evidence run-1");
     assert.deepEqual(structured.launch_receipt, { pid: 42 });
 
-    const reserved = await workerTool.execute("call", { action: "reserve_evidence", stage: "screen" });
+    await assert.rejects(
+      () => workerTool.execute("call", { action: "reserve_evidence", stage: "screen" }),
+      /requires campaign/i,
+    );
+    const reserved = await workerTool.execute("call", {
+      action: "reserve_evidence", stage: "screen", campaign: "campaign",
+    });
     const reservationId = reserved.details.reservationId;
+    await workerTool.execute("call", {
+      action: "checkpoint",
+      campaign: "campaign",
+      stage: "screen",
+      status: "running",
+      launchReceipt: { reservation_id: reservationId, pid: 43 },
+    });
+    const activeReservation = fleet.parent.snapshot(fleet.root, { workerId: "w1" }).reservations[0];
+    assert.equal(activeReservation.campaign, "campaign");
+    assert.deepEqual(activeReservation.launch_receipt, { reservation_id: reservationId, pid: 43 });
     await assert.rejects(
       () => workerTool.execute("call", { action: "release_evidence", reservationId }),
       /non-empty structured terminal receipt/i,
