@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -163,6 +164,65 @@ test("one active evidence reservation is allowed per campaign", () => {
     assert.throws(
       () => w1.reserveEvidence("confirm", "campaign-shared"),
       /different stage or campaign/i,
+    );
+  } finally {
+    w2.close();
+    w1.close();
+    fleet.parent.close();
+    rmSync(fleet.dir, { recursive: true, force: true });
+  }
+});
+
+test("same-generation legacy reservations require reconciliation", () => {
+  const fleet = createFleetDb(1);
+  const worker = workerStore(fleet, 0);
+  try {
+    const reservation = worker.reserveEvidence("screen", "campaign-legacy");
+    fleet.parent.db.prepare("UPDATE evidence_reservations SET campaign=NULL WHERE id=?").run(reservation.reservationId);
+    const legacy = worker.reserveEvidence("screen", "campaign-legacy");
+    assert.deepEqual(
+      {
+        reserved: legacy.reserved,
+        wait: legacy.wait,
+        reservationId: legacy.reservationId,
+        requiresReconciliation: legacy.requiresReconciliation,
+      },
+      {
+        reserved: false,
+        wait: true,
+        reservationId: reservation.reservationId,
+        requiresReconciliation: true,
+      },
+    );
+  } finally {
+    worker.close();
+    fleet.parent.close();
+    rmSync(fleet.dir, { recursive: true, force: true });
+  }
+});
+
+test("project portfolio ownership fences campaign reservations", () => {
+  const fleet = createFleetDb(2);
+  const w1 = workerStore(fleet, 0);
+  const w2 = workerStore(fleet, 1);
+  try {
+    mkdirSync(join(fleet.root, ".autoresearch"), { recursive: true });
+    writeFileSync(join(fleet.root, ".autoresearch", "portfolio.json"), JSON.stringify({
+      schema_version: 2,
+      active_assignments: {
+        w1: {
+          worker_id: "w1",
+          campaign_id: "campaign-owned",
+          hypothesis_id: "hypothesis-owned",
+          worker_token_sha256: createHash("sha256").update("t1").digest("hex"),
+        },
+      },
+    }));
+
+    assert.equal(w1.reserveEvidence("screen", "campaign-owned").reserved, true);
+    assert.throws(
+      () => w2.reserveEvidence("screen", "campaign-unowned"),
+      /not owned by the fenced portfolio worker/i,
     );
   } finally {
     w2.close();
@@ -978,6 +1038,47 @@ test("parent control rejects ambiguous session UUID prefixes", async () => {
   }
 });
 
+test("parent RPC errors do not overwrite a terminal worker checkpoint", async () => {
+  const fixture = createSupervisorFixture();
+  let workerStore;
+  try {
+    await fixture.harness.emit("session_start", { reason: "startup" });
+    await fixture.harness.commands.get("autoresearch").handler("1", fixture.harness.ctx);
+    await waitFor(() => fixture.records.prompts.length === 1);
+    const client = fixture.records.clients[0];
+    workerStore = new FleetStore(client.options.env.AUTORESEARCH_FLEET_DB, {
+      canonicalRoot: fixture.root,
+      workerId: "w1",
+      sessionId: client.options.env.AUTORESEARCH_SESSION_ID,
+      generation: Number(client.options.env.AUTORESEARCH_GENERATION),
+      token: client.options.env.AUTORESEARCH_WORKER_TOKEN,
+    });
+    workerStore.checkpoint({
+      campaign: "campaign",
+      stage: "decision",
+      status: "decision",
+      summary: "Terminal decision",
+      blockers: ["preserved blocker"],
+    });
+    for (const listener of client.events) {
+      listener({
+        type: "agent_end",
+        messages: [{ role: "assistant", stopReason: "error", errorMessage: "late agent error" }],
+      });
+      listener({ type: "extension_error", error: "late extension error" });
+    }
+    const worker = workerStore.snapshot(fixture.root, { workerId: "w1" }).workers[0];
+    assert.equal(worker.status, "decision");
+    assert.equal(worker.summary, "Terminal decision");
+    assert.equal(worker.error, "preserved blocker");
+    assert.equal(worker.current_tool, null);
+  } finally {
+    workerStore?.close();
+    await fixture.harness.emit("session_shutdown", { reason: "quit" });
+    rmSync(fixture.dir, { recursive: true, force: true });
+  }
+});
+
 test("sync fails closed with active evidence and preserves a candidate ref after explicit reconciliation", async () => {
   const fixture = createSupervisorFixture();
   try {
@@ -1163,12 +1264,34 @@ test("worker role exposes only worker coordination, checkpoints through the tool
       reservationId,
       receipt: { terminalStatus: "complete" },
     });
-
     const contexts = [];
     for (const handler of handlers.get("before_agent_start") ?? []) contexts.push(await handler({}, ctx));
     assert.match(contexts[0].message.content, /shared snapshot for w1/);
     assert.match(contexts[0].message.content, new RegExp(fleet.workers[0].sessionId));
     assert.match(contexts[0].message.content, /scope-a/);
+
+    await workerTool.execute("call", {
+      action: "checkpoint",
+      campaign: "campaign",
+      stage: "decision",
+      status: "decision",
+      summary: "Terminal worker decision",
+      blockers: ["preserved worker blocker"],
+    });
+    for (const handler of handlers.get("tool_execution_start") ?? []) {
+      await handler({ toolName: "bash" }, ctx);
+    }
+    for (const handler of handlers.get("tool_execution_end") ?? []) {
+      await handler({ toolName: "bash", isError: false }, ctx);
+    }
+    for (const handler of handlers.get("message_end") ?? []) {
+      await handler({ message: { role: "assistant", content: [{ type: "text", text: "Late summary" }] } }, ctx);
+    }
+    const terminalWorker = fleet.parent.snapshot(fleet.root, { workerId: "w1" }).workers[0];
+    assert.equal(terminalWorker.status, "decision");
+    assert.equal(terminalWorker.summary, "Terminal worker decision");
+    assert.equal(terminalWorker.error, "preserved worker blocker");
+    assert.equal(terminalWorker.current_tool, null);
   } finally {
     for (const handler of handlers.get("session_shutdown") ?? []) await handler({ reason: "quit" }, ctx);
     fleet.parent.close();

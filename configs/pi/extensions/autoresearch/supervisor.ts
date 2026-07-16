@@ -44,6 +44,7 @@ import { AUTORESEARCH_PARENT_TOOLS } from "./worker.ts";
 
 export const AUTORESEARCH_FLEET_WIDGET_ID = "autoresearch-fleet";
 export const MAX_AUTORESEARCH_WORKERS = 4;
+const TERMINAL_WORKER_STATUSES = new Set(["paused", "blocked", "decision", "failed", "complete", "stopped"]);
 const PROGRAM_DESIGN_SETUP_PROMPT = [
   "/skill:autoresearch-program-design Autoresearch setup is required because the canonical program.md is missing.",
   "Inspect this project and its existing commands, tests, constraints, and evidence surfaces first.",
@@ -542,6 +543,11 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
     if (!this.store || !this.repository || this.shuttingDown) return;
     const root = this.repository.canonicalRoot;
     try {
+      const currentStatus = String(this.store.snapshot(root, { workerId, recent: 1 }).workers[0]?.status ?? "");
+      if (TERMINAL_WORKER_STATUSES.has(currentStatus)) {
+        this.refreshDashboard();
+        return;
+      }
       if (event.type === "agent_start") this.store.parentUpdateWorker(root, workerId, { status: "running", currentTool: null });
       if (event.type === "tool_execution_start") {
         this.store.parentUpdateWorker(root, workerId, { status: "running", currentTool: event.toolName });
@@ -555,8 +561,7 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
       }
       if (event.type === "agent_end") {
         const assistant = finalAssistant(event.messages);
-        const currentStatus = this.store.snapshot(root, { workerId, recent: 1 }).workers[0]?.status;
-        if (assistant?.role === "assistant" && !["stop", "toolUse"].includes(assistant.stopReason) && currentStatus !== "paused" && currentStatus !== "stopped") {
+        if (assistant?.role === "assistant" && !["stop", "toolUse"].includes(assistant.stopReason)) {
           this.store.parentUpdateWorker(root, workerId, { status: "failed", error: assistant.errorMessage ?? assistant.stopReason });
         }
       }

@@ -1,4 +1,5 @@
-import { mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, constants as fsConstants, fstatSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -103,6 +104,42 @@ function requireTerminalReceipt(value: unknown): Record<string, unknown> {
     } catch {}
   }
   throw new Error("release_evidence requires a non-empty structured terminal receipt");
+}
+
+function requirePortfolioCampaign(identity: WorkerIdentity, campaign: string): void {
+  const portfolioPath = join(identity.canonicalRoot, ".autoresearch", "portfolio.json");
+  let descriptor: number;
+  try {
+    descriptor = openSync(portfolioPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw new Error("portfolio assignment is unavailable or unsafe", { cause: error });
+  }
+  try {
+    const metadata = fstatSync(descriptor);
+    if (!metadata.isFile() || metadata.nlink !== 1 || metadata.size > 16 * 1024 * 1024) {
+      throw new Error("portfolio assignment must be a bounded single-link regular file");
+    }
+    let state: unknown;
+    try {
+      state = JSON.parse(readFileSync(descriptor, "utf8"));
+    } catch (error) {
+      throw new Error("portfolio assignment is malformed", { cause: error });
+    }
+    if (!isNonEmptyRecord(state) || state.schema_version !== 2 || !isNonEmptyRecord(state.active_assignments)) {
+      throw new Error("portfolio assignment schema is incompatible with fleet admission");
+    }
+    const assignment = state.active_assignments[identity.workerId];
+    const tokenDigest = createHash("sha256").update(identity.token).digest("hex");
+    if (!isNonEmptyRecord(assignment)
+      || assignment.worker_id !== identity.workerId
+      || assignment.campaign_id !== campaign
+      || assignment.worker_token_sha256 !== tokenDigest) {
+      throw new FenceError("evidence campaign is not owned by the fenced portfolio worker");
+    }
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 export class FleetStore {
@@ -453,6 +490,7 @@ export class FleetStore {
       this.workerHeartbeat({
         status: input.status,
         stage: input.stage,
+        currentTool: null,
         summary: input.summary,
         error: input.blockers?.length ? input.blockers.join("; ").slice(0, 500) : null,
       }, now);
@@ -470,6 +508,7 @@ export class FleetStore {
     if (!normalizedCampaign) throw new Error("evidence reservation campaign must be a non-empty string");
     return this.transaction(() => {
       const identity = this.assertFence();
+      requirePortfolioCampaign(identity, normalizedCampaign);
       const fleet = this.db.prepare("SELECT max_evidence_stages FROM fleets WHERE canonical_root=? AND generation=?")
         .get(identity.canonicalRoot, identity.generation) as { max_evidence_stages?: number } | undefined;
       if (!fleet) throw new FenceError("Fleet generation is no longer active");
@@ -481,6 +520,9 @@ export class FleetStore {
       const max = Number(fleet.max_evidence_stages ?? DEFAULT_MAX_EVIDENCE_STAGES);
       if (existing?.id !== undefined) {
         if (existing.generation === identity.generation && existing.token === identity.token) {
+          if (existing.campaign === null || existing.campaign === undefined) {
+            return { reserved: false, wait: true, reservationId: existing.id, active, max, requiresReconciliation: true };
+          }
           if (existing.stage !== normalizedStage || existing.campaign !== normalizedCampaign) {
             throw new Error("active evidence reservation belongs to a different stage or campaign");
           }

@@ -257,18 +257,22 @@ export function registerWorkerAutoresearch(pi: ExtensionAPI, options: WorkerRegi
   });
 
   pi.on("agent_start", () => {
+    if (!canContinue()) return;
     finalStopReason = undefined;
     store.workerHeartbeat({ status: "running" });
   });
   pi.on("tool_execution_start", (event) => {
+    if (!canContinue()) return;
     store.workerHeartbeat({ status: "running", currentTool: event.toolName });
     store.addEvent("tool_start", event.toolName);
   });
   pi.on("tool_execution_end", (event) => {
+    if (!canContinue()) return;
     store.workerHeartbeat({ currentTool: null, error: event.isError ? `${event.toolName} failed` : null });
     if (event.isError) store.addEvent("tool_failed", event.toolName);
   });
   pi.on("message_end", (event) => {
+    if (!canContinue()) return;
     const snippet = assistantSnippet(event.message);
     if (snippet) {
       store.workerHeartbeat({ summary: snippet });
