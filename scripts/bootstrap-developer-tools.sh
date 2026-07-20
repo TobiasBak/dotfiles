@@ -178,11 +178,12 @@ set_shell() {
   fi
 }
 
-ensure_dotfiles_link
 if [ "$(id -u)" -eq 0 ]; then
   warn "Run this as the user account, not root. Current HOME is $HOME."
 fi
 
+ensure_github_auth || warn "GitHub login did not complete. Continuing without authenticated Git access."
+ensure_dotfiles_link
 install_codex_cli
 install_pi_cli
 remove_legacy_subagents
