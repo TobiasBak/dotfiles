@@ -38,7 +38,6 @@ in
   };
 
   networking.hostName = "nixos-wsl";
-  services.tailscale.enable = true;
 
   # WSL setup is driven from Windows automation, so first rebuilds must not
   # depend on an interactive password prompt.

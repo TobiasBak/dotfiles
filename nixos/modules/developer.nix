@@ -14,6 +14,7 @@ in
   ];
 
   programs.zsh.enable = true;
+  services.tailscale.enable = true;
 
   # Supports native PyPI wheels and other dynamically linked development tools.
   programs.nix-ld = {
@@ -53,6 +54,7 @@ in
     openssh
     pnpm
     python3
+    tailscale
     tmux
     unzip
     uv
