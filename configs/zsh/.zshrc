@@ -198,7 +198,8 @@ if [[ -n "${ZSH_TMUX_FAST:-}" ]]; then
 
   # pnpm
   export PNPM_HOME="$HOME/.local/share/pnpm"
-  path=("$PNPM_HOME" ${path:#$PNPM_HOME})
+  export PNPM_BIN="$PNPM_HOME/bin"
+  path=("$PNPM_BIN" ${path:#$PNPM_BIN})
   export PATH
 
   autoload -Uz compinit
@@ -421,6 +422,7 @@ fi
 
 # pnpm
 export PNPM_HOME="$HOME/.local/share/pnpm"
-path=("$PNPM_HOME" ${path:#$PNPM_HOME})
+export PNPM_BIN="$PNPM_HOME/bin"
+path=("$PNPM_BIN" ${path:#$PNPM_BIN})
 export PATH
 # pnpm end

@@ -18,7 +18,7 @@ Applies the NixOS WSL flake, then refreshes user config links and agent tools.
 
 Options:
   --nixos-only  Apply only the NixOS WSL flake. Skip user config links,
-                Codex/Pi agent npm installs, and skill link refresh.
+                Codex/Pi agent pnpm installs, and skill link refresh.
   -h, --help    Show this help.
 EOF
 }

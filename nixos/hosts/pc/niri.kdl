@@ -1,3 +1,16 @@
-// Machine-specific Niri output configuration belongs here.
-// Start with automatic output placement, then add output blocks after running:
-//   niri msg outputs
+// Machine-specific Niri output configuration.
+
+// Main monitor: Dell, landscape, positioned on the right.
+output "Dell Inc. DELL S2725QS 4YNG364" {
+    scale 1.5
+    transform "normal"
+    position x=1728 y=0
+    focus-at-startup
+}
+
+// Secondary monitor: LG, portrait, positioned on the left.
+output "LG Electronics LG ULTRAFINE 503NTNH5Q631" {
+    scale 1.25
+    transform "90"
+    position x=0 y=0
+}

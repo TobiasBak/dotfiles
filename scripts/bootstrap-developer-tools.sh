@@ -8,10 +8,12 @@ STABLE_REPO_DIR="$HOME/.dotfiles"
 log() { printf '\033[0;36m[developer-tools]\033[0m %s\n' "$*"; }
 warn() { printf '\033[0;33m[developer-tools]\033[0m %s\n' "$*"; }
 
-# Keep freshly installed npm binaries visible even when this is called from a
+# Keep freshly installed pnpm binaries visible even when this is called from a
 # non-interactive shell (for example by the WSL installer).
-PATH="$HOME/.local/bin:$HOME/bin:$PATH"
-export PATH
+PNPM_HOME="${PNPM_HOME:-$HOME/.local/share/pnpm}"
+PNPM_BIN="$PNPM_HOME/bin"
+PATH="$PNPM_BIN:$HOME/.local/bin:$HOME/bin:$PATH"
+export PATH PNPM_BIN PNPM_HOME
 
 resolve_path() {
   readlink -f "$1" 2>/dev/null || true
@@ -84,11 +86,11 @@ install_codex_cli() {
     fi
   fi
 
-  require_command npm || return
-  mkdir -p "$HOME/.local"
+  require_command pnpm || return
+  mkdir -p "$PNPM_BIN"
   log "Installing/updating Codex CLI..."
-  if NPM_CONFIG_PREFIX="$HOME/.local" command npm install -g "@openai/codex@latest"; then
-    log "Codex CLI ready: $(command -v codex 2>/dev/null || printf '%s' "$HOME/.local/bin/codex")"
+  if command pnpm add --global --ignore-scripts "@openai/codex@latest"; then
+    log "Codex CLI ready: $(command -v codex 2>/dev/null || printf '%s' "$PNPM_BIN/codex")"
     return
   fi
 
@@ -101,11 +103,24 @@ install_codex_cli() {
 }
 
 install_pi_cli() {
-  require_command npm || return
+  require_command pnpm || return
 
-  mkdir -p "$HOME/.local"
+  mkdir -p "$PNPM_BIN"
   log "Installing/updating Pi coding agent..."
-  NPM_CONFIG_PREFIX="$HOME/.local" command npm install -g "@earendil-works/pi-coding-agent@latest"
+  command pnpm add --global --ignore-scripts "@earendil-works/pi-coding-agent@latest"
+}
+
+install_pi_extension_dependencies() {
+  local extension_dir="$REAL_REPO_DIR/configs/pi/extensions"
+
+  require_command pnpm || return
+  if [ ! -f "$extension_dir/pnpm-lock.yaml" ]; then
+    warn "Pi extension dependency lockfile not found: $extension_dir/pnpm-lock.yaml"
+    return 1
+  fi
+
+  log "Installing Pi extension runtime dependencies..."
+  command pnpm --dir "$extension_dir" install --prod --frozen-lockfile
 }
 
 remove_legacy_subagents() {
@@ -114,12 +129,12 @@ remove_legacy_subagents() {
 
   if [ -d "$package_root/node_modules/pi-subagents" ] ||
      { [ -f "$package_root/package.json" ] && grep -q '"pi-subagents"' "$package_root/package.json"; }; then
-    if command -v npm >/dev/null 2>&1; then
+    if command -v pnpm >/dev/null 2>&1; then
       log "Removing legacy pi-subagents package..."
-      command npm uninstall --prefix "$package_root" pi-subagents ||
+      command pnpm --dir "$package_root" remove pi-subagents ||
         warn "Could not remove legacy pi-subagents package from $package_root"
     else
-      warn "npm not found, skipping legacy pi-subagents package cleanup."
+      warn "pnpm not found, skipping legacy pi-subagents package cleanup."
     fi
   fi
 
@@ -183,6 +198,7 @@ ensure_github_auth || warn "GitHub login did not complete. Continuing without au
 ensure_dotfiles_link
 install_codex_cli
 install_pi_cli
+install_pi_extension_dependencies
 remove_legacy_subagents
 install_agent_skill_links
 set_shell
