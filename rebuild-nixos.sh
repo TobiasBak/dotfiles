@@ -96,11 +96,11 @@ normalize_efi_mount() {
   local efi_device efi_fs_type
 
   [ -n "$TARGET_HOST" ] || return
-  if findmnt -n /boot/efi >/dev/null 2>&1; then
+  if findmnt -n --mountpoint /boot/efi >/dev/null 2>&1; then
     return
   fi
 
-  efi_fs_type="$(findmnt -n -o FSTYPE /boot 2>/dev/null || true)"
+  efi_fs_type="$(findmnt -n -o FSTYPE --mountpoint /boot 2>/dev/null || true)"
   [ "$efi_fs_type" = "vfat" ] || return
 
   if ! grep -q 'fileSystems\."/boot\(/efi\)\?"' "$hardware_config"; then
@@ -108,7 +108,7 @@ normalize_efi_mount() {
     exit 1
   fi
 
-  efi_device="$(findmnt -n -o SOURCE /boot)"
+  efi_device="$(findmnt -n -o SOURCE --mountpoint /boot)"
   log "Moving the EFI mount from /boot to /boot/efi for the native GRUB configuration..."
   sudo umount /boot
   sudo mkdir -p /boot/efi
