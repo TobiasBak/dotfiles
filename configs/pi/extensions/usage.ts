@@ -1,5 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
+import { clearWeeklyUsage, updateWeeklyUsage } from "./activity-dock.ts";
+
 const OPENAI_AUTH_CLAIM = "https://api.openai.com/auth";
 
 type RateLimitWindow = {
@@ -28,6 +30,13 @@ type UsagePayload = {
     };
   }>;
 };
+
+type UsageResult =
+  | { ok: true; data: UsagePayload; modelName: string }
+  | { ok: false; message: string };
+
+const BAR_WIDTH = 24;
+const PARTIAL_BLOCKS = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
 
 function decodeJwtPayload(token: string): any | undefined {
   const part = token.split(".")[1];
@@ -74,13 +83,28 @@ function fmtWindow(label: string, window?: RateLimitWindow): string | undefined 
   return `${label || duration} limit: ${used.toFixed(0)}% used, ${left.toFixed(0)}% left, ${fmtReset(window.reset_at)}`;
 }
 
+function windowLabel(window?: RateLimitWindow): string {
+  const duration = fmtDuration(window?.limit_window_seconds);
+  return duration === "1w" ? "weekly" : duration;
+}
+
+function findWeeklyWindow(data: UsagePayload): RateLimitWindow | undefined {
+  const windows = [data.rate_limit?.primary_window, data.rate_limit?.secondary_window];
+  const sixDays = 6 * 24 * 60 * 60;
+  const eightDays = 8 * 24 * 60 * 60;
+  return windows.find((window) => {
+    const seconds = window?.limit_window_seconds;
+    return typeof seconds === "number" && seconds >= sixDays && seconds <= eightDays;
+  });
+}
+
 function formatUsage(data: UsagePayload, modelName: string): string {
   const lines: string[] = [];
   lines.push(`Codex subscription usage for ${modelName}`);
   if (data.plan_type) lines.push(`Plan: ${data.plan_type}`);
 
-  const primary = fmtWindow("5h", data.rate_limit?.primary_window);
-  const secondary = fmtWindow("weekly", data.rate_limit?.secondary_window);
+  const primary = fmtWindow(windowLabel(data.rate_limit?.primary_window), data.rate_limit?.primary_window);
+  const secondary = fmtWindow(windowLabel(data.rate_limit?.secondary_window), data.rate_limit?.secondary_window);
   if (primary) lines.push(primary);
   if (secondary) lines.push(secondary);
 
@@ -101,22 +125,30 @@ function formatUsage(data: UsagePayload, modelName: string): string {
   return lines.join("\n");
 }
 
-async function fetchCodexUsage(ctx: ExtensionContext): Promise<string> {
+async function fetchCodexUsage(ctx: ExtensionContext): Promise<UsageResult> {
   const model = ctx.model;
-  if (!model) return "No model is currently selected.";
+  if (!model) return { ok: false, message: "No model is currently selected." };
   if (model.provider !== "openai-codex" && model.api !== "openai-codex-responses") {
-    return `Current model is ${model.provider}/${model.id}, not an OpenAI Codex subscription model.`;
+    return {
+      ok: false,
+      message: `Current model is ${model.provider}/${model.id}, not an OpenAI Codex subscription model.`,
+    };
   }
   if (!ctx.modelRegistry.isUsingOAuth(model)) {
-    return "Current Codex model is not using subscription/OAuth auth. /usage only works for ChatGPT Codex subscription auth.";
+    return {
+      ok: false,
+      message: "Current Codex model is not using subscription/OAuth auth. /usage only works for ChatGPT Codex subscription auth.",
+    };
   }
 
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-  if (!auth.ok || !auth.apiKey) return `Could not resolve Codex auth: ${auth.ok ? "missing token" : auth.error}`;
+  if (!auth.ok || !auth.apiKey) {
+    return { ok: false, message: `Could not resolve Codex auth: ${auth.ok ? "missing token" : auth.error}` };
+  }
 
   const token = auth.apiKey;
   const accountId = auth.headers?.["chatgpt-account-id"] ?? getAccountId(token);
-  if (!accountId) return "Could not determine ChatGPT account id from Codex token.";
+  if (!accountId) return { ok: false, message: "Could not determine ChatGPT account id from Codex token." };
 
   const baseUrl = model.baseUrl.replace(/\/$/, "");
   // Match upstream Codex CLI behavior: ChatGPT backend-api uses /wham/usage,
@@ -127,6 +159,7 @@ async function fetchCodexUsage(ctx: ExtensionContext): Promise<string> {
 
   const res = await fetch(url, {
     method: "GET",
+    signal: AbortSignal.timeout(10_000),
     headers: {
       Authorization: `Bearer ${token}`,
       "ChatGPT-Account-Id": accountId,
@@ -137,24 +170,90 @@ async function fetchCodexUsage(ctx: ExtensionContext): Promise<string> {
   });
 
   const text = await res.text();
-  if (!res.ok) return `Codex usage request failed: HTTP ${res.status}\n${text.slice(0, 1000)}`;
+  if (!res.ok) {
+    return { ok: false, message: `Codex usage request failed: HTTP ${res.status}\n${text.slice(0, 1000)}` };
+  }
 
   let data: UsagePayload;
   try {
     data = JSON.parse(text);
   } catch {
-    return `Codex usage response was not JSON:\n${text.slice(0, 1000)}`;
+    return { ok: false, message: `Codex usage response was not JSON:\n${text.slice(0, 1000)}` };
   }
 
-  return formatUsage(data, `${model.provider}/${model.id}`);
+  return { ok: true, data, modelName: `${model.provider}/${model.id}` };
+}
+
+function renderWeeklyStatus(
+  theme: ExtensionContext["ui"]["theme"],
+  window: RateLimitWindow,
+): string | undefined {
+  if (typeof window.used_percent !== "number") return undefined;
+
+  const used = Math.min(100, Math.max(0, window.used_percent));
+  const remainingPercent = 100 - used;
+  const remaining = Math.round(remainingPercent);
+  const filledEighths = Math.round((remainingPercent / 100) * BAR_WIDTH * 8);
+  const fullCells = Math.floor(filledEighths / 8);
+  const partialEighths = filledEighths % 8;
+  const partial = PARTIAL_BLOCKS[partialEighths] ?? "";
+  const emptyCells = BAR_WIDTH - fullCells - (partial ? 1 : 0);
+  const filled = "█".repeat(fullCells) + partial;
+  const empty = "\u00a0".repeat(Math.max(0, emptyCells));
+  const statusRole = remainingPercent <= 10 ? "error" : remainingPercent <= 30 ? "warning" : "success";
+  const gap = "\u00a0\u00a0";
+
+  return theme.fg(
+    statusRole,
+    `Weekly usage${gap}[${filled}${empty}]${gap}${remaining}% remaining`,
+  );
+}
+
+function updateWeeklyStatus(pi: ExtensionAPI, ctx: ExtensionContext, result: UsageResult): void {
+  const weekly = result.ok ? findWeeklyWindow(result.data) : undefined;
+  updateWeeklyUsage(pi, ctx, weekly ? (theme) => renderWeeklyStatus(theme, weekly) : undefined);
 }
 
 export default function (pi: ExtensionAPI) {
+  let refreshVersion = 0;
+
+  const refreshWeeklyStatus = async (ctx: ExtensionContext): Promise<void> => {
+    const version = ++refreshVersion;
+    try {
+      const result = await fetchCodexUsage(ctx);
+      if (version === refreshVersion) updateWeeklyStatus(pi, ctx, result);
+    } catch {
+      // Keep the last successful value when a background refresh fails.
+    }
+  };
+
+  pi.on("session_start", (_event, ctx) => {
+    void refreshWeeklyStatus(ctx);
+  });
+
+  pi.on("model_select", (_event, ctx) => {
+    void refreshWeeklyStatus(ctx);
+  });
+
+  pi.on("agent_settled", (_event, ctx) => {
+    void refreshWeeklyStatus(ctx);
+  });
+
+  pi.on("session_shutdown", (_event, ctx) => {
+    refreshVersion++;
+    clearWeeklyUsage(pi, ctx);
+  });
+
   pi.registerCommand("usage", {
     description: "Show current Codex subscription rate limits for the selected model",
     handler: async (_args, ctx) => {
       try {
-        ctx.ui.notify(await fetchCodexUsage(ctx), "info");
+        const result = await fetchCodexUsage(ctx);
+        updateWeeklyStatus(pi, ctx, result);
+        ctx.ui.notify(
+          result.ok ? formatUsage(result.data, result.modelName) : result.message,
+          result.ok ? "info" : "error",
+        );
       } catch (err) {
         ctx.ui.notify(`Usage lookup failed: ${err instanceof Error ? err.message : String(err)}`, "error");
       }

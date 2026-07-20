@@ -45,12 +45,6 @@ Expected links:
 
 When adding a new personal skill, create it under `../skills/skills/<skill>` with a `SKILL.md`, then run the installer/verifier.
 
-## Agent sync and verification
-
-- Verify Windows host config links: `winget configure -f .\windows\configuration.winget --accept-configuration-agreements --disable-interactivity`
-- Sync/fix WSL Pi/Codex config + skills: `./rebuild-wsl.sh`
-- Apply only NixOS WSL config/packages: `./rebuild-wsl.sh --nixos-only`
-
 ## NixOS servers
 
 Before changing or remotely rebuilding NixOS servers, read `nixos/README.md`, especially remote server operation notes. Prefer normal OpenSSH over Tailscale (`tailscale up --ssh=false`) unless user explicitly wants Tailscale SSH browser checks. Avoid interactive `nixos-rebuild switch` over SSH for networking/firewall/SSH/Tailscale changes; use `dry-build` then `boot + reboot` or detached `systemd-run`.

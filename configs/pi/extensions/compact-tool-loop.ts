@@ -1,187 +1,246 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
-export const COMPACTION_HEADROOM_TOKENS = 32_000;
-export const COMPACT_TOOL_LOOP_PAUSED_EVENT = "compact-tool-loop:paused";
-const STATUS_ID = "compact-tool-loop";
-const RESUME_MESSAGE =
-  "Automatic context compaction completed during the tool loop. Continue the same task from the summary and recent context without waiting for further user input.";
-const BOUNDARY_MESSAGE =
-  'Context compaction needs a safe turn boundary. Reply with exactly "READY" and do not call tools or continue the task yet.';
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { streamSimple } from "@earendil-works/pi-ai/compat";
+import {
+	buildSessionContext,
+	type CompactionEntry,
+	compact as exportedCompact,
+	type ExtensionAPI,
+	type ExtensionContext,
+	getPackageDir,
+	type SessionEntry,
+	VERSION,
+} from "@earendil-works/pi-coding-agent";
 
-export default function (pi: ExtensionAPI) {
-  let compactionInFlight = false;
-  let boundaryRecoveryPending = false;
-  let boundaryRecoveryAttempted = false;
-  let continuationPending = false;
-  let deferredMessage: ReturnType<typeof setTimeout> | undefined;
+const PINNED_PI_VERSION = "0.80.10";
+const MARKER_TYPE = "compact-tool-loop.shadow-compaction";
+const MARKER_VERSION = 1;
+const SETTINGS = {
+	enabled: true,
+	reserveTokens: 32_000,
+	keepRecentTokens: 20_000,
+} as const;
 
-  const cancelDeferredMessage = () => {
-    if (deferredMessage !== undefined) clearTimeout(deferredMessage);
-    deferredMessage = undefined;
-  };
+type CoreCompact = typeof exportedCompact;
+type CompactionPreparation = Parameters<CoreCompact>[0];
+type CompactionResult = Awaited<ReturnType<CoreCompact>>;
 
-  const resetRecovery = () => {
-    boundaryRecoveryPending = false;
-    boundaryRecoveryAttempted = false;
-  };
+interface ShadowMarkerData {
+	version: typeof MARKER_VERSION;
+	piVersion: typeof PINNED_PI_VERSION;
+	compaction: CompactionResult;
+}
 
-  const clearCompactionStatus = (ctx: ExtensionContext) => {
-    ctx.ui.setStatus(STATUS_ID, undefined);
-  };
+interface ActiveMarker {
+	entry: Extract<SessionEntry, { type: "custom" }>;
+	data: ShadowMarkerData;
+	index: number;
+}
 
-  const sendUserMessage = (
-    ctx: ExtensionContext,
-    message: string,
-    onError: (error: unknown) => void,
-  ) => {
-    const send = () => {
-      try {
-        if (ctx.isIdle()) pi.sendUserMessage(message);
-        else pi.sendUserMessage(message, { deliverAs: "followUp" });
-      } catch (error) {
-        onError(error);
-      }
-    };
+interface InternalCompactionModule {
+	prepareCompaction(entries: SessionEntry[], settings: typeof SETTINGS): CompactionPreparation | undefined;
+	compact: CoreCompact;
+}
 
-    if (!ctx.isIdle()) {
-      send();
-      return;
-    }
+let internalModulePromise: Promise<InternalCompactionModule | undefined> | undefined;
 
-    // Pi's compaction-end listener can still be finishing a queued prompt's
-    // async preflight when agent_settled reports idle. Yield one event-loop turn
-    // so that prompt wins the race, then recheck and queue this as a follow-up.
-    cancelDeferredMessage();
-    deferredMessage = setTimeout(() => {
-      deferredMessage = undefined;
-      send();
-    }, 0);
-  };
+async function loadInternalCompactionModule(): Promise<InternalCompactionModule | undefined> {
+	internalModulePromise ??= (async () => {
+		try {
+			if (VERSION !== PINNED_PI_VERSION) return undefined;
+			const packageDir = getPackageDir();
+			const manifest = JSON.parse(await readFile(resolve(packageDir, "package.json"), "utf8")) as {
+				main?: unknown;
+				version?: unknown;
+			};
+			if (manifest.version !== PINNED_PI_VERSION || typeof manifest.main !== "string") return undefined;
 
-  const continueAutomatically = (ctx: ExtensionContext, notification: string) => {
-    if (ctx.hasUI) ctx.ui.notify(notification, "info");
-    sendUserMessage(ctx, RESUME_MESSAGE, (error) => {
-      if (ctx.hasUI) {
-        ctx.ui.notify(
-          `Compaction completed, but automatic continuation failed: ${error instanceof Error ? error.message : String(error)}`,
-          "error",
-        );
-      }
-    });
-  };
+			const rootUrl = pathToFileURL(resolve(packageDir, manifest.main)).href;
+			const root = (await import(rootUrl)) as { VERSION?: unknown };
+			if (root.VERSION !== PINNED_PI_VERSION) return undefined;
 
-  const requestBoundaryRecovery = (ctx: ExtensionContext) => {
-    boundaryRecoveryAttempted = true;
-    boundaryRecoveryPending = true;
-    if (ctx.hasUI) {
-      ctx.ui.notify(
-        "Pi did not compact at the stopped tool boundary. Creating a safe turn boundary and retrying once automatically.",
-        "warning",
-      );
-    }
+			const moduleUrl = new URL("./core/compaction/compaction.js", rootUrl);
+			const internal = (await import(moduleUrl.href)) as Partial<InternalCompactionModule>;
+			if (typeof internal.prepareCompaction !== "function" || typeof internal.compact !== "function") {
+				return undefined;
+			}
+			return internal as InternalCompactionModule;
+		} catch {
+			return undefined;
+		}
+	})();
+	return internalModulePromise;
+}
 
-    sendUserMessage(ctx, BOUNDARY_MESSAGE, (error) => {
-      resetRecovery();
-      if (ctx.hasUI) {
-        ctx.ui.notify(
-          `Could not create a compaction boundary: ${error instanceof Error ? error.message : String(error)}`,
-          "error",
-        );
-      }
-    });
-  };
+function isCompactionResult(value: unknown, precedingIds: Set<string>): value is CompactionResult {
+	if (!value || typeof value !== "object") return false;
+	const result = value as Partial<CompactionResult>;
+	return (
+		typeof result.summary === "string" &&
+		result.summary.trim().length > 0 &&
+		typeof result.firstKeptEntryId === "string" &&
+		precedingIds.has(result.firstKeptEntryId) &&
+		typeof result.tokensBefore === "number" &&
+		Number.isFinite(result.tokensBefore) &&
+		result.tokensBefore >= 0
+	);
+}
 
-  pi.on("session_start", () => {
-    cancelDeferredMessage();
-    compactionInFlight = false;
-    continuationPending = false;
-    resetRecovery();
-  });
+function getActiveMarker(branch: SessionEntry[]): ActiveMarker | undefined {
+	const precedingIds = new Set<string>();
+	let active: ActiveMarker | undefined;
 
-  pi.on("session_shutdown", () => {
-    cancelDeferredMessage();
-  });
+	for (let index = 0; index < branch.length; index++) {
+		const entry = branch[index];
+		if (!entry) continue;
 
-  pi.on("session_compact", (event, ctx) => {
-    if (event.reason === "manual") return;
-    if (!compactionInFlight && !boundaryRecoveryPending && deferredMessage === undefined) return;
+		if (entry.type === "compaction") {
+			active = undefined;
+		} else if (entry.type === "custom" && entry.customType === MARKER_TYPE) {
+			const data = entry.data as Partial<ShadowMarkerData> | undefined;
+			if (
+				data?.version === MARKER_VERSION &&
+				data.piVersion === PINNED_PI_VERSION &&
+				isCompactionResult(data.compaction, precedingIds)
+			) {
+				active = { entry, data: data as ShadowMarkerData, index };
+			}
+		}
+		precedingIds.add(entry.id);
+	}
 
-    cancelDeferredMessage();
-    compactionInFlight = false;
-    clearCompactionStatus(ctx);
+	return active;
+}
 
-    resetRecovery();
-    if (event.willRetry) {
-      continuationPending = false;
-      return;
-    }
+function branchWithShadowCompaction(branch: SessionEntry[], marker: ActiveMarker): SessionEntry[] {
+	return branch.map((entry, index) => {
+		if (index !== marker.index) return structuredClone(entry);
+		const result = structuredClone(marker.data.compaction);
+		const synthetic: CompactionEntry = {
+			type: "compaction",
+			id: marker.entry.id,
+			parentId: marker.entry.parentId,
+			timestamp: marker.entry.timestamp,
+			summary: result.summary,
+			firstKeptEntryId: result.firstKeptEntryId,
+			tokensBefore: result.tokensBefore,
+			...(result.details !== undefined ? { details: result.details } : {}),
+			fromHook: true,
+		};
+		return synthetic;
+	});
+}
 
-    if (ctx.isIdle()) {
-      // Pre-prompt compaction can finish while async input or before_agent_start
-      // hooks are still running. agent_start is the first guaranteed busy
-      // boundary where a follow-up can be queued without racing that prompt.
-      continuationPending = true;
-      return;
-    }
+function compactedMessages(branch: SessionEntry[], marker: ActiveMarker): AgentMessage[] {
+	return buildSessionContext(branchWithShadowCompaction(branch, marker)).messages;
+}
 
-    continuationPending = false;
-    continueAutomatically(ctx, "Tool-loop compaction completed. Continuing automatically.");
-  });
+function hasProviderResponseAfter(branch: SessionEntry[], marker: ActiveMarker): boolean {
+	return branch.slice(marker.index + 1).some((entry) => {
+		if (entry.type !== "message" || entry.message.role !== "assistant") return false;
+		return entry.message.stopReason !== "error" && entry.message.stopReason !== "aborted";
+	});
+}
 
-  pi.on("agent_start", (_event, ctx) => {
-    if (!continuationPending) return;
-    continuationPending = false;
-    continueAutomatically(ctx, "Tool-loop compaction completed. Continuing automatically.");
-  });
+function messagesWithoutRuntimeTimestamps(messages: AgentMessage[]): AgentMessage[] {
+	return messages.map((message) => ({ ...message, timestamp: 0 })) as AgentMessage[];
+}
 
-  pi.on("agent_settled", (_event, ctx) => {
-    if (compactionInFlight) {
-      compactionInFlight = false;
-      clearCompactionStatus(ctx);
+function rawContextMatchesEvent(branch: SessionEntry[], eventMessages: AgentMessage[]): boolean {
+	return isDeepStrictEqual(
+		messagesWithoutRuntimeTimestamps(buildSessionContext(branch).messages),
+		messagesWithoutRuntimeTimestamps(eventMessages),
+	);
+}
 
-      if (!boundaryRecoveryAttempted) {
-        requestBoundaryRecovery(ctx);
-        return;
-      }
-    }
+async function generateShadowCompaction(
+	ctx: ExtensionContext,
+	branch: SessionEntry[],
+	marker: ActiveMarker | undefined,
+): Promise<CompactionResult | undefined> {
+	const model = ctx.model;
+	if (!model) return undefined;
 
-    if (!boundaryRecoveryPending) return;
+	const internal = await loadInternalCompactionModule();
+	if (!internal) return undefined;
 
-    resetRecovery();
-    clearCompactionStatus(ctx);
-    pi.events.emit(COMPACT_TOOL_LOOP_PAUSED_EVENT, {
-      reason: "recovery-boundary-did-not-compact",
-    });
-    if (ctx.hasUI) {
-      ctx.ui.notify(
-        "Pi still did not compact after creating a safe turn boundary; automatic continuation stopped. Check auto-compaction settings, model authentication, and Pi errors.",
-        "error",
-      );
-    }
-  });
+	const preparationBranch = marker ? branchWithShadowCompaction(branch, marker) : branch.map((entry) => structuredClone(entry));
+	const preparation = internal.prepareCompaction(preparationBranch, SETTINGS);
+	if (!preparation) return undefined;
 
-  pi.on("turn_end", (event, ctx) => {
-    if (compactionInFlight) return;
-    if (event.message.role !== "assistant" || event.message.stopReason !== "toolUse") return;
+	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+	if (!auth.ok || ctx.signal?.aborted) return undefined;
 
-    const usage = ctx.getContextUsage();
-    if (!usage || usage.tokens === null || usage.contextWindow <= 0) return;
+	try {
+		const result = await internal.compact(
+			preparation,
+			model,
+			auth.apiKey,
+			auth.headers,
+			undefined,
+			ctx.signal,
+			undefined,
+			streamSimple,
+			auth.env,
+		);
+		if (ctx.signal?.aborted || !isCompactionResult(result, new Set(branch.map((entry) => entry.id)))) {
+			return undefined;
+		}
+		return result;
+	} catch (error) {
+		if (!ctx.signal?.aborted && ctx.hasUI) {
+			const message = error instanceof Error ? error.message : String(error);
+			ctx.ui.notify(`Shadow compaction failed: ${message}`, "warning");
+		}
+		return undefined;
+	}
+}
 
-    const threshold = Math.max(0, usage.contextWindow - COMPACTION_HEADROOM_TOKENS);
-    if (usage.tokens <= threshold) return;
+export default function compactToolLoop(pi: ExtensionAPI): void {
+	pi.on("context", async (event, ctx) => {
+		const initialBranch = ctx.sessionManager.getBranch();
+		if (!rawContextMatchesEvent(initialBranch, event.messages)) return;
 
-    cancelDeferredMessage();
-    compactionInFlight = true;
-    ctx.ui.setStatus(STATUS_ID, `compacting at ${Math.round(usage.percent ?? 0)}%`);
-    if (ctx.hasUI) {
-      ctx.ui.notify(
-        `Tool-loop context reached ${usage.tokens.toLocaleString()} / ${usage.contextWindow.toLocaleString()} tokens. Compacting before the next model request.`,
-        "warning",
-      );
-    }
+		let marker = getActiveMarker(initialBranch);
+		if (marker && !hasProviderResponseAfter(initialBranch, marker)) {
+			return { messages: compactedMessages(initialBranch, marker) };
+		}
 
-    // Stop at this completed tool boundary. Pi's post-agent threshold check owns
-    // compaction, avoiding a competing manual ctx.compact() call.
-    ctx.abort();
-  });
+		const usage = ctx.getContextUsage();
+		if (
+			usage?.tokens !== null &&
+			usage?.tokens !== undefined &&
+			usage.tokens > usage.contextWindow - SETTINGS.reserveTokens
+		) {
+			const leafId = ctx.sessionManager.getLeafId();
+			const result = await generateShadowCompaction(ctx, initialBranch, marker);
+			if (result && ctx.sessionManager.getLeafId() === leafId) {
+				const currentBranch = ctx.sessionManager.getBranch();
+				if (rawContextMatchesEvent(currentBranch, event.messages)) {
+					pi.appendEntry<ShadowMarkerData>(MARKER_TYPE, {
+						version: MARKER_VERSION,
+						piVersion: PINNED_PI_VERSION,
+						compaction: result,
+					});
+					const markedBranch = ctx.sessionManager.getBranch();
+					marker = getActiveMarker(markedBranch);
+					if (marker) return { messages: compactedMessages(markedBranch, marker) };
+				}
+			}
+		}
+
+		if (marker) return { messages: compactedMessages(initialBranch, marker) };
+	});
+
+	pi.on("session_before_compact", (event) => {
+		// A cached shadow summary did not use caller-supplied instructions.
+		// Let Pi regenerate rather than silently ignoring an explicit request.
+		if (event.customInstructions !== undefined) return;
+		const marker = getActiveMarker(event.branchEntries);
+		if (marker) return { compaction: structuredClone(marker.data.compaction) };
+	});
 }

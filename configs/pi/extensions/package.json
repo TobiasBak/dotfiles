@@ -1,0 +1,20 @@
+{
+  "name": "pi-private-extensions",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test:autoresearch": "cd ../../.. && node --test scripts/activity-dock.test.mjs scripts/autoresearch-extension.test.mjs scripts/autoresearch-fleet.test.mjs scripts/autoresearch-integration.test.mjs"
+  },
+  "dependencies": {
+    "effect": "3.22.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "0.80.10",
+    "@earendil-works/pi-ai": "0.80.10",
+    "@earendil-works/pi-coding-agent": "0.80.10",
+    "@earendil-works/pi-tui": "0.80.10",
+    "@types/node": "22.20.1",
+    "typescript": "7.0.2"
+  }
+}

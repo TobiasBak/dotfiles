@@ -19,20 +19,28 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 
+import { Deferred, Effect } from "effect";
+
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type {
+  BeforeAgentStartEventResult,
   ExtensionAPI,
   ExtensionContext,
   RpcClientOptions,
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 
+import { beginActivityDock, endActivityDock } from "../activity-dock.ts";
 import {
   ensureAutoresearchIgnored,
   ensureWorkerLane,
   inspectRepository,
+  integrateTerminalRef,
   laneGitState,
+  preserveTerminalRef,
+  resetIntegratedLane,
   syncLaneToCanonical,
+  TerminalIntegrationCleanupError,
   workerLanes,
   type CommandRunner,
   type RepositoryInfo,
@@ -54,14 +62,40 @@ import {
   type WorkerStatus,
 } from "./state.ts";
 import { AUTORESEARCH_PARENT_TOOLS } from "./worker.ts";
+import {
+  forkControllerTask,
+  makeAutoresearchRuntime,
+  makeSerializedController,
+  scopedSleep,
+  type AutoresearchManagedRuntime,
+  type AutoresearchServices,
+  type SerializedController,
+} from "./effect-runtime.ts";
 
 export const AUTORESEARCH_FLEET_WIDGET_ID = "autoresearch-fleet";
-export const MAX_AUTORESEARCH_WORKERS = 4;
-const DEFAULT_ADMISSION_TIMEOUT_MS = 60_000;
-const DEFAULT_ADMISSION_MAX_COST_USD = 0.5;
-const DEFAULT_ADMISSION_MAX_TURNS = 8;
-const DEFAULT_ADMISSION_MAX_TOOL_CALLS = 16;
-const TERMINAL_WORKER_STATUSES = new Set(["paused", "blocked", "decision", "failed", "complete", "stopped"]);
+const DEFAULT_RPC_TIMEOUT_MS = 15_000;
+const DEFAULT_RECYCLE_BACKOFF_MS = 1_000;
+const MAX_RECYCLE_BACKOFF_MS = 5_000;
+const DEFAULT_MAX_RECOVERY_ATTEMPTS = 3;
+const INCIDENT_COALESCE_MS = 50;
+const TERMINAL_WORKER_STATUSES = new Set(["paused", "blocked", "failed", "complete", "stopped"]);
+const AUTORESEARCH_SOURCE_DIR = dirname(fileURLToPath(import.meta.url));
+const AUTORESEARCH_ENTRYPOINT = resolve(AUTORESEARCH_SOURCE_DIR, "..", "autoresearch.ts");
+const AUTORESEARCH_TEST_DIR = resolve(AUTORESEARCH_SOURCE_DIR, "../../../..", "scripts");
+const AUTORESEARCH_OPERATIONAL_GUIDANCE = `## Autoresearch operational supervision
+
+You are the operational supervisor while this autoresearch fleet is managed. Do not merely acknowledge operationally blocked or failed workers. Inspect the fleet with autoresearch_inspect, distinguish a scientific terminal outcome from a process failure, and use autoresearch_control to recover safe failures. If automatic recovery is exhausted, diagnose the extension and its behavioral tests, make a focused fix when authorized, verify it, then restart the worker. Never reconcile an unowned or unverified process until exact external process termination has been verified.
+
+Operational interfaces:
+- autoresearch_inspect: bounded fleet, worker, checkpoint, and event state.
+- autoresearch_control: steer, pause, resume, restart, stop, sync, and explicit post-verification reconciliation.
+- Extension entrypoint: ${AUTORESEARCH_ENTRYPOINT}
+- Supervisor and worker source: ${join(AUTORESEARCH_SOURCE_DIR, "supervisor.ts")} and ${join(AUTORESEARCH_SOURCE_DIR, "worker.ts")}
+- State and presentation: ${join(AUTORESEARCH_SOURCE_DIR, "state.ts")} and ${join(AUTORESEARCH_SOURCE_DIR, "presentation.ts")}
+- Behavioral tests: ${join(AUTORESEARCH_TEST_DIR, "autoresearch-fleet.test.mjs")} and ${join(AUTORESEARCH_TEST_DIR, "autoresearch-extension.test.mjs")}
+- Installed Pi documentation and extension examples: /home/tobias/.local/lib/node_modules/@earendil-works/pi-coding-agent/docs and /home/tobias/.local/lib/node_modules/@earendil-works/pi-coding-agent/examples/extensions
+
+Process state is safety-relevant. A missing RPC handle, stop failure, or unreconciled process requires exact OS process verification before reconciliation; never launch a replacement over a possibly live process.`;
 const PROGRAM_DESIGN_SETUP_PROMPT = [
   "/skill:autoresearch-program-design Autoresearch setup is required because the canonical program.md is missing.",
   "Inspect this project and its existing commands, tests, constraints, and evidence surfaces first.",
@@ -79,9 +113,7 @@ function readCanonicalProgram(canonicalRoot: string): ProgramFileResult {
     if (isRecord(error) && error.code === "ENOENT") return { kind: "missing" };
     throw new Error(`Cannot inspect canonical program.md: ${error instanceof Error ? error.message : String(error)}`);
   }
-  if (before.isSymbolicLink() || !before.isFile()) {
-    throw new Error("Canonical program.md must be a regular, nonsymlink file");
-  }
+  if (before.isSymbolicLink() || !before.isFile()) throw new Error("Canonical program.md must be a regular, nonsymlink file");
 
   let fd: number | undefined;
   try {
@@ -104,13 +136,12 @@ function readCanonicalProgram(canonicalRoot: string): ProgramFileResult {
 export interface RpcWorkerClient {
   start(): Promise<void>;
   stop(): Promise<void>;
-  onEvent(listener: (event: any) => void): () => void;
+  onEvent(listener: (event: unknown) => void): () => void;
   prompt(message: string): Promise<void>;
   steer(message: string): Promise<void>;
   followUp(message: string): Promise<void>;
   abort(): Promise<void>;
   getState(): Promise<{ isStreaming: boolean; sessionFile?: string }>;
-  compact?(instructions?: string): Promise<unknown>;
   setModel?(provider: string, modelId: string): Promise<unknown>;
   setThinkingLevel?(level: ThinkingLevel): Promise<void>;
 }
@@ -123,17 +154,18 @@ export interface SupervisorOptions {
   ensureLane?: (canonicalRoot: string, commonDir: string, lane: WorkerLane) => WorkerLane;
   laneState?: (path: string) => { head: string; dirty: boolean };
   syncLane?: typeof syncLaneToCanonical;
+  preserveTerminal?: typeof preserveTerminalRef;
+  integrateTerminal?: typeof integrateTerminalRef;
+  resetIntegratedLane?: typeof resetIntegratedLane;
   cliPath?: string;
   extensionPath?: string;
   dashboardIntervalMs?: number;
   now?: () => number;
-  token?: () => string;
   sessionId?: () => string;
   sessionVersion?: number;
-  admissionTimeoutMs?: number;
-  admissionMaxCostUsd?: number;
-  admissionMaxTurns?: number;
-  admissionMaxToolCalls?: number;
+  rpcTimeoutMs?: number;
+  recycleBackoffMs?: number;
+  maxRecoveryAttempts?: number;
   planningProvider?: string;
   planningModel?: string;
   planningThinking?: ThinkingLevel;
@@ -143,24 +175,24 @@ export interface SupervisorOptions {
 interface WorkerLaunchSeed {
   workerId: string;
   sessionId: string;
-  token: string;
   worktree: string;
   branch: string;
   sessionsRoot: string;
 }
 
 export interface FleetCommandHandler {
-  start(count: number, ctx: ExtensionContext): void;
-  status(ctx: ExtensionContext): boolean;
+  start(count: number, ctx: ExtensionContext): Promise<boolean>;
+  status(ctx: ExtensionContext): Promise<boolean>;
   stop(ctx: ExtensionContext): Promise<boolean>;
   shutdown(ctx: ExtensionContext): Promise<void>;
+  isActive(): boolean;
 }
 
 export function parseAutoresearchFleetCount(args: string): number | undefined {
   const trimmed = args.trim();
   if (!/^\d+$/.test(trimmed)) return undefined;
   const count = Number(trimmed);
-  if (!Number.isInteger(count) || count < 1 || count > MAX_AUTORESEARCH_WORKERS) return undefined;
+  if (!Number.isSafeInteger(count) || count < 1) return undefined;
   return count;
 }
 
@@ -174,13 +206,8 @@ export function resolvePiCliPath(candidate?: string, packageDir?: string): strin
 
 function sessionHeader(path: string): Record<string, unknown> | undefined {
   let before: ReturnType<typeof lstatSync>;
-  try {
-    before = lstatSync(path);
-  } catch {
-    return undefined;
-  }
+  try { before = lstatSync(path); } catch { return undefined; }
   if (!before.isFile() || before.isSymbolicLink()) return undefined;
-
   let fd: number | undefined;
   try {
     fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
@@ -200,34 +227,21 @@ function sessionHeader(path: string): Record<string, unknown> | undefined {
 }
 
 function ensureWorkerSession(cwd: string, sessionDir: string, sessionId: string, sessionVersion: number): void {
-  if (!Number.isInteger(sessionVersion) || sessionVersion < 1) {
-    throw new Error("Autoresearch requires Pi's current persistent session version");
-  }
+  if (!Number.isInteger(sessionVersion) || sessionVersion < 1) throw new Error("Autoresearch requires Pi's current persistent session version");
   const resolvedCwd = realpathSync(cwd);
   const resolvedSessionDir = realpathSync(sessionDir);
-  if (resolvedSessionDir !== resolve(sessionDir)) {
-    throw new Error("Autoresearch worker session directory must not contain symlink indirection");
-  }
+  if (resolvedSessionDir !== resolve(sessionDir)) throw new Error("Autoresearch worker session directory must not contain symlink indirection");
   for (const file of readdirSync(resolvedSessionDir)) {
     if (!file.endsWith(".jsonl")) continue;
     const header = sessionHeader(join(resolvedSessionDir, file));
     if (header?.id !== sessionId) continue;
-    if (header.cwd !== resolvedCwd) {
-      throw new Error(`Autoresearch session ${sessionId} belongs to a different worker checkout`);
-    }
+    if (header.cwd !== resolvedCwd) throw new Error(`Autoresearch session ${sessionId} belongs to a different worker checkout`);
     return;
   }
 
-  const timestamp = new Date().toISOString();
   const path = join(resolvedSessionDir, `${sessionId}.jsonl`);
   const temporaryPath = join(resolvedSessionDir, `.${sessionId}.${randomUUID()}.tmp`);
-  const header = {
-    type: "session",
-    version: sessionVersion,
-    id: sessionId,
-    timestamp,
-    cwd: resolvedCwd,
-  };
+  const header = { type: "session", version: sessionVersion, id: sessionId, timestamp: new Date().toISOString(), cwd: resolvedCwd };
   let fd: number | undefined;
   try {
     fd = openSync(temporaryPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
@@ -254,12 +268,8 @@ function finalAssistant(messages: unknown): AgentMessage | undefined {
 function assistantSnippet(message: unknown): string | undefined {
   const typed = message as AgentMessage;
   if (!typed || typed.role !== "assistant") return undefined;
-  const value = typed.content
-    .filter((part): part is { type: "text"; text: string } => part.type === "text")
-    .map((part) => part.text)
-    .join("\n")
-    .replace(/\s+/g, " ")
-    .trim();
+  const value = typed.content.filter((part): part is { type: "text"; text: string } => part.type === "text")
+    .map((part) => part.text).join("\n").replace(/\s+/g, " ").trim();
   return value ? value.slice(0, 500) : undefined;
 }
 
@@ -271,316 +281,411 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function hasActivePortfolioAssignment(canonicalRoot: string, workerId: string): boolean {
-  const path = join(canonicalRoot, ".autoresearch", "portfolio.json");
-  if (!existsSync(path)) return false;
-  const stat = lstatSync(path);
-  if (!stat.isFile() || stat.isSymbolicLink()) {
-    throw new Error("Cannot safely sync: canonical .autoresearch/portfolio.json is not a regular file");
-  }
-  let portfolio: unknown;
-  try {
-    portfolio = JSON.parse(readFileSync(path, "utf8"));
-  } catch (error) {
-    throw new Error(`Cannot safely sync: malformed canonical .autoresearch/portfolio.json (${error instanceof Error ? error.message : String(error)})`);
-  }
-  const v1Keys = ["schema_version", "revision", "active_hypothesis_id", "paused", "pause_reason", "hypotheses", "history"];
-  if (isRecord(portfolio) && portfolio.schema_version === 1) {
-    if (Object.keys(portfolio).sort().join("\0") !== [...v1Keys].sort().join("\0")
-      || typeof portfolio.revision !== "number" || !Number.isInteger(portfolio.revision) || portfolio.revision < 0
-      || (portfolio.active_hypothesis_id !== null
-        && (typeof portfolio.active_hypothesis_id !== "string" || !portfolio.active_hypothesis_id.trim()))
-      || typeof portfolio.paused !== "boolean"
-      || (portfolio.pause_reason !== null && (typeof portfolio.pause_reason !== "string" || !portfolio.pause_reason.trim()))
-      || !isRecord(portfolio.hypotheses) || !Array.isArray(portfolio.history)) {
-      throw new Error("Cannot safely sync: malformed canonical portfolio schema v1");
-    }
-    return portfolio.active_hypothesis_id !== null;
-  }
-  const portfolioKeys = ["schema_version", "revision", "active_assignments", "paused", "pause_reason", "hypotheses", "history"];
-  if (!isRecord(portfolio) || portfolio.schema_version !== 2
-    || Object.keys(portfolio).sort().join("\0") !== [...portfolioKeys].sort().join("\0")
-    || typeof portfolio.revision !== "number" || !Number.isInteger(portfolio.revision) || portfolio.revision < 0
-    || !isRecord(portfolio.active_assignments) || typeof portfolio.paused !== "boolean"
-    || (portfolio.pause_reason !== null && (typeof portfolio.pause_reason !== "string" || !portfolio.pause_reason.trim()))
-    || !isRecord(portfolio.hypotheses) || !Array.isArray(portfolio.history)
-    || (portfolio.paused && Object.keys(portfolio.active_assignments).length > 0)) {
-    throw new Error("Cannot safely sync: malformed or unsupported canonical portfolio schema");
-  }
-  for (const [id, value] of Object.entries(portfolio.active_assignments)) {
-    const assignmentKeys = ["worker_id", "campaign_id", "hypothesis_id", "worker_token_sha256"];
-    const hypothesis = isRecord(value) && typeof value.hypothesis_id === "string"
-      ? portfolio.hypotheses[value.hypothesis_id]
-      : undefined;
-    if (!isRecord(value) || Object.keys(value).sort().join("\0") !== [...assignmentKeys].sort().join("\0")
-      || value.worker_id !== id || typeof value.campaign_id !== "string" || !value.campaign_id.trim()
-      || typeof value.hypothesis_id !== "string" || !value.hypothesis_id.trim()
-      || !(id === "single-worker"
-        ? value.worker_token_sha256 === null
-        : typeof value.worker_token_sha256 === "string" && /^[0-9a-f]{64}$/.test(value.worker_token_sha256))
-      || !isRecord(hypothesis) || hypothesis.status !== "active") {
-      throw new Error("Cannot safely sync: malformed canonical portfolio assignment");
-    }
-  }
-  return Object.hasOwn(portfolio.active_assignments, workerId);
-}
-
-function activePortfolioWorkerIds(canonicalRoot: string): string[] {
-  const path = join(canonicalRoot, ".autoresearch", "portfolio.json");
-  if (!existsSync(path)) return [];
-  // This call validates the complete portfolio before the bounded key read below.
-  hasActivePortfolioAssignment(canonicalRoot, "__validation_only__");
-  const portfolio = JSON.parse(readFileSync(path, "utf8")) as { active_assignments?: Record<string, unknown> };
-  const workerIds = Object.keys(portfolio.active_assignments ?? {});
-  for (const workerId of workerIds) {
-    if (!/^w[1-4]$/.test(workerId)) throw new Error(`Unsupported active portfolio worker lane: ${workerId}`);
-  }
-  return workerIds.sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)));
-}
-
-function assertNoActivePortfolioAssignment(canonicalRoot: string, workerId: string): void {
-  if (hasActivePortfolioAssignment(canonicalRoot, workerId)) {
-    throw new Error(`${workerId} has an active portfolio assignment and cannot be synced`);
-  }
-}
-
 class FleetOperationCancelledError extends Error {}
+
+type SupervisorOwnership = "none" | "owner" | "observer";
 
 interface DashboardRenderState {
   snapshot: FleetSnapshot;
   options: FleetDashboardOptions;
 }
 
-function renderDashboardLine(line: FleetWidgetLine, theme: any, width: number): string {
-  const statusColor = line.status === "complete"
-    ? "success"
-    : line.status === "failed"
-      ? "error"
-      : line.status === "blocked" || line.status === "decision"
-        ? "warning"
-        : line.status === "running"
-          ? "accent"
-          : "muted";
-  const rendered = line.segments.map((segment) => {
+type SupervisorEvent =
+  | { readonly _tag: "SessionStart"; readonly ctx: ExtensionContext; readonly reply: Deferred.Deferred<void, Error> }
+  | { readonly _tag: "BeforeAgentStart"; readonly systemPrompt: string; readonly reply: Deferred.Deferred<BeforeAgentStartEventResult | void, Error> }
+  | { readonly _tag: "AgentSettled" }
+  | { readonly _tag: "SessionShutdown"; readonly ctx: ExtensionContext; readonly reply: Deferred.Deferred<void, Error> }
+  | { readonly _tag: "Start"; readonly count: number; readonly ctx: ExtensionContext; readonly reply: Deferred.Deferred<boolean, Error> }
+  | { readonly _tag: "Status"; readonly ctx: ExtensionContext; readonly reply: Deferred.Deferred<boolean, Error> }
+  | { readonly _tag: "Stop"; readonly ctx: ExtensionContext; readonly reply: Deferred.Deferred<boolean, Error> }
+  | { readonly _tag: "WorkerEvent"; readonly workerId: string; readonly sessionId: string; readonly client: RpcWorkerClient; readonly event: unknown }
+  | { readonly _tag: "DashboardRefresh" }
+  | { readonly _tag: "RunTask"; readonly task: () => Promise<unknown>; readonly onError: (error: unknown) => void }
+  | { readonly _tag: "RunEffect"; readonly effect: Effect.Effect<void, never, never> }
+  | { readonly _tag: "FailureStopCompleted"; readonly store: FleetStore | undefined; readonly unresolved: number }
+  | { readonly _tag: "Control"; readonly action: string; readonly target: string; readonly message: string | undefined; readonly reply: Deferred.Deferred<Record<string, unknown>, Error> };
+
+function findFleetDatabase(cwd: string): string | undefined {
+  let directory = resolve(cwd);
+  while (true) {
+    const candidate = join(directory, ".autoresearch", "fleet.sqlite");
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(directory);
+    if (parent === directory) return undefined;
+    directory = parent;
+  }
+}
+
+function renderDashboardLine(line: FleetWidgetLine, theme: ExtensionContext["ui"]["theme"], width: number): string {
+  const statusColor = line.status === "complete" ? "success"
+    : line.status === "failed" ? "error"
+      : line.status === "blocked" ? "warning"
+        : line.status === "running" ? "accent" : "muted";
+  return truncateToWidth(line.segments.map((segment) => {
     switch (segment.role) {
-      case "frame":
-        return theme.fg("borderMuted", segment.text);
-      case "group":
-        return theme.fg("accent", theme.bold(segment.text));
-      case "status":
-        return theme.fg(statusColor, theme.bold(segment.text));
+      case "frame": return theme.fg("borderMuted", segment.text);
+      case "group": return theme.fg("accent", theme.bold(segment.text));
+      case "status": return theme.fg(statusColor, theme.bold(segment.text));
       case "model":
-      case "metadata":
-        return theme.fg("dim", segment.text);
-      case "summary":
-        return theme.fg("text", segment.text);
+      case "metadata": return theme.fg("dim", segment.text);
+      case "summary": return theme.fg("text", segment.text);
     }
-  }).join("");
-  return truncateToWidth(rendered, width);
+  }).join(""), width);
 }
 
 export class AutoresearchSupervisor implements FleetCommandHandler {
   private readonly pi: ExtensionAPI;
+  private readonly runtime: AutoresearchManagedRuntime;
   private readonly options: SupervisorOptions;
+  private readonly controller: SerializedController<SupervisorEvent>;
   private readonly clients = new Map<string, RpcWorkerClient>();
   private readonly unsubscribers = new Map<string, () => void>();
   private readonly lanes = new Map<string, WorkerLane>();
-  private store?: FleetStore;
-  private repository?: RepositoryInfo;
-  private generation?: number;
+  private store: FleetStore | undefined;
+  private repository: RepositoryInfo | undefined;
+  private generation: number | undefined;
   private launching = false;
   private active = false;
   private shuttingDown = false;
-  private currentCtx?: ExtensionContext;
-  private dashboardTimer?: ReturnType<typeof setInterval>;
-  private dashboardRenderState?: DashboardRenderState;
+  private currentCtx: ExtensionContext | undefined;
+  private dashboardRunning = false;
+  private dashboardRenderState: DashboardRenderState | undefined;
   private dashboardRequestRender: () => void = () => {};
   private dashboardWidgetRegistered = false;
-  private notifiedStates = new Map<string, string>();
-  private readonly workerSeeds = new Map<string, WorkerLaunchSeed>();
-  private readonly admissionStartedAt = new Map<string, number>();
-  private readonly admissionTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly executionPending = new Set<string>();
-  private admissionLaunchInFlight = false;
-  private fleetReadyForAdmission = false;
+  private ownership: SupervisorOwnership = "none";
+  private readonly workerOperations = new Map<string, number>();
+  private readonly recyclePending = new Set<string>();
+  private readonly integrationPending = new Set<string>();
+  private integrationTail: Promise<void> = Promise.resolve();
+  private readonly recoveryAttempts = new Map<string, number>();
+  private readonly livenessChecks = new Set<string>();
+  private readonly incidentKeys = new Set<string>();
+  private readonly pendingIncidents = new Map<string, string>();
+  private incidentTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly stopOperations = new Map<string, Promise<void>>();
   private operation = 0;
   private setupTurnPending = false;
 
-  constructor(pi: ExtensionAPI, options: SupervisorOptions = {}) {
+  constructor(pi: ExtensionAPI, runtime: AutoresearchManagedRuntime, options: SupervisorOptions = {}) {
     this.pi = pi;
+    this.runtime = runtime;
     this.options = options;
+    this.controller = makeSerializedController(runtime, (event) => this.handleControllerEvent(event), (message) => {
+      this.currentCtx?.ui.notify(`Autoresearch supervisor defect: ${message}`, "error");
+    });
     this.registerTools();
-    this.pi.on("session_start", (_event, ctx) => {
-      this.currentCtx = ctx;
-      this.setToolsActive(false);
-      this.restorePausedFleet(ctx);
-    });
-    this.pi.on("before_agent_start", () => {
-      if (!this.active || !this.store || !this.repository) return;
-      return {
-        message: {
-          customType: "autoresearch-fleet-snapshot",
-          content: compactFleetContext(this.store.snapshot(this.repository.canonicalRoot, { recent: 4 })),
-          display: false,
-        },
-      };
-    });
-    this.pi.on("agent_settled", () => {
-      this.setupTurnPending = false;
-    });
+    this.pi.on("session_start", (_event, ctx) => this.controller.request<void>((reply) => ({ _tag: "SessionStart", ctx, reply })));
+    this.pi.on("before_agent_start", (event) => this.controller.request((reply) => ({ _tag: "BeforeAgentStart", systemPrompt: event.systemPrompt, reply })));
+    this.pi.on("agent_settled", () => this.controller.dispatch({ _tag: "AgentSettled" }));
     this.pi.on("session_shutdown", async (_event, ctx) => {
-      this.setupTurnPending = false;
-      await this.shutdown(ctx);
+      await this.controller.request<void>((reply) => ({ _tag: "SessionShutdown", ctx, reply }));
+      await this.controller.interrupt();
     });
   }
 
-  private restorePausedFleet(ctx: ExtensionContext): void {
+  private handleControllerEvent(event: SupervisorEvent): Effect.Effect<void, never, AutoresearchServices> {
+    const complete = <A>(reply: Deferred.Deferred<A, Error>, value: A) => Deferred.succeed(reply, value).pipe(Effect.asVoid);
+    return Effect.gen(this, function* () {
+      switch (event._tag) {
+        case "SessionStart": {
+          this.currentCtx = event.ctx;
+          this.setToolsActive(false);
+          const restored = this.restorePausedFleet(event.ctx);
+          yield* complete(event.reply, undefined);
+          if (restored.length > 0) {
+            yield* forkControllerTask(Effect.tryPromise({
+              try: async () => Promise.all(restored.map((workerId) => this.resumeRestoredWorker(workerId))),
+              catch: (error) => error,
+            }).pipe(Effect.catchAll((error) => Effect.sync(() => this.failSupervisor(error, event.ctx))), Effect.asVoid));
+          }
+          return;
+        }
+        case "BeforeAgentStart":
+          yield* complete(event.reply, !this.store || !this.repository ? undefined : {
+            message: {
+              customType: "autoresearch-fleet-snapshot",
+              content: compactFleetContext(this.store.snapshot(this.repository.canonicalRoot, { recent: 20 })),
+              display: false,
+            },
+            systemPrompt: `${event.systemPrompt}\n\n${AUTORESEARCH_OPERATIONAL_GUIDANCE}`,
+          });
+          return;
+        case "AgentSettled":
+          this.setupTurnPending = false;
+          return;
+        case "SessionShutdown":
+          this.setupTurnPending = false;
+          yield* Effect.tryPromise({ try: () => this.shutdownImpl(event.ctx), catch: (cause) => cause instanceof Error ? cause : new Error(String(cause)) });
+          yield* complete(event.reply, undefined);
+          return;
+        case "Start": {
+          const operation = this.startImpl(event.count, event.ctx);
+          yield* complete(event.reply, operation !== undefined);
+          if (operation !== undefined) {
+            yield* forkControllerTask(Effect.yieldNow().pipe(
+              Effect.zipRight(Effect.tryPromise({ try: () => this.launch(event.count, event.ctx, operation), catch: (error) => error })),
+              Effect.catchAll((error) => Effect.sync(() => {
+                if (!(error instanceof FleetOperationCancelledError)) this.failSupervisor(error, event.ctx);
+              })),
+            ));
+          }
+          return;
+        }
+        case "Status":
+          yield* complete(event.reply, this.statusImpl(event.ctx));
+          return;
+        case "Stop":
+          yield* complete(event.reply, yield* Effect.tryPromise({ try: () => this.stopImpl(event.ctx), catch: (cause) => cause instanceof Error ? cause : new Error(String(cause)) }));
+          return;
+        case "WorkerEvent":
+          this.handleWorkerEvent(event.workerId, event.sessionId, event.client, event.event);
+          return;
+        case "DashboardRefresh":
+          this.refreshDashboard();
+          return;
+        case "RunTask":
+          yield* forkControllerTask(Effect.tryPromise({ try: event.task, catch: (error) => error }).pipe(
+            Effect.catchAll((error) => Effect.sync(() => event.onError(error))), Effect.asVoid,
+          ));
+          return;
+        case "RunEffect":
+          yield* forkControllerTask(event.effect);
+          return;
+        case "FailureStopCompleted":
+          if (this.store !== event.store) return;
+          if (event.unresolved === 0) {
+            this.closeFleetResources();
+            this.launching = false;
+          } else {
+            if (this.store && this.repository && this.generation) {
+              this.store.setFleetStatus(this.repository.canonicalRoot, "off", (this.options.now ?? Date.now)(), this.generation);
+            }
+            this.active = false;
+            this.launching = false;
+            this.setToolsActive(true);
+          }
+          return;
+        case "Control": {
+          const result = yield* Effect.either(Effect.tryPromise({
+            try: () => this.controlImpl(event.action, event.target, event.message),
+            catch: (cause) => cause instanceof Error ? cause : new Error(String(cause)),
+          }));
+          if (result._tag === "Left") yield* Deferred.fail(event.reply, result.left).pipe(Effect.asVoid);
+          else yield* complete(event.reply, result.right);
+          return;
+        }
+      }
+    }).pipe(Effect.catchAllCause((cause) => Effect.sync(() => this.failSupervisor(new Error(String(cause)), this.currentCtx))));
+  }
+
+  private restorePausedFleet(ctx: ExtensionContext): string[] {
     let store: FleetStore | undefined;
     try {
+      if (!findFleetDatabase(ctx.cwd)) return [];
       const inspect = this.options.inspectRepo ?? ((cwd: string) => inspectRepository(cwd, this.options.run));
       const repository = inspect(ctx.cwd);
       const dbPath = join(repository.canonicalRoot, ".autoresearch", "fleet.sqlite");
-      if (!existsSync(dbPath)) return;
+      if (!existsSync(dbPath)) return [];
       store = (this.options.createStore ?? ((path) => new FleetStore(path)))(dbPath);
-      const snapshot = store.snapshot(repository.canonicalRoot, { recent: 5 });
-      if (snapshot.fleet?.status !== "paused" || snapshot.workers.length === 0) {
+      const snapshot = store.snapshot(repository.canonicalRoot, { recent: 20 });
+      const fleet = snapshot.fleet;
+      const fleetStatus = String(fleet?.status ?? "");
+      if (!fleet || !["launching", "active", "paused", "off"].includes(fleetStatus) || snapshot.workers.length === 0) {
         store.close();
-        return;
+        return [];
       }
-      const generation = Number(snapshot.fleet.generation);
-      if (!Number.isInteger(generation) || generation < 1) {
-        throw new Error("paused fleet has an invalid generation");
+      const generation = Number(fleet.generation);
+      if (!Number.isInteger(generation) || generation < 1) throw new Error("recoverable fleet has an invalid generation");
+      if (Number(fleet.protocol_version) !== AUTORESEARCH_PROTOCOL_VERSION) {
+        store.close();
+        return [];
       }
-      if (Number(snapshot.fleet.protocol_version) !== AUTORESEARCH_PROTOCOL_VERSION) {
-        throw new Error("paused fleet protocol does not match the loaded supervisor");
-      }
-
-      for (const worker of snapshot.workers) {
-        if (worker.status !== "paused") continue;
-        const workerSnapshot = store.snapshot(repository.canonicalRoot, { workerId: String(worker.worker_id), recent: 5 });
-        if (workerSnapshot.admissions[0]?.state === "admitted") continue;
-        const latest = workerSnapshot.checkpoints.find((checkpoint) => Number(checkpoint.generation) === generation);
-        const checkpointStatus = String(latest?.status ?? "");
-        if (["blocked", "decision", "failed", "complete", "stopped"].includes(checkpointStatus)) {
-          store.parentUpdateWorker(repository.canonicalRoot, String(worker.worker_id), { status: checkpointStatus as WorkerStatus });
-          worker.status = checkpointStatus;
-        }
-      }
-
+      const unresolved = snapshot.workers.some((worker) => worker.process_state !== "stopped");
       this.store = store;
       store = undefined;
       this.repository = repository;
       this.generation = generation;
+      if (fleet.canonical_branch === null || fleet.canonical_branch === undefined) {
+        if (repository.dirty || repository.head !== fleet.canonical_head) {
+          throw new Error("Cannot capture canonical branch for restored fleet because canonical checkout changed");
+        }
+        this.store.captureCanonicalBranch(repository.canonicalRoot, generation, repository.branch, repository.head, (this.options.now ?? Date.now)());
+      }
       for (const [index, worker] of snapshot.workers.entries()) {
         const workerId = String(worker.worker_id);
-        const path = String(worker.worktree);
-        const branch = String(worker.branch);
-        if (!workerId || !path || !branch) throw new Error("paused fleet contains an invalid worker lane");
-        this.lanes.set(workerId, { workerId, index: index + 1, path, branch });
-        this.notifiedStates.set(workerId, String(worker.status));
+        this.lanes.set(workerId, { workerId, index: index + 1, path: String(worker.worktree), branch: String(worker.branch) });
       }
+      if (unresolved || fleetStatus === "off") {
+        this.ownership = "observer";
+        this.active = false;
+        this.setToolsActive(true);
+        ctx.ui.notify(
+          ["launching", "active"].includes(fleetStatus)
+            ? "Another supervisor may still be active, or the previous supervisor exited without verifying worker termination. State was left unchanged; reconcile only after external verification."
+            : "Autoresearch is off because previous worker process termination is unresolved. Reconcile only after external verification.",
+          "warning",
+        );
+        if (fleetStatus === "off") {
+          for (const worker of snapshot.workers.filter((row) => row.process_state === "unreconciled")) {
+            this.queueOperationalIncident(String(worker.worker_id), "restored unresolved process state requires diagnosis");
+          }
+        }
+        return [];
+      }
+      this.ownership = "owner";
       this.active = true;
+      this.operation += 1;
+      this.store.setFleetStatus(repository.canonicalRoot, "active", (this.options.now ?? Date.now)(), generation);
       this.setToolsActive(true);
       this.startDashboard();
+      ctx.ui.notify(`Restoring ${snapshot.workers.length} disposable autoresearch workers.`, "info");
+      return snapshot.workers.map((worker) => String(worker.worker_id));
     } catch (error) {
       store?.close();
       this.closeFleetResources();
       this.active = false;
       this.setToolsActive(false);
-      if (ctx.hasUI) {
-        ctx.ui.notify(`Could not restore paused autoresearch fleet: ${error instanceof Error ? error.message : String(error)}`, "error");
-      }
+      ctx.ui.notify(`Could not restore autoresearch fleet: ${error instanceof Error ? error.message : String(error)}`, "error");
+      return [];
     }
   }
 
   private requestProgramSetup(ctx: ExtensionContext): void {
     if (this.setupTurnPending) {
-      if (ctx.hasUI) ctx.ui.notify("Autoresearch setup is already queued or running.", "info");
+      ctx.ui.notify("Autoresearch setup is already queued or running.", "info");
       return;
     }
     this.setupTurnPending = true;
-    if (ctx.hasUI) {
-      ctx.ui.notify("Autoresearch setup is required before workers can start: canonical program.md is missing.", "warning");
-    }
+    ctx.ui.notify("Autoresearch setup is required before workers can start: canonical program.md is missing.", "warning");
     try {
       if (ctx.isIdle()) this.pi.sendUserMessage(PROGRAM_DESIGN_SETUP_PROMPT);
       else this.pi.sendUserMessage(PROGRAM_DESIGN_SETUP_PROMPT, { deliverAs: "followUp" });
     } catch (error) {
       this.setupTurnPending = false;
-      if (ctx.hasUI) {
-        ctx.ui.notify(`Could not start autoresearch setup: ${error instanceof Error ? error.message : String(error)}`, "error");
-      }
+      ctx.ui.notify(`Could not start autoresearch setup: ${error instanceof Error ? error.message : String(error)}`, "error");
     }
   }
 
-  start(count: number, ctx: ExtensionContext): void {
+  start(count: number, ctx: ExtensionContext): Promise<boolean> {
+    return this.controller.request<boolean>((reply) => ({ _tag: "Start", count, ctx, reply }));
+  }
+  status(ctx: ExtensionContext): Promise<boolean> {
+    return this.controller.request<boolean>((reply) => ({ _tag: "Status", ctx, reply }));
+  }
+  stop(ctx: ExtensionContext): Promise<boolean> {
+    return this.controller.request<boolean>((reply) => ({ _tag: "Stop", ctx, reply }));
+  }
+  isActive(): boolean { return this.launching || this.active || this.ownership === "observer"; }
+
+  private startImpl(count: number, ctx: ExtensionContext): number | undefined {
     if (this.shuttingDown) {
       ctx.ui.notify("Autoresearch supervisor is shutting down and cannot launch a fleet.", "error");
-      return;
+      return undefined;
     }
     if (this.launching || this.active) {
       ctx.ui.notify("Autoresearch supervisor failure: a fleet is already launching or active.", "error");
-      return;
+      return undefined;
     }
-
-    let repository: RepositoryInfo;
+    if (this.ownership === "observer" || this.store || this.repository) {
+      ctx.ui.notify("Autoresearch already has managed process state. Inspect and reconcile it instead of launching a conflicting fleet.", "error");
+      return undefined;
+    }
     try {
       const inspect = this.options.inspectRepo ?? ((cwd: string) => inspectRepository(cwd, this.options.run));
-      repository = inspect(ctx.cwd);
+      const repository = inspect(ctx.cwd);
       const program = readCanonicalProgram(repository.canonicalRoot);
       if (program.kind === "missing") {
         this.requestProgramSetup(ctx);
-        return;
+        return undefined;
       }
-      if (repository.dirty) {
-        throw new Error("Canonical checkout is dirty. Commit the reviewed program and controller changes before launching /autoresearch workers.");
-      }
+      if (repository.dirty) throw new Error("Canonical checkout is dirty. Commit reviewed program and controller changes before launching workers.");
     } catch (error) {
-      if (ctx.hasUI) ctx.ui.notify(`Autoresearch supervisor failure: ${error instanceof Error ? error.message : String(error)}`, "error");
-      return;
+      ctx.ui.notify(`Autoresearch supervisor failure: ${error instanceof Error ? error.message : String(error)}`, "error");
+      return undefined;
     }
-
     const operation = ++this.operation;
     this.launching = true;
     this.currentCtx = ctx;
-    ctx.ui.notify(`Starting autoresearch with a maximum of ${count} workers.`, "info");
-    setTimeout(() => {
-      if (this.shuttingDown || operation !== this.operation) return;
-      void this.launch(count, ctx, operation).catch((error) => {
-        if (!(error instanceof FleetOperationCancelledError)) this.failSupervisor(error, ctx);
-      });
-    }, 0);
+    ctx.ui.notify(`Starting autoresearch with ${count} disposable autonomous worker${count === 1 ? "" : "s"}.`, "info");
+    return operation;
   }
 
-  status(ctx: ExtensionContext): boolean {
-    if (!this.launching && !this.active) return false;
-    let detail = this.launching ? "launching" : "active";
+  private statusImpl(ctx: ExtensionContext): boolean {
+    if (!this.launching && !this.active && (!this.store || !this.repository)) return false;
+    let detail = this.ownership === "observer" ? "observed" : this.launching ? "launching" : "active";
     if (this.store && this.repository) {
       const snapshot = this.store.snapshot(this.repository.canonicalRoot, { recent: 1 });
       detail = `${String(snapshot.fleet?.status ?? detail)}, generation ${String(snapshot.fleet?.generation ?? "?")}, ${snapshot.workers.length} workers`;
     }
-    if (ctx.hasUI) ctx.ui.notify(`Autoresearch fleet is ${detail}.`, "info");
+    ctx.ui.notify(`Autoresearch fleet is ${detail}.`, "info");
     return true;
   }
 
-  async stop(ctx: ExtensionContext): Promise<boolean> {
+  private async stopImpl(ctx: ExtensionContext): Promise<boolean> {
     if (!this.launching && !this.active) return false;
     ++this.operation;
+    for (const workerId of this.lanes.keys()) this.bumpWorkerOperation(workerId);
     this.launching = false;
     this.active = false;
     this.stopDashboard();
     this.setToolsActive(false);
-    await Promise.allSettled([...this.lanes.keys()].map((id) => this.stopWorker(id, "stopped")));
-    if (this.store && this.repository) this.store.setFleetStatus(this.repository.canonicalRoot, "stopped");
-    this.closeFleetResources();
-    if (ctx.hasUI) ctx.ui.notify("Stopped autoresearch fleet.", "info");
+    const store = this.store;
+    const repository = this.repository;
+    const generation = this.generation;
+    const results = await Promise.allSettled([...this.lanes.keys()].map((id) => this.stopWorker(id, "stopped")));
+    const unresolved = results.filter((result) => result.status === "rejected");
+    if (store && repository && generation && this.store === store) {
+      store.setFleetStatus(repository.canonicalRoot, unresolved.length === 0 ? "stopped" : "off", (this.options.now ?? Date.now)(), generation);
+    }
+    if (unresolved.length === 0) {
+      this.closeFleetResources();
+      ctx.ui.notify("Stopped autoresearch fleet.", "info");
+    } else {
+      this.setToolsActive(true);
+      ctx.ui.notify(`Autoresearch is off. Process termination is unverified for ${unresolved.length} worker${unresolved.length === 1 ? "" : "s"}.`, "warning");
+    }
     return true;
   }
 
-  private assertOperation(operation: number): void {
-    if (this.shuttingDown || operation !== this.operation) {
-      throw new FleetOperationCancelledError("Autoresearch fleet operation was cancelled");
+  private forkTask(task: () => Promise<unknown>, onError = (error: unknown) => this.failSupervisor(error, this.currentCtx)): void {
+    this.controller.tell({ _tag: "RunTask", task, onError });
+  }
+
+  private async rpc<T>(workerId: string, operation: string, invoke: () => Promise<T>): Promise<T> {
+    const timeoutMs = Math.max(1, this.options.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        invoke(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error(`${workerId} RPC ${operation} timed out after ${timeoutMs}ms`)), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
+  }
+
+  private assertOperation(operation: number): void {
+    if (this.shuttingDown || operation !== this.operation) throw new FleetOperationCancelledError("Autoresearch fleet operation was cancelled");
+  }
+
+  private assertFleetOperation(operation: number, store: FleetStore, repository: RepositoryInfo, generation: number): void {
+    this.assertOperation(operation);
+    if (this.store !== store || this.repository !== repository || this.generation !== generation) {
+      throw new FleetOperationCancelledError("Autoresearch fleet generation was replaced");
+    }
+  }
+
+  private bumpWorkerOperation(workerId: string): number {
+    const next = (this.workerOperations.get(workerId) ?? 0) + 1;
+    this.workerOperations.set(workerId, next);
+    return next;
+  }
+
+  private assertWorkerOperation(workerId: string, fleetOperation: number, workerOperation: number): void {
+    this.assertOperation(fleetOperation);
+    if ((this.workerOperations.get(workerId) ?? 0) !== workerOperation) throw new FleetOperationCancelledError(`${workerId} operation was superseded`);
   }
 
   private async launch(count: number, ctx: ExtensionContext, operation: number): Promise<void> {
@@ -589,469 +694,497 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
     const repository = inspect(ctx.cwd);
     const program = readCanonicalProgram(repository.canonicalRoot);
     if (program.kind !== "valid") throw new Error("Canonical program.md disappeared before fleet provisioning");
-    if (repository.dirty) {
-      throw new Error("Canonical checkout is dirty. Commit the reviewed program and controller changes before launching /autoresearch workers.");
-    }
+    if (repository.dirty) throw new Error("Canonical checkout is dirty. Commit reviewed changes before launching workers.");
     this.repository = repository;
     const stateDir = join(repository.canonicalRoot, ".autoresearch");
     const sessionsDir = join(stateDir, "sessions");
-    const artifactsDir = join(stateDir, "artifacts", "runs");
     mkdirSync(sessionsDir, { recursive: true });
-    mkdirSync(artifactsDir, { recursive: true });
+    mkdirSync(join(stateDir, "artifacts", "runs"), { recursive: true });
     (this.options.ensureIgnored ?? ((root) => ensureAutoresearchIgnored(root, this.options.run)))(repository.canonicalRoot);
 
-    const registeredLanes = workerLanes(repository.canonicalRoot, MAX_AUTORESEARCH_WORKERS);
-    const lanesById = new Map(registeredLanes.map((lane) => [lane.workerId, lane]));
-    const activeOwners = activePortfolioWorkerIds(repository.canonicalRoot);
-    if (activeOwners.length > count) {
-      throw new FleetAlreadyActiveError(
-        `Requested capacity ${count} is below ${activeOwners.length} active portfolio owners: ${activeOwners.join(", ")}`,
-      );
-    }
-    const selectedIds = [...activeOwners];
-    for (const lane of registeredLanes) {
-      if (selectedIds.length >= count) break;
-      if (!selectedIds.includes(lane.workerId)) selectedIds.push(lane.workerId);
-    }
-    const lanes = selectedIds.map((workerId) => lanesById.get(workerId)!);
+    const lanes = workerLanes(repository.canonicalRoot, count);
     const ensureLane = this.options.ensureLane ?? ((root, commonDir, lane) => ensureWorkerLane(root, commonDir, lane, this.options.run));
     for (const lane of lanes) {
       ensureLane(repository.canonicalRoot, repository.commonDir, lane);
       this.lanes.set(lane.workerId, lane);
     }
 
-    const token = this.options.token ?? randomUUID;
     const sessionId = this.options.sessionId ?? randomUUID;
     const dbPath = join(stateDir, "fleet.sqlite");
     this.store = (this.options.createStore ?? ((path) => new FleetStore(path)))(dbPath);
-    let seeds: WorkerSeed[];
+    const seeds: WorkerLaunchSeed[] = lanes.map((lane) => ({
+      workerId: lane.workerId,
+      sessionId: sessionId(),
+      worktree: lane.path,
+      branch: lane.branch,
+      sessionsRoot: sessionsDir,
+    }));
     try {
-      const previousWorkers = new Map(
-        this.store.snapshot(repository.canonicalRoot, { recent: 1 }).workers
-          .map((worker) => [String(worker.worker_id), worker]),
-      );
-      const requestedWorkers = new Set(lanes.map((lane) => lane.workerId));
-      for (const [workerId] of previousWorkers) {
-        if (!requestedWorkers.has(workerId) && hasActivePortfolioAssignment(repository.canonicalRoot, workerId)) {
-          throw new FleetAlreadyActiveError(`Cannot resize below active portfolio owner ${workerId}`);
-        }
-      }
-      seeds = lanes.map((lane) => {
-        const previous = previousWorkers.get(lane.workerId);
-        const resumesPortfolio = hasActivePortfolioAssignment(repository.canonicalRoot, lane.workerId);
-        return {
-          workerId: lane.workerId,
-          sessionId: sessionId(),
-          token: resumesPortfolio && typeof previous?.token === "string" ? previous.token : token(),
-          worktree: lane.path,
-          branch: lane.branch,
-          sessionsRoot: sessionsDir,
-        };
-      });
+      const parentSession = ctx.sessionManager.getSessionFile();
       this.generation = this.store.beginFleet({
         canonicalRoot: repository.canonicalRoot,
-        parentSession: ctx.sessionManager.getSessionFile(),
+        ...(parentSession !== undefined ? { parentSession } : {}),
+        canonicalBranch: repository.branch,
         canonicalHead: repository.head,
-        maxEvidenceStages: repository.maxEvidenceStages,
-        admission: {
-          timeoutMs: this.options.admissionTimeoutMs ?? DEFAULT_ADMISSION_TIMEOUT_MS,
-          maxCost: this.options.admissionMaxCostUsd ?? DEFAULT_ADMISSION_MAX_COST_USD,
-          maxTurns: this.options.admissionMaxTurns ?? DEFAULT_ADMISSION_MAX_TURNS,
-          maxToolCalls: this.options.admissionMaxToolCalls ?? DEFAULT_ADMISSION_MAX_TOOL_CALLS,
-        },
         workers: seeds,
         now: (this.options.now ?? Date.now)(),
       });
     } catch (error) {
       if (error instanceof FleetAlreadyActiveError) {
-        const existing = this.store.snapshot(repository.canonicalRoot);
-        const status = String(existing.fleet?.status ?? "active");
-        const generation = String(existing.fleet?.generation ?? "?");
-        this.launching = false;
-        this.active = false;
-        this.setToolsActive(false);
         this.store.close();
         this.store = undefined;
         this.repository = undefined;
-        this.generation = undefined;
+        this.ownership = "none";
         this.lanes.clear();
-        throw new FleetAlreadyActiveError(
-          `Durable fleet reservation is ${status} at generation ${generation}, but this supervisor owns no RPC workers. ${error.message} Refusing to attach or relaunch unreconciled work.`,
-        );
       }
       throw error;
     }
 
-    this.assertOperation(operation);
     const syncLane = this.options.syncLane ?? syncLaneToCanonical;
     for (const lane of lanes) {
-      const resumesCampaign = hasActivePortfolioAssignment(repository.canonicalRoot, lane.workerId)
-        || this.store.hasActiveReservation(repository.canonicalRoot, lane.workerId);
-      if (resumesCampaign) continue;
+      if (this.store.currentIntent(repository.canonicalRoot, lane.workerId)) continue;
       const synced = syncLane({
         canonicalRoot: repository.canonicalRoot,
         lane,
         generation: this.generation,
         canonicalHead: repository.head,
         now: (this.options.now ?? Date.now)(),
-        run: this.options.run,
+        ...(this.options.run ? { run: this.options.run } : {}),
       });
-      if (synced.canonicalHead !== repository.head) {
-        throw new Error(`${lane.workerId} was not synchronized to the reviewed canonical commit`);
-      }
+      if (synced.canonicalHead !== repository.head) throw new Error(`${lane.workerId} was not synchronized to the reviewed canonical commit`);
     }
 
-    this.assertOperation(operation);
+    this.ownership = "owner";
     this.active = true;
     this.setToolsActive(true);
     const model = ctx.model;
-    const thinking = this.pi.getThinkingLevel();
-    const planningProvider = this.options.planningProvider ?? model?.provider ?? "openai-codex";
-    const planningModel = this.options.planningModel ?? model?.id ?? "gpt-5.6-sol";
-    const planningThinking = this.options.planningThinking ?? this.pi.getThinkingLevel();
-    for (const [index, seed] of seeds.entries()) {
-      this.workerSeeds.set(seed.workerId, seed);
+    const provider = this.options.planningProvider ?? model?.provider ?? "openai-codex";
+    const modelId = this.options.planningModel ?? model?.id ?? "gpt-5.6-sol";
+    const thinking = this.options.planningThinking ?? this.pi.getThinkingLevel();
+    for (const seed of seeds) {
       this.store.parentUpdateWorker(repository.canonicalRoot, seed.workerId, {
-        status: index === 0 ? "launching" : "queued",
-        task: index === 0 ? "Claiming a bounded campaign" : "Waiting for sequential admission",
-        model: `${planningProvider}/${planningModel}`,
-        thinking: planningThinking,
-        contextWindow: model?.contextWindow,
-      });
+        status: "launching", processState: "stopped", task: "Selecting research direction",
+        model: `${provider}/${modelId}`, thinking,
+        ...(model?.contextWindow !== undefined ? { contextWindow: model.contextWindow } : {}),
+      }, (this.options.now ?? Date.now)(), this.generation);
     }
-    this.startDashboard();
-    await this.launchWorker(seeds[0], planningProvider, planningModel, planningThinking, operation);
-    this.assertOperation(operation);
-    this.store.activateFleet(repository.canonicalRoot, this.generation);
-    this.fleetReadyForAdmission = true;
+    if (seeds.length === 0) throw new Error("Fleet has no worker");
+    const store = this.store;
+    const generation = this.generation;
+    store.activateFleet(repository.canonicalRoot, generation);
     this.launching = false;
+    this.startDashboard();
     this.refreshDashboard();
-    void this.launchNextQueuedWorker();
+    await Promise.all(seeds.map(async (seed) => {
+      try {
+        await this.launchWorker(seed, provider, modelId, thinking, operation);
+      } catch (error) {
+        if (error instanceof FleetOperationCancelledError) return;
+        const current = store.snapshot(repository.canonicalRoot, { workerId: seed.workerId, recent: 1 }).workers[0];
+        if (current?.process_state === "stopped") this.scheduleRecycle(seed.workerId, error instanceof Error ? error.message : String(error));
+      }
+    }));
   }
 
   private async launchWorker(seed: WorkerLaunchSeed, provider?: string, model?: string, thinking?: ThinkingLevel, operation = this.operation): Promise<void> {
     this.assertOperation(operation);
     if (!this.repository || !this.store || !this.generation) throw new Error("Fleet launch state is incomplete");
+    const repository = this.repository;
+    const store = this.store;
+    const generation = this.generation;
+    const workerOperation = this.workerOperations.get(seed.workerId) ?? 0;
+    const assertWorkerCurrent = (): void => {
+      this.assertFleetOperation(operation, store, repository, generation);
+      if ((this.workerOperations.get(seed.workerId) ?? 0) !== workerOperation) throw new FleetOperationCancelledError(`${seed.workerId} launch was superseded`);
+    };
     const lane = this.lanes.get(seed.workerId);
     if (!lane) throw new Error(`Missing lane ${seed.workerId}`);
     let codingAgent: typeof import("@earendil-works/pi-coding-agent") | undefined;
     if (!this.options.cliPath || !this.options.createRpcClient) {
       codingAgent = await import("@earendil-works/pi-coding-agent");
+      assertWorkerCurrent();
     }
-    this.assertOperation(operation);
     const cliPath = resolvePiCliPath(this.options.cliPath, codingAgent?.getPackageDir());
     const extensionPath = realpathSync(this.options.extensionPath ?? fileURLToPath(new URL("../autoresearch.ts", import.meta.url)));
-    const stateDir = join(this.repository.canonicalRoot, ".autoresearch");
-    const artifactsDir = join(stateDir, "artifacts", "runs");
-    const sessionDir = join(seed.sessionsRoot, `generation-${this.generation}`);
-    mkdirSync(artifactsDir, { recursive: true });
+    const stateDir = join(repository.canonicalRoot, ".autoresearch");
+    const sessionDir = join(seed.sessionsRoot, `generation-${generation}`);
+    mkdirSync(join(stateDir, "artifacts", "runs"), { recursive: true });
     mkdirSync(sessionDir, { recursive: true });
-    const sessionVersion = codingAgent?.CURRENT_SESSION_VERSION ?? this.options.sessionVersion;
-    ensureWorkerSession(lane.path, sessionDir, seed.sessionId, sessionVersion ?? Number.NaN);
-    this.assertOperation(operation);
+    ensureWorkerSession(lane.path, sessionDir, seed.sessionId, codingAgent?.CURRENT_SESSION_VERSION ?? this.options.sessionVersion ?? Number.NaN);
+    assertWorkerCurrent();
     let createClient = this.options.createRpcClient;
     if (!createClient) {
       const RpcClient = codingAgent!.RpcClient;
       createClient = (rpcOptions: RpcClientOptions) => new RpcClient(rpcOptions);
     }
+    const program = readFileSync(join(lane.path, "program.md"), "utf8").trim();
+    if (!program) throw new Error(`${seed.workerId} program.md is empty`);
+    assertWorkerCurrent();
     const env = {
       AUTORESEARCH_ROLE: "worker",
       AUTORESEARCH_WORKER_ID: seed.workerId,
       AUTORESEARCH_SESSION_ID: seed.sessionId,
       AUTORESEARCH_STATE_DIR: stateDir,
       AUTORESEARCH_FLEET_DB: join(stateDir, "fleet.sqlite"),
-      AUTORESEARCH_ARTIFACTS_DIR: artifactsDir,
-      AUTORESEARCH_WORKER_TOKEN: seed.token,
-      AUTORESEARCH_CANONICAL_ROOT: this.repository.canonicalRoot,
-      AUTORESEARCH_GENERATION: String(this.generation),
+      AUTORESEARCH_ARTIFACTS_DIR: join(stateDir, "artifacts", "runs"),
+      AUTORESEARCH_CANONICAL_ROOT: repository.canonicalRoot,
+      AUTORESEARCH_GENERATION: String(generation),
     };
-    const shortSessionId = seed.sessionId.slice(0, 8);
     const args = [
       "--session-id", seed.sessionId,
       "--session-dir", sessionDir,
       "--no-extensions",
       "--extension", extensionPath,
-      "--name", `autoresearch ${seed.workerId} ${shortSessionId}`,
+      "--name", `autoresearch ${seed.workerId} ${seed.sessionId.slice(0, 8)}`,
     ];
     if (thinking) args.push("--thinking", thinking);
-    const client = createClient({ cliPath, cwd: lane.path, env, provider, model, args });
+    const client = createClient({ cliPath, cwd: lane.path, env, args, ...(provider ? { provider } : {}), ...(model ? { model } : {}) });
     this.clients.set(seed.workerId, client);
-    const unsubscribe = client.onEvent((event) => this.handleWorkerEvent(seed.workerId, seed.token, event));
+    const unsubscribe = client.onEvent((event) => {
+      this.controller.tell({ _tag: "WorkerEvent", workerId: seed.workerId, sessionId: seed.sessionId, client, event });
+    });
     this.unsubscribers.set(seed.workerId, unsubscribe);
-    await client.start();
     try {
-      this.assertOperation(operation);
+      store.parentUpdateWorker(repository.canonicalRoot, seed.workerId, { processState: "starting", status: "launching" }, (this.options.now ?? Date.now)(), generation);
+      await this.rpc(seed.workerId, "start", () => client.start());
+      assertWorkerCurrent();
+      store.parentUpdateWorker(repository.canonicalRoot, seed.workerId, { processState: "owned" }, (this.options.now ?? Date.now)(), generation);
+      const rpcState = await this.rpc(seed.workerId, "getState", () => client.getState());
+      assertWorkerCurrent();
+      store.parentUpdateWorker(repository.canonicalRoot, seed.workerId, { status: "idle", sessionFile: rpcState.sessionFile ?? null }, (this.options.now ?? Date.now)(), generation);
     } catch (error) {
-      this.unsubscribers.get(seed.workerId)?.();
-      this.unsubscribers.delete(seed.workerId);
-      this.clients.delete(seed.workerId);
-      await client.stop();
+      let stopped = false;
+      try { await this.rpc(seed.workerId, "stop after launch failure", () => client.stop()); stopped = true; } catch {}
+      if (operation === this.operation && this.store === store && this.clients.get(seed.workerId) === client) {
+        store.parentUpdateWorker(repository.canonicalRoot, seed.workerId, stopped
+          ? { processState: "stopped", status: "failed", summary: "Worker launch failed; replacement will retry." }
+          : { processState: "unreconciled", status: "blocked", summary: "Worker launch process could not be verified." },
+        (this.options.now ?? Date.now)(), generation);
+      }
+      unsubscribe();
+      if (this.unsubscribers.get(seed.workerId) === unsubscribe) this.unsubscribers.delete(seed.workerId);
+      if (this.clients.get(seed.workerId) === client) this.clients.delete(seed.workerId);
       throw error;
     }
-    const state = await client.getState();
-    const admission = this.store.snapshot(this.repository.canonicalRoot, { workerId: seed.workerId, recent: 1 }).admissions[0];
-    const alreadyAdmitted = admission?.state === "admitted";
-    this.store.parentUpdateWorker(this.repository.canonicalRoot, seed.workerId, { status: "idle", sessionFile: state.sessionFile ?? null });
-    if (!alreadyAdmitted) this.startAdmission(seed.workerId);
-    const program = readFileSync(join(lane.path, "program.md"), "utf8").trim();
-    if (!program) throw new Error(`${seed.workerId} program.md is empty`);
-    const admissionSeconds = Math.max(0, Math.round((this.options.admissionTimeoutMs ?? DEFAULT_ADMISSION_TIMEOUT_MS) / 1_000));
-    const admissionCost = this.options.admissionMaxCostUsd ?? DEFAULT_ADMISSION_MAX_COST_USD;
-    const admissionTurns = this.options.admissionMaxTurns ?? DEFAULT_ADMISSION_MAX_TURNS;
-    const admissionTools = this.options.admissionMaxToolCalls ?? DEFAULT_ADMISSION_MAX_TOOL_CALLS;
-    this.assertOperation(operation);
-    const prompt = alreadyAdmitted
-      ? [
-          `Resume the admitted autoresearch campaign for ${seed.workerId}.`,
-          "Reread durable worker and portfolio state, then continue the accepted campaign. Reserve evidence capacity before scarce or paid evidence-stage work.",
-          "Research program:",
-          program,
-        ]
-      : [
-          `You are bounded admission planner ${seed.workerId} in an isolated reusable Git worktree.`,
-          "Before candidate, benchmark, or evidence mutation, restore or atomically claim exactly one executable portfolio recommendation.",
-          "Publish exactly one offer_admission action with its exact campaign ID, hypothesis ID, next stage, and non-empty claimedScopes. Claimed scopes must name concrete exclusive mutable resources, not broad track names, campaign themes, model targets, or descriptive labels. The offer must match your fenced portfolio assignment and conflict with no accepted scope.",
-          `Admission is limited to ${admissionSeconds} seconds, ${admissionTurns} model turns, ${admissionTools} tool calls, and $${admissionCost.toFixed(2)} of worker-session model cost. Prefer narrow readiness checks over broad repository or history exploration. If no legal campaign can be offered within that envelope, checkpoint a direct blocker and stop.`,
-          "End the turn immediately after offer_admission and wait. Do not mutate candidate, benchmark, or evidence state until the supervisor accepts the durable offer and starts the execution phase.",
-          "If shared state contains an evidence reservation from an earlier generation, reconcile that exact work and release it with a terminal receipt before offering execution; never relaunch it silently.",
-          "Do not wait for parent transcript context and do not invoke parent supervisor controls.",
-          "Research program:",
-          program,
-        ];
-    await client.prompt(prompt.join("\n\n"));
-    this.assertOperation(operation);
-  }
 
-  private startAdmission(workerId: string): void {
-    this.finishAdmission(workerId);
-    const now = (this.options.now ?? Date.now)();
-    if (!this.store || !this.repository || !this.generation) throw new Error("Fleet admission state is incomplete");
-    const lane = this.lanes.get(workerId);
-    if (!lane) throw new Error(`Missing lane ${workerId}`);
-    const laneState = (this.options.laneState ?? ((path) => laneGitState(path, this.options.run)))(lane.path);
-    this.store.beginAdmission(this.repository.canonicalRoot, workerId, this.generation, laneState, now);
-    const admission = this.store.snapshot(this.repository.canonicalRoot, { workerId, recent: 1 }).admissions[0];
-    const startedAt = Number(admission?.started_at ?? now);
-    const timeout = Number(admission?.timeout_ms ?? this.options.admissionTimeoutMs ?? DEFAULT_ADMISSION_TIMEOUT_MS);
-    this.admissionStartedAt.set(workerId, startedAt);
-    if (timeout <= 0) return;
-    const remaining = Math.max(0, timeout - Math.max(0, now - startedAt));
-    const timer = setTimeout(() => {
-      this.evaluateAdmission(workerId, false);
-      if (this.admissionStartedAt.has(workerId)) {
-        void this.failAdmission(workerId, `campaign admission exceeded ${Math.round(timeout / 1_000)} seconds`);
-      }
-    }, remaining);
-    this.admissionTimers.set(workerId, timer);
-  }
-
-  private finishAdmission(workerId: string): void {
-    const timer = this.admissionTimers.get(workerId);
-    if (timer) clearTimeout(timer);
-    this.admissionTimers.delete(workerId);
-    this.admissionStartedAt.delete(workerId);
-  }
-
-  private evaluateAdmission(workerId: string, acceptOffer = true): void {
-    if (!this.admissionStartedAt.has(workerId) || !this.store || !this.repository || !this.generation) return;
-    const root = this.repository.canonicalRoot;
-    const snapshot = this.store.snapshot(root, { workerId, recent: 1 });
-    const admission = snapshot.admissions[0];
-    const worker = snapshot.workers[0];
-    const status = String(worker?.status ?? "");
-    if (admission?.state === "offered") {
-      if (!acceptOffer) return;
-      const offeredBudgetReason = this.store.admissionBudgetViolation(root, workerId, this.generation, (this.options.now ?? Date.now)());
-      if (offeredBudgetReason) {
-        void this.failAdmission(workerId, offeredBudgetReason);
-        return;
-      }
-      const lane = this.lanes.get(workerId);
-      if (!lane) {
-        void this.failAdmission(workerId, "admission lane is unavailable");
-        return;
-      }
-      const laneState = (this.options.laneState ?? ((path) => laneGitState(path, this.options.run)))(lane.path);
-      if (this.store.admissionLaneChanged(root, workerId, this.generation, laneState)) {
-        void this.failAdmission(workerId, "planner mutated candidate state after bounded admission began");
-        return;
-      }
-      try {
-        const result = this.store.admitOfferedCampaign(root, workerId, this.generation, (this.options.now ?? Date.now)());
-        if (!result.admitted) {
-          void this.failAdmission(workerId, result.reason ?? "campaign admission offer was rejected");
-          return;
-        }
-        this.finishAdmission(workerId);
-        this.executionPending.add(workerId);
-        void this.launchNextQueuedWorker();
-        return;
-      } catch (error) {
-        void this.failAdmission(workerId, error instanceof Error ? error.message : String(error));
-        return;
-      }
-    }
-    if (admission?.state === "admitted") {
-      this.finishAdmission(workerId);
-      return;
-    }
-    if (admission?.state === "blocked") {
-      this.finishAdmission(workerId);
-      void this.launchNextQueuedWorker();
-      return;
-    }
-    const budgetReason = this.store.admissionBudgetViolation(root, workerId, this.generation, (this.options.now ?? Date.now)());
-    if (budgetReason) {
-      void this.failAdmission(workerId, budgetReason);
-      return;
-    }
-    if (TERMINAL_WORKER_STATUSES.has(status)) {
-      const reason = String(worker?.summary ?? worker?.error ?? `planner ended with ${status} before publishing a valid admission offer`);
-      this.finishAdmission(workerId);
-      this.store.blockAdmission(root, workerId, this.generation, reason, (this.options.now ?? Date.now)());
-      void this.launchNextQueuedWorker();
-    }
-  }
-
-  private async transitionAdmittedWorker(workerId: string): Promise<void> {
-    if (!this.executionPending.delete(workerId) || !this.store || !this.repository || this.shuttingDown) return;
-    const client = this.clients.get(workerId);
-    if (!client) return;
-    const model = this.currentCtx?.model;
-    const thinking = this.pi.getThinkingLevel();
+    const existingIntent = store.currentIntent(repository.canonicalRoot, seed.workerId);
+    const prompt = [
+      `You are disposable autonomous researcher ${seed.workerId} in an isolated Git worktree.`,
+      "You own one complete research campaign from direction selection to a terminal scientific conclusion. There is no dispatcher, task queue, claim, lock, admission, supervisor approval, scope ownership, evidence reservation, or per-campaign resource budget.",
+      existingIntent
+        ? `A working intent survived a process interruption: ${String(existingIntent.question)}. Resume that exact campaign from shared checkpoints and artifacts; this is crash recovery, not a normal handoff.`
+        : "Read program.md, durable Git history across all branches, completed research, artifacts, and other workers' active intentions. Independently choose the most valuable next direction, then publish_intent before campaign mutation.",
+      "An intent is informational and non-exclusive. Avoid obvious duplication when useful, but overlap is acceptable and may provide independent replication.",
+      "Carry the campaign through every required experiment, replication, confirmation, diagnosis, and wait. Checkpoints are only observability and crash recovery. They never end or hand off normal work.",
+      "Before finish_campaign, record terminal evidence and decisions, commit durable scientific findings and necessary clean changes to Git, and leave the worktree clean. Then finish once and exit. A fresh replacement starts immediately.",
+      "Do not exit because a queue is empty, a stage completed, follow-up is required, an evidence process is running, context is large, or no prepared task exists. Genuine external blocks and scientifically terminal accepted, rejected, inconclusive, or exhausted outcomes are valid.",
+      "Research program:",
+      program,
+    ];
     try {
-      if (client.compact) {
-        try {
-          await client.compact("Preserve only the exact accepted campaign ID, hypothesis ID, stage, claimed scopes, portfolio fence, and immediate next action. The planning phase is complete; reread program.md and durable state before execution.");
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          if (!message.includes("Nothing to compact") && !message.includes("Already compacted")) throw error;
+      await this.rpc(seed.workerId, "prompt", () => client.prompt(prompt.join("\n\n")));
+      assertWorkerCurrent();
+    } catch (error) {
+      let stopError: unknown;
+      try { await this.rpc(seed.workerId, "stop after prompt failure", () => client.stop()); } catch (cause) { stopError = cause; }
+      if (operation === this.operation && this.store === store && this.clients.get(seed.workerId) === client) {
+        store.parentUpdateWorker(repository.canonicalRoot, seed.workerId, stopError
+          ? { processState: "unreconciled", status: "blocked", summary: "Worker prompt failed and process stop could not be verified.", error: String(stopError) }
+          : { processState: "stopped", status: "failed", summary: "Worker prompt failed; replacement will retry." },
+        (this.options.now ?? Date.now)(), generation);
+        if (!stopError) {
+          this.clients.delete(seed.workerId);
+          unsubscribe();
+          this.unsubscribers.delete(seed.workerId);
         }
       }
-      if (model && client.setModel) await client.setModel(model.provider, model.id);
-      if (client.setThinkingLevel) await client.setThinkingLevel(thinking);
-      this.store.parentUpdateWorker(this.repository.canonicalRoot, workerId, {
-        status: "launching",
-        model: model ? `${model.provider}/${model.id}` : undefined,
-        thinking,
-        contextWindow: model?.contextWindow,
-      });
-      const executionPrompt = "Campaign admission is accepted. Begin a fresh execution phase from the durable admission checkpoint. Reread program.md and shared state, remain within the accepted scopes, and reserve evidence before scarce or paid work.";
-      const state = await client.getState();
-      if (state.isStreaming) await client.followUp(executionPrompt);
-      else await client.prompt(executionPrompt);
-    } catch (error) {
-      this.store.parentUpdateWorker(this.repository.canonicalRoot, workerId, {
-        status: "failed",
-        error: `could not enter execution phase: ${error instanceof Error ? error.message : String(error)}`,
-      });
+      throw error;
     }
-    this.refreshDashboard();
   }
 
-  private async failAdmission(workerId: string, reason: string): Promise<void> {
-    if (!this.admissionStartedAt.has(workerId) || !this.store || !this.repository || this.shuttingDown) return;
-    this.finishAdmission(workerId);
-    this.store.blockAdmission(this.repository.canonicalRoot, workerId, this.generation, reason, (this.options.now ?? Date.now)());
-    this.store.parentUpdateWorker(this.repository.canonicalRoot, workerId, {
-      status: "blocked",
-      summary: `Stopped bounded campaign admission: ${reason}.`,
-      error: reason,
-      currentTool: null,
-    });
-    try { await this.clients.get(workerId)?.abort(); } catch {}
-    this.refreshDashboard();
-    await this.launchNextQueuedWorker();
+  private async resumeRestoredWorker(workerId: string): Promise<void> {
+    if (!this.store || !this.repository) return;
+    const worker = this.store.snapshot(this.repository.canonicalRoot, { workerId, recent: 1 }).workers[0];
+    if (!worker || worker.process_state !== "stopped") return;
+    const integration = this.store.latestIntegration(this.repository.canonicalRoot, workerId);
+    if (integration && !["blocked", "complete"].includes(String(integration.integration_phase))) {
+      await this.enqueueTerminalIntegration(workerId);
+      return;
+    }
+    if (integration?.integration_phase === "complete") {
+      await this.restartWorker(workerId);
+      return;
+    }
+    if (["complete", "blocked"].includes(String(worker.status))) {
+      this.queueOperationalIncident(workerId, "historical terminal campaign has no integration phase and was left untouched");
+      return;
+    }
+    await this.restartWorker(workerId);
   }
 
-  private async launchNextQueuedWorker(): Promise<void> {
-    if (!this.active || !this.fleetReadyForAdmission || this.admissionLaunchInFlight || this.admissionStartedAt.size > 0
-      || !this.store || !this.repository || !this.generation || this.shuttingDown) return;
-    const row = this.store.claimNextQueuedAdmission(
+  private enqueueTerminalIntegration(workerId: string): Promise<void> {
+    if (this.integrationPending.has(workerId)) return this.integrationTail;
+    this.integrationPending.add(workerId);
+    const task = this.integrationTail.then(() => this.integrateTerminalWorker(workerId));
+    this.integrationTail = task.catch(() => {}).finally(() => this.integrationPending.delete(workerId));
+    return task;
+  }
+
+  private async integrateTerminalWorker(workerId: string): Promise<void> {
+    if (!this.active || this.ownership !== "owner" || this.shuttingDown || !this.store || !this.repository || !this.generation) return;
+    const store = this.store;
+    const repository = this.repository;
+    const generation = this.generation;
+    const operation = this.operation;
+    const root = repository.canonicalRoot;
+    let intent = store.pendingIntegration(root, workerId);
+    if (!intent || intent.integration_phase === "blocked") return;
+    const intentId = Number(intent.id);
+    const terminalHead = String(intent.terminal_head ?? "");
+    const baselineHead = String(intent.baseline_head ?? "");
+    const lane = this.lanes.get(workerId);
+    if (!lane || !terminalHead || !baselineHead || !Number.isInteger(intentId)) {
+      const message = "Terminal integration lacks a lane, baseline head, terminal head, or intent id";
+      store.blockIntegration(root, workerId, generation, intentId, message, (this.options.now ?? Date.now)());
+      this.queueOperationalIncident(workerId, message);
+      return;
+    }
+
+    try {
+      await this.stopWorker(workerId, "paused");
+      this.assertFleetOperation(operation, store, repository, generation);
+      if (!this.active || this.ownership !== "owner") throw new FleetOperationCancelledError("Fleet stopped before terminal integration");
+      const stopped = store.snapshot(root, { workerId, recent: 1 }).workers[0];
+      if (!stopped || stopped.process_state !== "stopped") throw new Error("Worker process termination was not verified before terminal integration");
+
+      const terminalRef = (this.options.preserveTerminal ?? preserveTerminalRef)({
+        canonicalRoot: root, lane, generation, intentId, baselineHead, terminalHead,
+        ...(typeof intent.integration_result_head === "string" ? { integratedHead: intent.integration_result_head } : {}),
+        ...(this.options.run ? { run: this.options.run } : {}),
+      });
+      if (intent.integration_ref && intent.integration_ref !== terminalRef) {
+        throw new Error(`Persisted terminal ref changed from ${String(intent.integration_ref)} to ${terminalRef}`);
+      }
+      if (intent.integration_phase === "pending") {
+        store.markIntegrationRef(root, workerId, generation, intentId, terminalRef, (this.options.now ?? Date.now)());
+      }
+      intent = store.pendingIntegration(root, workerId);
+      if (!intent) throw new Error("Terminal integration state disappeared");
+
+      let resultHead = typeof intent.integration_result_head === "string" ? intent.integration_result_head : undefined;
+      if (intent.integration_phase !== "integrated") {
+        const fleet = store.snapshot(root, { recent: 1 }).fleet;
+        if (fleet?.integration_error) throw new Error(`Canonical integration is globally blocked: ${String(fleet.integration_error)}`);
+        const canonicalBranch = String(fleet?.canonical_branch ?? "");
+        if (!canonicalBranch) throw new Error("Fleet has no captured canonical branch");
+        const recovering = intent.integration_phase === "integrating";
+        const baseHead = recovering ? String(intent.integration_base_head ?? "") : String(fleet?.canonical_head ?? "");
+        if (!baseHead) throw new Error("Fleet has no expected canonical HEAD");
+        if (!recovering) store.beginIntegration(root, workerId, generation, intentId, baseHead, (this.options.now ?? Date.now)());
+        const merged = (this.options.integrateTerminal ?? integrateTerminalRef)({
+          canonicalRoot: root, canonicalBranch, expectedHead: baseHead, terminalRef,
+          recoverMerged: recovering,
+          ...(this.options.run ? { run: this.options.run } : {}),
+        });
+        resultHead = merged.resultHead;
+        store.completeCanonicalIntegration(root, workerId, generation, intentId, baseHead, resultHead, (this.options.now ?? Date.now)());
+      }
+      if (!resultHead) throw new Error("Terminal integration has no result HEAD");
+
+      (this.options.resetIntegratedLane ?? resetIntegratedLane)({
+        lane, terminalHead, resultHead, ...(this.options.run ? { run: this.options.run } : {}),
+      });
+      store.completeLaneReset(root, workerId, generation, intentId, (this.options.now ?? Date.now)());
+      this.assertFleetOperation(operation, store, repository, generation);
+      if (!this.active || this.shuttingDown || this.ownership !== "owner" || String(store.snapshot(root).fleet?.status) !== "active") return;
+      const row = store.snapshot(root, { workerId, recent: 1 }).workers[0];
+      if (!row || row.process_state !== "stopped") throw new Error("Completed lane is not stopped before replacement");
+      const sessionId = (this.options.sessionId ?? randomUUID)();
+      store.resetWorkerSession(root, workerId, generation, sessionId, (this.options.now ?? Date.now)());
+      await this.launchWorker({
+        workerId, sessionId, worktree: String(row.worktree), branch: String(row.branch), sessionsRoot: dirname(String(row.session_dir)),
+      }, this.options.planningProvider ?? this.currentCtx?.model?.provider ?? "openai-codex",
+        this.options.planningModel ?? this.currentCtx?.model?.id ?? "gpt-5.6-sol",
+        this.options.planningThinking ?? this.pi.getThinkingLevel(), this.operation);
+    } catch (error) {
+      if (error instanceof FleetOperationCancelledError) return;
+      const message = error instanceof Error ? error.message : String(error);
+      try {
+        if (error instanceof TerminalIntegrationCleanupError) {
+          store.blockAllIntegrations(root, generation, message, (this.options.now ?? Date.now)());
+        }
+        store.blockIntegration(root, workerId, generation, intentId, message, (this.options.now ?? Date.now)());
+      } catch (stateError) {
+        this.currentCtx?.ui.notify(`Could not persist blocked terminal integration: ${stateError instanceof Error ? stateError.message : String(stateError)}`, "error");
+      }
+      this.queueOperationalIncident(workerId, error instanceof TerminalIntegrationCleanupError
+        ? `canonical integration cleanup failed and all integrations are blocked: ${message}`
+        : `terminal integration blocked: ${message}`);
+    } finally {
+      this.refreshDashboard();
+    }
+  }
+
+  private markRecoveryHealthy(workerId: string, reason: string): void {
+    this.recoveryAttempts.delete(workerId);
+    if (!this.store || !this.repository || !this.generation) return;
+    this.store.parentAddWorkerEvent(
       this.repository.canonicalRoot,
+      workerId,
       this.generation,
+      "automatic_recovery_healthy",
+      reason,
       (this.options.now ?? Date.now)(),
     );
-    if (!row) return;
-    const workerId = String(row.worker_id);
-    const seed = this.workerSeeds.get(workerId) ?? {
-      workerId,
-      sessionId: String(row.session_id),
-      token: String(row.token),
-      worktree: String(row.worktree),
-      branch: String(row.branch),
-      sessionsRoot: dirname(String(row.session_dir)),
-    };
-    this.workerSeeds.set(workerId, seed);
-    this.admissionLaunchInFlight = true;
-    this.store.parentUpdateWorker(this.repository.canonicalRoot, workerId, {
-      task: "Claiming a bounded campaign",
-      error: null,
-    });
-    try {
-      await this.launchWorker(
-        seed,
-        this.options.planningProvider ?? this.currentCtx?.model?.provider ?? "openai-codex",
-        this.options.planningModel ?? this.currentCtx?.model?.id ?? "gpt-5.6-sol",
-        this.options.planningThinking ?? this.pi.getThinkingLevel(),
-        this.operation,
-      );
-    } catch (error) {
-      if (!(error instanceof FleetOperationCancelledError) && this.store && this.repository) {
-        this.store.parentUpdateWorker(this.repository.canonicalRoot, workerId, {
-          status: "failed",
-          error: error instanceof Error ? error.message : String(error),
-        });
-        this.refreshDashboard();
-      }
-    } finally {
-      this.admissionLaunchInFlight = false;
-      void this.launchNextQueuedWorker();
-    }
   }
 
-  private handleWorkerEvent(workerId: string, token: string, event: any): void {
-    if (!this.store || !this.repository || !this.generation || this.shuttingDown) return;
+  private scheduleRecycle(workerId: string, reason: string): void {
+    if (!this.active || this.ownership !== "owner" || this.shuttingDown || !this.store || !this.repository) return;
+    const worker = this.store.snapshot(this.repository.canonicalRoot, { workerId, recent: 1 }).workers[0];
+    if (["complete", "blocked"].includes(String(worker?.status))) {
+      const integration = this.store.pendingIntegration(this.repository.canonicalRoot, workerId);
+      if (integration && integration.integration_phase !== "blocked") {
+        this.forkTask(() => this.enqueueTerminalIntegration(workerId), () => {});
+      } else if (!integration) {
+        this.queueOperationalIncident(workerId, "terminal campaign has no pending integration and was left untouched");
+      }
+      return;
+    }
+    if (this.recyclePending.has(workerId)) return;
+    this.recyclePending.add(workerId);
+    const workerOperation = this.workerOperations.get(workerId) ?? 0;
+    this.forkTask(async () => {
+      let retryAgain = false;
+      try {
+        if (!this.store || !this.repository || !this.generation || !this.active || this.ownership !== "owner") return;
+        const store = this.store;
+        const repository = this.repository;
+        const generation = this.generation;
+        const operation = this.operation;
+        this.assertWorkerOperation(workerId, operation, workerOperation);
+        const before = store.snapshot(repository.canonicalRoot, { workerId, recent: 1 });
+        const beforeWorker = before.workers[0];
+        if (!beforeWorker) return;
+        const operationalFailure = String(beforeWorker.status) === "failed";
+        if (["complete", "blocked"].includes(String(beforeWorker.status))) this.markRecoveryHealthy(workerId, "scientific campaign reached a terminal outcome");
+        const priorAttempts = operationalFailure
+          ? Math.max(this.recoveryAttempts.get(workerId) ?? 0, store.recoveryAttemptCount(repository.canonicalRoot, workerId, generation))
+          : 0;
+        const attempt = operationalFailure ? priorAttempts + 1 : 0;
+        if (operationalFailure) {
+          this.recoveryAttempts.set(workerId, attempt);
+          store.parentAddWorkerEvent(repository.canonicalRoot, workerId, generation, "automatic_recovery_attempt", reason, (this.options.now ?? Date.now)());
+        }
+
+        await this.stopWorker(workerId, "paused");
+        this.assertWorkerOperation(workerId, operation, workerOperation);
+        const stopped = store.snapshot(repository.canonicalRoot, { workerId, recent: 1 });
+        const row = stopped.workers[0];
+        if (!row || row.process_state !== "stopped") return;
+        if (String(stopped.fleet?.status) !== "active") {
+          this.active = false;
+          store.parentUpdateWorker(repository.canonicalRoot, workerId, {
+            status: "blocked", processState: "stopped",
+            summary: "Automatic recovery stopped because the persisted fleet is not active.",
+            error: `automatic recovery after ${reason} observed fleet status ${String(stopped.fleet?.status ?? "missing")}`,
+          }, (this.options.now ?? Date.now)(), generation);
+          this.queueOperationalIncident(workerId, "persisted fleet is not active");
+          return;
+        }
+        const maxAttempts = Math.max(0, Math.floor(this.options.maxRecoveryAttempts ?? DEFAULT_MAX_RECOVERY_ATTEMPTS));
+        if (operationalFailure && attempt > maxAttempts) {
+          store.parentUpdateWorker(repository.canonicalRoot, workerId, {
+            status: "blocked", processState: "stopped",
+            summary: `Automatic recovery exhausted after ${maxAttempts} replacement attempts.`,
+            error: `last automatic recovery trigger: ${reason}`,
+          }, (this.options.now ?? Date.now)(), generation);
+          this.queueOperationalIncident(workerId, `automatic recovery exhausted after ${maxAttempts} replacement attempts`);
+          return;
+        }
+        const baseBackoff = Math.max(0, this.options.recycleBackoffMs ?? DEFAULT_RECYCLE_BACKOFF_MS);
+        const backoff = operationalFailure
+          ? Math.min(MAX_RECYCLE_BACKOFF_MS, baseBackoff * 2 ** Math.max(0, attempt - 1))
+          : baseBackoff;
+        if (backoff > 0) await new Promise((resolvePromise) => setTimeout(resolvePromise, backoff));
+        this.assertWorkerOperation(workerId, operation, workerOperation);
+        if (!this.active || this.shuttingDown || this.ownership !== "owner") return;
+        const currentFleet = store.snapshot(repository.canonicalRoot, { workerId, recent: 1 });
+        if (String(currentFleet.fleet?.status) !== "active") {
+          this.active = false;
+          this.queueOperationalIncident(workerId, "persisted fleet changed before replacement launch");
+          return;
+        }
+        const sessionId = (this.options.sessionId ?? randomUUID)();
+        store.resetWorkerSession(repository.canonicalRoot, workerId, generation, sessionId, (this.options.now ?? Date.now)());
+        await this.launchWorker({
+          workerId, sessionId, worktree: String(row.worktree), branch: String(row.branch), sessionsRoot: dirname(String(row.session_dir)),
+        }, this.options.planningProvider ?? this.currentCtx?.model?.provider ?? "openai-codex",
+          this.options.planningModel ?? this.currentCtx?.model?.id ?? "gpt-5.6-sol",
+          this.options.planningThinking ?? this.pi.getThinkingLevel(), operation);
+      } catch (error) {
+        if (!(error instanceof FleetOperationCancelledError) && this.store && this.repository && this.generation) {
+          const worker = this.store.snapshot(this.repository.canonicalRoot, { workerId, recent: 1 }).workers[0];
+          if (worker?.process_state === "stopped" && this.active && this.ownership === "owner" && !this.shuttingDown) {
+            const attempts = this.recoveryAttempts.get(workerId) ?? 0;
+            this.store.parentUpdateWorker(this.repository.canonicalRoot, workerId, {
+              status: "failed", processState: "stopped",
+              summary: `Replacement launch failed after ${attempts} recovery attempt${attempts === 1 ? "" : "s"}; retrying within the circuit limit.`,
+              error: `automatic replacement after ${reason}: ${error instanceof Error ? error.message : String(error)}`,
+            }, (this.options.now ?? Date.now)(), this.generation);
+            retryAgain = true;
+          }
+        }
+      } finally {
+        this.recyclePending.delete(workerId);
+        this.refreshDashboard();
+        if (retryAgain) this.scheduleRecycle(workerId, reason);
+      }
+    }, () => { this.recyclePending.delete(workerId); });
+  }
+
+  private handleWorkerEvent(workerId: string, sessionId: string, client: RpcWorkerClient, event: unknown): void {
+    if (!isRecord(event) || typeof event.type !== "string" || !this.store || !this.repository || !this.generation || this.shuttingDown) return;
+    if (this.clients.get(workerId) !== client || this.stopOperations.has(workerId)) return;
     const root = this.repository.canonicalRoot;
     try {
       const worker = this.store.snapshot(root, { workerId, recent: 1 }).workers[0];
-      if (!worker || Number(worker.generation) !== this.generation || worker.token !== token) return;
+      if (!worker || Number(worker.generation) !== this.generation || worker.session_id !== sessionId) return;
       const currentStatus = String(worker.status ?? "");
       if (TERMINAL_WORKER_STATUSES.has(currentStatus)) {
-        this.evaluateAdmission(workerId, ["message_end", "agent_end", "agent_settled"].includes(event.type));
-        if (event.type === "agent_settled") void this.transitionAdmittedWorker(workerId);
+        if (["agent_settled", "extension_error"].includes(event.type) && ["complete", "blocked", "failed"].includes(currentStatus)) {
+          this.scheduleRecycle(workerId, `campaign worker reached ${currentStatus}`);
+        }
         if (["message_end", "agent_end", "agent_settled", "extension_error"].includes(event.type)) this.refreshDashboard();
         return;
       }
-      if (event.type === "agent_start") this.store.parentUpdateWorker(root, workerId, { currentTool: null });
-      if (event.type === "tool_execution_start") {
-        this.store.parentUpdateWorker(root, workerId, { currentTool: event.toolName });
-      }
-      if (event.type === "tool_execution_end") {
-        this.store.parentUpdateWorker(root, workerId, { currentTool: null, error: event.isError ? `${event.toolName} failed` : null });
-      }
+      if (event.type === "agent_start") this.store.parentUpdateWorker(root, workerId, { currentTool: null }, (this.options.now ?? Date.now)(), this.generation);
+      if (event.type === "tool_execution_start") this.store.parentUpdateWorker(root, workerId, { currentTool: String(event.toolName ?? "") }, (this.options.now ?? Date.now)(), this.generation);
+      if (event.type === "tool_execution_end") this.store.parentUpdateWorker(root, workerId, { currentTool: null, error: event.isError ? `${String(event.toolName ?? "tool")} failed` : null }, (this.options.now ?? Date.now)(), this.generation);
       if (event.type === "message_end") {
         const snippet = assistantSnippet(event.message);
-        if (snippet) this.store.parentUpdateWorker(root, workerId, { summary: snippet });
+        if (snippet) this.store.parentUpdateWorker(root, workerId, { summary: snippet }, (this.options.now ?? Date.now)(), this.generation);
       }
       if (event.type === "agent_end") {
         const assistant = finalAssistant(event.messages);
         if (assistant?.role === "assistant" && !["stop", "toolUse"].includes(assistant.stopReason)) {
-          this.store.parentUpdateWorker(root, workerId, { status: "failed", error: assistant.errorMessage ?? assistant.stopReason });
+          this.store.parentUpdateWorker(root, workerId, { status: "failed", error: assistant.errorMessage ?? assistant.stopReason }, (this.options.now ?? Date.now)(), this.generation);
         }
       }
       if (event.type === "agent_settled") {
-        const worker = this.store.snapshot(root, { workerId, recent: 1 }).workers[0];
-        if (worker && !["paused", "blocked", "decision", "failed", "complete", "stopped"].includes(String(worker.status))) {
-          this.store.parentUpdateWorker(root, workerId, { status: "idle", currentTool: null });
+        const latest = this.store.snapshot(root, { workerId, recent: 1 }).workers[0];
+        if (latest && !TERMINAL_WORKER_STATUSES.has(String(latest.status))) {
+          this.store.parentUpdateWorker(root, workerId, { status: "idle", currentTool: null }, (this.options.now ?? Date.now)(), this.generation);
+          this.markRecoveryHealthy(workerId, "worker reached healthy nonterminal settlement");
         }
       }
       if (event.type === "extension_error") {
-        this.store.parentUpdateWorker(root, workerId, { status: "failed", error: event.error ?? "extension error" });
+        this.store.parentUpdateWorker(root, workerId, { status: "failed", error: String(event.error ?? "extension error") }, (this.options.now ?? Date.now)(), this.generation);
       }
       if (["tool_execution_end", "message_end", "agent_end", "agent_settled", "extension_error"].includes(event.type)) {
-        this.evaluateAdmission(workerId, event.type !== "tool_execution_end");
-        if (event.type === "agent_settled") void this.transitionAdmittedWorker(workerId);
+        const latestStatus = String(this.store.snapshot(root, { workerId, recent: 1 }).workers[0]?.status ?? "");
+        if (["complete", "blocked", "failed"].includes(latestStatus) && ["agent_settled", "extension_error"].includes(event.type)) {
+          this.scheduleRecycle(workerId, `campaign worker reached ${latestStatus}`);
+        }
         this.refreshDashboard();
       }
     } catch (error) {
@@ -1063,7 +1196,7 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
     this.pi.registerTool({
       name: "autoresearch_inspect",
       label: "Autoresearch Inspect",
-      description: "Inspect bounded shared operational state for the active autoresearch fleet without injecting worker transcripts.",
+      description: "Inspect bounded operational worker, process, intent, checkpoint, and recent fleet state. Use this first when a worker is blocked or failed.",
       parameters: {
         type: "object",
         properties: {
@@ -1075,11 +1208,13 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
         additionalProperties: false,
       },
       execute: async (_id, params) => {
-        const { store, root } = this.requireActive();
-        const workerId = params.scope === "worker" ? params.worker : undefined;
+        const { store, root } = this.requireManaged();
+        const workerId = params.scope === "worker" && typeof params.worker === "string" ? params.worker : undefined;
         if (params.scope === "worker" && !workerId) throw new Error("worker scope requires worker id");
-        const snapshot = store.snapshot(root, { workerId, recent: params.recent });
-        const result = boundedInspect(snapshot, params.view ?? "summary");
+        const recent = typeof params.recent === "number" ? params.recent : undefined;
+        const result = boundedInspect(store.snapshot(root, {
+          ...(workerId ? { workerId } : {}), ...(recent !== undefined ? { recent } : {}),
+        }), params.view === "recent" ? "recent" : "summary");
         return { content: [{ type: "text", text: resultText(result) }], details: result };
       },
     });
@@ -1087,67 +1222,92 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
     this.pi.registerTool({
       name: "autoresearch_control",
       label: "Autoresearch Control",
-      description: "Steer, pause, resume, restart, stop, or safely sync workers in the active autoresearch fleet.",
+      description: "Recover or operate worker processes after inspection. Reconcile is allowed only after exact external process termination is verified; this tool does not approve research directions.",
       parameters: {
         type: "object",
         properties: {
-          action: { type: "string", enum: ["steer", "follow_up", "pause", "resume", "restart", "stop", "sync"] },
-          target: { type: "string", description: "Worker lane id, full session UUID, UUID prefix of at least 8 hex characters, or all" },
+          action: { type: "string", enum: ["steer", "follow_up", "pause", "resume", "restart", "stop", "sync", "reconcile"] },
+          target: { type: "string", description: "Worker lane id, session UUID or prefix, or all" },
           message: { type: "string" },
         },
-        required: ["action"],
-        additionalProperties: false,
+        required: ["action"], additionalProperties: false,
       },
       execute: async (_id, params) => {
-        const result = await this.control(params.action, params.target ?? "all", params.message);
+        const result = await this.controller.request<Record<string, unknown>>((reply) => ({
+          _tag: "Control", action: String(params.action), target: typeof params.target === "string" ? params.target : "all",
+          message: typeof params.message === "string" ? params.message : undefined, reply,
+        }));
         return { content: [{ type: "text", text: resultText(result) }], details: result };
       },
     });
   }
 
-  private requireActive(): { store: FleetStore; root: string } {
-    if (!this.active || !this.store || !this.repository) throw new Error("No active autoresearch fleet");
+  private requireManaged(): { store: FleetStore; root: string } {
+    if (!this.store || !this.repository) throw new Error("No managed autoresearch fleet");
     return { store: this.store, root: this.repository.canonicalRoot };
+  }
+  private requireActive(): { store: FleetStore; root: string } {
+    if (!this.active) throw new Error("No active autoresearch fleet");
+    return this.requireManaged();
   }
 
   private targets(target: string): string[] {
     if (target === "all") return [...this.lanes.keys()].sort();
     if (this.lanes.has(target)) return [target];
-    const { store, root } = this.requireActive();
+    const { store, root } = this.requireManaged();
     const workers = store.snapshot(root, { recent: 1 }).workers;
     const normalized = target.toLowerCase();
     const fullMatch = workers.find((worker) => String(worker.session_id).toLowerCase() === normalized);
     if (fullMatch) return [String(fullMatch.worker_id)];
     if (!/^[0-9a-f]{8,32}$/i.test(target)) throw new Error(`Unknown worker target: ${target}`);
-    const matches = workers.filter((worker) =>
-      String(worker.session_id).replaceAll("-", "").toLowerCase().startsWith(normalized),
-    );
+    const matches = workers.filter((worker) => String(worker.session_id).replaceAll("-", "").toLowerCase().startsWith(normalized));
     if (matches.length === 0) throw new Error(`Unknown worker session UUID prefix: ${target}`);
     if (matches.length > 1) throw new Error(`Ambiguous worker session UUID prefix: ${target}`);
-    return [String(matches[0].worker_id)];
+    return [String(matches[0]!.worker_id)];
   }
 
   async control(action: string, target: string, message?: string): Promise<Record<string, unknown>> {
-    const { store, root } = this.requireActive();
+    return this.controller.request<Record<string, unknown>>((reply) => ({ _tag: "Control", action, target, message, reply }));
+  }
+
+  private async controlImpl(action: string, target: string, message?: string): Promise<Record<string, unknown>> {
+    const { store, root } = this.requireManaged();
+    if (!this.active && action !== "reconcile") throw new Error("Autoresearch is off; only explicit process reconciliation is available");
+    if (!this.repository || !this.generation) throw new Error("Fleet control state is incomplete");
+    const repository = this.repository;
+    const generation = this.generation;
+    const operation = this.operation;
+    const validate = (): void => this.assertFleetOperation(operation, store, repository, generation);
     const targets = this.targets(target);
     if (["steer", "follow_up"].includes(action) && !message?.trim()) throw new Error(`${action} requires message`);
 
+    if (action === "reconcile") {
+      if (message?.trim() !== "process-terminated") throw new Error("reconcile requires message=process-terminated after external process verification");
+      for (const workerId of targets) {
+        this.clients.delete(workerId);
+        this.unsubscribers.get(workerId)?.();
+        this.unsubscribers.delete(workerId);
+        store.parentUpdateWorker(root, workerId, { processState: "stopped", status: "paused", currentTool: null, error: null }, (this.options.now ?? Date.now)(), generation);
+      }
+      const fullyReconciled = store.snapshot(root).workers.every((worker) => worker.process_state === "stopped");
+      if (!this.active && fullyReconciled) {
+        store.setFleetStatus(root, "stopped", (this.options.now ?? Date.now)(), generation);
+        this.setToolsActive(false);
+        this.closeFleetResources();
+      }
+      return { action, targets, reconciled: true, fullyReconciled };
+    }
+
     if (action === "sync") {
-      for (const workerId of targets) await this.assertSyncSafe(workerId);
       const synced: Record<string, unknown>[] = [];
       for (const workerId of targets) {
+        await this.assertSyncSafe(workerId);
+        validate();
         const lane = this.lanes.get(workerId)!;
         const result = (this.options.syncLane ?? syncLaneToCanonical)({
-          canonicalRoot: root,
-          lane,
-          generation: this.generation!,
-          now: (this.options.now ?? Date.now)(),
-          run: this.options.run,
+          canonicalRoot: root, lane, generation, now: (this.options.now ?? Date.now)(), ...(this.options.run ? { run: this.options.run } : {}),
         });
-        store.parentUpdateWorker(root, workerId, {
-          head: result.canonicalHead,
-          summary: `Synced idle lane; candidate preserved at ${result.candidateRef}. This is not a tested candidate.`,
-        });
+        store.parentUpdateWorker(root, workerId, { head: result.canonicalHead, summary: `Synced idle lane; prior commits preserved at ${result.candidateRef}.` }, (this.options.now ?? Date.now)(), generation);
         synced.push({ workerId, ...result });
       }
       this.refreshDashboard();
@@ -1155,38 +1315,37 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
     }
 
     for (const workerId of targets) {
+      if (["pause", "resume", "restart", "stop"].includes(action)) this.bumpWorkerOperation(workerId);
+      if (["pause", "stop"].includes(action)) {
+        try { await this.stopOperations.get(workerId); } catch {}
+        validate();
+      }
       const client = this.clients.get(workerId);
-      if (action === "steer") await client?.steer(message!.trim());
-      if (action === "follow_up") await client?.followUp(message!.trim());
-      if (action === "pause") {
-        store.parentUpdateWorker(root, workerId, { status: "paused", summary: "Paused by supervisor" });
-        await client?.abort();
-      }
-      if (action === "resume") {
-        if (!client) throw new Error(`${workerId} has no running RPC process; use restart`);
-        store.parentUpdateWorker(root, workerId, { status: "idle", error: null });
-        const state = await client.getState();
-        if (state.isStreaming) await client.followUp(message?.trim() || "Resume the autoresearch campaign from shared state.");
-        else await client.prompt(message?.trim() || "Resume the autoresearch campaign from shared state.");
-        store.setFleetStatus(root, "active");
-      }
-      if (action === "restart") {
+      if (action === "steer") {
+        if (!client) throw new Error(`${workerId} has no running RPC process`);
+        await this.rpc(workerId, "steer", () => client.steer(message!.trim()));
+      } else if (action === "follow_up") {
+        if (!client) throw new Error(`${workerId} has no running RPC process`);
+        await this.rpc(workerId, "followUp", () => client.followUp(message!.trim()));
+      } else if (action === "pause") {
+        await this.stopWorker(workerId, "paused");
+      } else if (action === "resume" || action === "restart") {
+        if (String(store.snapshot(root, { workerId, recent: 1 }).fleet?.status) !== "active") {
+          throw new Error("Persisted autoresearch fleet is not active; reconcile or restore the fleet before restarting workers");
+        }
+        this.markRecoveryHealthy(workerId, "manual restart reset the automatic recovery circuit");
         await this.restartWorker(workerId);
-        store.setFleetStatus(root, "active");
+      } else if (action === "stop") {
+        await this.stopWorker(workerId, "stopped");
       }
-      if (action === "stop") await this.stopWorker(workerId, "stopped");
+      validate();
     }
-
-    if (action === "stop") {
-      const snapshot = store.snapshot(root);
-      if (snapshot.workers.every((worker) => worker.status === "stopped")) {
-        store.setFleetStatus(root, "stopped");
-        this.active = false;
-        this.stopDashboard();
-        this.setToolsActive(false);
-        this.closeFleetResources();
-      }
-      this.currentCtx?.ui.notify(`Stopped autoresearch ${target}.`, "info");
+    if (action === "stop" && store.snapshot(root).workers.every((worker) => worker.status === "stopped")) {
+      store.setFleetStatus(root, "stopped", (this.options.now ?? Date.now)(), generation);
+      this.active = false;
+      this.stopDashboard();
+      this.setToolsActive(false);
+      this.closeFleetResources();
     }
     this.refreshDashboard();
     return { action, targets };
@@ -1194,128 +1353,143 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
 
   private async assertSyncSafe(workerId: string): Promise<void> {
     const { store, root } = this.requireActive();
+    if (!this.repository || !this.generation) throw new Error("Fleet sync state is incomplete");
     const worker = store.snapshot(root, { workerId, recent: 1 }).workers[0];
     if (!worker) throw new Error(`Missing worker state: ${workerId}`);
-    const status = String(worker.status);
-    if (!["paused", "blocked", "decision", "failed", "complete", "stopped"].includes(status)) {
+    if (!["paused", "blocked", "failed", "complete", "stopped"].includes(String(worker.status))) {
       throw new Error(`${workerId} must be paused or terminal before sync`);
     }
+    if (store.currentIntent(root, workerId)) throw new Error(`${workerId} has a working campaign intent; sync would destroy crash-recovery state`);
+    if (store.pendingIntegration(root, workerId)) throw new Error(`${workerId} has pending terminal integration; sync is forbidden`);
+    if (worker.process_state !== "stopped") throw new Error(`${workerId} process ownership must be stopped before sync`);
     const client = this.clients.get(workerId);
-    if (!client && status !== "stopped") throw new Error(`${workerId} process ownership is not reconciled`);
-    if (client && (await client.getState()).isStreaming) throw new Error(`${workerId} process is not reconciled`);
-    assertNoActivePortfolioAssignment(root, workerId);
-    if (store.hasActiveReservation(root, workerId)) throw new Error(`${workerId} has an active evidence reservation`);
+    if (client) throw new Error(`${workerId} still has a process client; sync is forbidden`);
     const lane = this.lanes.get(workerId)!;
-    const state = (this.options.laneState ?? ((path) => laneGitState(path, this.options.run)))(lane.path);
-    if (state.dirty) throw new Error(`${workerId} worktree is dirty`);
+    if ((this.options.laneState ?? ((path) => laneGitState(path, this.options.run)))(lane.path).dirty) throw new Error(`${workerId} worktree is dirty`);
   }
 
   private async restartWorker(workerId: string): Promise<void> {
     const { store, root } = this.requireActive();
-    const before = store.snapshot(root, { workerId, recent: 1 });
-    const admissionState = String(before.admissions[0]?.state ?? "");
-    if (admissionState === "queued") {
-      const all = store.snapshot(root, { recent: 1 });
-      const firstQueued = all.admissions.find((admission) => admission.state === "queued");
-      const open = all.admissions.some((admission) => ["planning", "offered"].includes(String(admission.state)));
-      if (open || String(firstQueued?.worker_id ?? "") !== workerId) {
-        throw new Error(`${workerId} is queued and cannot bypass sequential campaign admission`);
-      }
-    }
-    await this.stopWorker(workerId, "paused");
-    const snapshot = store.snapshot(root, { workerId, recent: 1 });
-    let row = snapshot.workers[0];
+    if (!this.repository || !this.generation) throw new Error("Fleet restart state is incomplete");
+    const repository = this.repository;
+    const generation = this.generation;
+    const operation = this.operation;
+    const row = store.snapshot(root, { workerId, recent: 1 }).workers[0];
     if (!row) throw new Error(`Missing worker state: ${workerId}`);
-    if (snapshot.admissions[0]?.state === "queued") {
-      const claimed = store.claimNextQueuedAdmission(root, Number(snapshot.fleet?.generation), (this.options.now ?? Date.now)());
-      if (!claimed || claimed.worker_id !== workerId) throw new Error(`${workerId} lost the sequential admission claim`);
-      row = claimed;
-    }
-    const seed = {
-      workerId,
-      sessionId: String(row.session_id),
-      token: String(row.token),
-      worktree: String(row.worktree),
-      branch: String(row.branch),
-      sessionsRoot: dirname(String(row.session_dir)),
-    };
-    this.workerSeeds.set(workerId, seed);
-    const admitted = snapshot.admissions[0]?.state === "admitted";
-    if (admitted) store.parentUpdateWorker(root, workerId, { status: "launching", error: null });
-    await this.launchWorker(
-      seed,
-      admitted ? this.currentCtx?.model?.provider : this.options.planningProvider ?? this.currentCtx?.model?.provider ?? "openai-codex",
-      admitted ? this.currentCtx?.model?.id : this.options.planningModel ?? this.currentCtx?.model?.id ?? "gpt-5.6-sol",
-      admitted ? this.pi.getThinkingLevel() : this.options.planningThinking ?? this.pi.getThinkingLevel(),
-      this.operation,
-    );
-    this.fleetReadyForAdmission = true;
-    void this.launchNextQueuedWorker();
+    if (store.pendingIntegration(root, workerId)) throw new Error(`${workerId} has pending terminal integration and cannot be restarted directly`);
+    if (row.process_state === "owned" && !this.clients.has(workerId)) throw new Error(`${workerId} process state is unresolved`);
+    await this.stopWorker(workerId, "paused");
+    this.assertFleetOperation(operation, store, repository, generation);
+    const sessionId = (this.options.sessionId ?? randomUUID)();
+    store.resetWorkerSession(root, workerId, generation, sessionId, (this.options.now ?? Date.now)());
+    await this.launchWorker({
+      workerId, sessionId, worktree: String(row.worktree), branch: String(row.branch), sessionsRoot: dirname(String(row.session_dir)),
+    }, this.options.planningProvider ?? this.currentCtx?.model?.provider ?? "openai-codex",
+      this.options.planningModel ?? this.currentCtx?.model?.id ?? "gpt-5.6-sol",
+      this.options.planningThinking ?? this.pi.getThinkingLevel(), operation);
   }
 
-  private async stopWorker(workerId: string, status: WorkerStatus): Promise<void> {
-    this.finishAdmission(workerId);
+  private stopWorker(workerId: string, requestedStatus: WorkerStatus): Promise<void> {
+    const existing = this.stopOperations.get(workerId);
+    if (existing) return existing;
+    const operation = this.stopWorkerExclusive(workerId, requestedStatus).finally(() => {
+      if (this.stopOperations.get(workerId) === operation) this.stopOperations.delete(workerId);
+    });
+    this.stopOperations.set(workerId, operation);
+    return operation;
+  }
+
+  private async stopWorkerExclusive(workerId: string, requestedStatus: WorkerStatus): Promise<void> {
+    if (!this.store || !this.repository || !this.generation) return;
+    const store = this.store;
+    const repository = this.repository;
+    const generation = this.generation;
+    const root = repository.canonicalRoot;
+    const before = store.snapshot(root, { workerId, recent: 1 }).workers[0];
+    const processState = String(before?.process_state ?? "unknown");
     const client = this.clients.get(workerId);
-    this.unsubscribers.get(workerId)?.();
-    this.unsubscribers.delete(workerId);
     let stopError: unknown;
     if (client) {
-      try { await client.abort(); } catch {}
-      try { await client.stop(); } catch (error) { stopError = error; }
-      this.clients.delete(workerId);
-    }
-    if (this.store && this.repository && this.generation) {
-      const snapshot = this.store.snapshot(this.repository.canonicalRoot, { workerId, recent: 1 });
-      const currentStatus = String(snapshot.workers[0]?.status ?? "");
-      const openAdmission = ["planning", "offered"].includes(String(snapshot.admissions[0]?.state ?? ""));
-      if (status === "paused" && openAdmission) {
-        this.store.pauseAdmission(this.repository.canonicalRoot, workerId, this.generation, (this.options.now ?? Date.now)());
-        this.store.parentUpdateWorker(this.repository.canonicalRoot, workerId, { status: "queued", currentTool: null });
-      } else if (status === "stopped" && openAdmission) {
-        this.store.blockAdmission(this.repository.canonicalRoot, workerId, this.generation, "stopped by supervisor", (this.options.now ?? Date.now)());
-        this.store.parentUpdateWorker(this.repository.canonicalRoot, workerId, { status: "stopped", currentTool: null });
-      } else if (status === "paused" && snapshot.admissions[0]?.state === "admitted"
-        && !["blocked", "failed", "complete", "stopped"].includes(currentStatus)) {
-        this.store.parentUpdateWorker(this.repository.canonicalRoot, workerId, { status: "paused", currentTool: null });
-      } else if (status === "stopped" || (currentStatus !== "queued" && !TERMINAL_WORKER_STATUSES.has(currentStatus))) {
-        this.store.parentUpdateWorker(this.repository.canonicalRoot, workerId, { status });
+      try { await this.rpc(workerId, "abort", () => client.abort()); } catch {}
+      try { await this.rpc(workerId, "stop", () => client.stop()); } catch (error) { stopError = error; }
+      if (this.store !== store || this.repository !== repository || this.generation !== generation) throw new FleetOperationCancelledError("Fleet changed while stopping worker");
+      if (!stopError) {
+        if (this.clients.get(workerId) === client) this.clients.delete(workerId);
+        this.unsubscribers.get(workerId)?.();
+        this.unsubscribers.delete(workerId);
       }
+    } else if (processState !== "stopped") {
+      stopError = new Error(`${workerId} has no in-memory client; process termination cannot be verified`);
     }
-    if (status === "stopped" && this.active && !this.shuttingDown) void this.launchNextQueuedWorker();
-    if (stopError) throw stopError;
+    if (stopError) {
+      store.parentUpdateWorker(root, workerId, {
+        processState: "unreconciled", status: "blocked", currentTool: null,
+        summary: "Process stop could not be verified; research scheduling is disabled for this slot.",
+        error: stopError instanceof Error ? stopError.message : String(stopError),
+      }, (this.options.now ?? Date.now)(), generation);
+      this.queueOperationalIncident(workerId, "process termination could not be verified");
+      throw stopError;
+    }
+    const currentStatus = String(store.snapshot(root, { workerId, recent: 1 }).workers[0]?.status ?? "");
+    const preserveTerminal = ["complete", "blocked"].includes(currentStatus)
+      || (requestedStatus === "paused" && currentStatus === "failed");
+    store.parentUpdateWorker(root, workerId, {
+      processState: "stopped", currentTool: null,
+      ...(preserveTerminal ? {} : { status: requestedStatus }),
+    }, (this.options.now ?? Date.now)(), generation);
   }
 
   private closeFleetResources(): void {
-    for (const timer of this.admissionTimers.values()) clearTimeout(timer);
-    this.admissionTimers.clear();
-    this.admissionStartedAt.clear();
-    this.executionPending.clear();
-    this.workerSeeds.clear();
-    this.admissionLaunchInFlight = false;
-    this.fleetReadyForAdmission = false;
+    this.workerOperations.clear();
+    this.recyclePending.clear();
+    this.integrationPending.clear();
+    this.integrationTail = Promise.resolve();
+    this.recoveryAttempts.clear();
+    this.livenessChecks.clear();
+    this.stopOperations.clear();
+    for (const unsubscribe of this.unsubscribers.values()) unsubscribe();
+    this.unsubscribers.clear();
+    this.clients.clear();
+    if (this.incidentTimer !== undefined) clearTimeout(this.incidentTimer);
+    this.incidentTimer = undefined;
+    this.pendingIncidents.clear();
+    this.incidentKeys.clear();
     this.store?.close();
     this.store = undefined;
     this.repository = undefined;
     this.generation = undefined;
+    this.ownership = "none";
     this.lanes.clear();
-    this.notifiedStates.clear();
   }
 
   private startDashboard(): void {
     this.refreshDashboard();
     const interval = this.options.dashboardIntervalMs ?? 5_000;
-    if (interval > 0 && !this.dashboardTimer) {
-      this.dashboardTimer = setInterval(() => this.refreshDashboard(), interval);
+    if (interval > 0 && !this.dashboardRunning) {
+      this.dashboardRunning = true;
+      this.controller.tell({
+        _tag: "RunEffect",
+        effect: scopedSleep(interval).pipe(
+          Effect.zipRight(this.controller.offer({ _tag: "DashboardRefresh" })),
+          Effect.repeat({ while: () => this.dashboardRunning }),
+          Effect.ensuring(Effect.sync(() => { this.dashboardRunning = false; })),
+        ),
+      });
     }
   }
 
   private stopDashboard(): void {
-    if (this.dashboardTimer) clearInterval(this.dashboardTimer);
-    this.dashboardTimer = undefined;
+    this.dashboardRunning = false;
     this.dashboardRenderState = undefined;
     this.dashboardRequestRender = () => {};
     this.dashboardWidgetRegistered = false;
-    this.currentCtx?.ui.setWidget(AUTORESEARCH_FLEET_WIDGET_ID, undefined);
+    const ctx = this.currentCtx;
+    if (!ctx) return;
+    try {
+      ctx.ui.setWidget(AUTORESEARCH_FLEET_WIDGET_ID, undefined);
+    } finally {
+      endActivityDock(this.pi, ctx, AUTORESEARCH_FLEET_WIDGET_ID);
+    }
   }
 
   private updateDashboardWidget(state: DashboardRenderState): void {
@@ -1323,25 +1497,29 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
     if (!ctx) return;
     this.dashboardRenderState = state;
     if (ctx.mode !== "tui") {
-      const content = fleetDashboardWidgetLines(state.snapshot, state.options)
-        .map((line) => line.segments.map((segment) => segment.text).join(""));
-      ctx.ui.setWidget(AUTORESEARCH_FLEET_WIDGET_ID, content, { placement: "belowEditor" });
+      ctx.ui.setWidget(AUTORESEARCH_FLEET_WIDGET_ID, fleetDashboardWidgetLines(state.snapshot, state.options)
+        .map((line) => line.segments.map((segment) => segment.text).join("")), { placement: "aboveEditor" });
       return;
     }
     if (!this.dashboardWidgetRegistered) {
       this.dashboardWidgetRegistered = true;
-      ctx.ui.setWidget(AUTORESEARCH_FLEET_WIDGET_ID, (tui, theme) => {
-        this.dashboardRequestRender = () => tui.requestRender();
-        return {
-          render: (width: number) => {
-            const current = this.dashboardRenderState;
-            if (!current) return [];
-            return fleetDashboardWidgetLines(current.snapshot, current.options)
-              .map((line) => renderDashboardLine(line, theme, width));
-          },
-          invalidate() {},
-        };
-      }, { placement: "belowEditor" });
+      beginActivityDock(this.pi, ctx, AUTORESEARCH_FLEET_WIDGET_ID);
+      try {
+        ctx.ui.setWidget(AUTORESEARCH_FLEET_WIDGET_ID, (tui, theme) => {
+          this.dashboardRequestRender = () => tui.requestRender();
+          return {
+            render: (width: number) => this.dashboardRenderState
+              ? fleetDashboardWidgetLines(this.dashboardRenderState.snapshot, this.dashboardRenderState.options)
+                  .map((line) => renderDashboardLine(line, theme, width))
+              : [],
+            invalidate() {},
+          };
+        }, { placement: "aboveEditor" });
+      } catch (error) {
+        this.dashboardWidgetRegistered = false;
+        endActivityDock(this.pi, ctx, AUTORESEARCH_FLEET_WIDGET_ID);
+        throw error;
+      }
       return;
     }
     this.dashboardRequestRender();
@@ -1350,65 +1528,76 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
   private refreshDashboard(): void {
     if (!this.active || !this.store || !this.repository || !this.currentCtx) return;
     try {
-      const snapshot = this.store.snapshot(this.repository.canonicalRoot, { recent: 5 });
+      const snapshot = this.store.snapshot(this.repository.canonicalRoot, { recent: 20 });
+      for (const worker of snapshot.workers) {
+        const workerId = String(worker.worker_id);
+        const status = String(worker.status);
+        if (["complete", "blocked", "failed"].includes(status) && worker.process_state === "owned") {
+          this.scheduleRecycle(workerId, `campaign worker reached ${status}`);
+        } else if (worker.process_state === "owned" && this.clients.has(workerId) && !this.livenessChecks.has(workerId)) {
+          const client = this.clients.get(workerId)!;
+          this.livenessChecks.add(workerId);
+          this.controller.tell({
+            _tag: "RunTask",
+            task: () => this.probeWorkerLiveness(workerId, client),
+            onError: (error) => this.failSupervisor(error, this.currentCtx),
+          });
+        }
+      }
       let repo = this.repository;
-      try {
-        repo = (this.options.inspectRepo ?? ((cwd: string) => inspectRepository(cwd, this.options.run)))(this.repository.canonicalRoot);
-      } catch {}
+      try { repo = (this.options.inspectRepo ?? ((cwd: string) => inspectRepository(cwd, this.options.run)))(this.repository.canonicalRoot); } catch {}
       this.updateDashboardWidget({
         snapshot,
         options: {
-          now: (this.options.now ?? Date.now)(),
-          canonicalHead: repo.head,
-          canonicalDirty: repo.dirty,
+          now: (this.options.now ?? Date.now)(), canonicalHead: repo.head, canonicalDirty: repo.dirty,
           canonicalChanged: typeof snapshot.fleet?.canonical_head === "string" && snapshot.fleet.canonical_head !== repo.head,
           protocolChanged: Number(snapshot.fleet?.protocol_version) !== AUTORESEARCH_PROTOCOL_VERSION,
         },
       });
-      this.notifyImportantTransitions(snapshot);
     } catch (error) {
       this.failSupervisor(error, this.currentCtx);
     }
   }
 
-  private notifyImportantTransitions(snapshot: FleetSnapshot): void {
-    const ctx = this.currentCtx;
-    if (!ctx) return;
-    const transitions: Array<{ id: string; status: string; line: string }> = [];
-    for (const worker of snapshot.workers) {
-      const id = String(worker.worker_id);
-      const status = String(worker.status);
-      const previous = this.notifiedStates.get(id);
-      const admission = snapshot.admissions.find((item) => item.worker_id === id);
-      const latestCheckpoint = snapshot.checkpoints.find((item) => item.worker_id === id);
-      const internalAdmissionDecision = status === "decision"
-        && ["offered", "admitted"].includes(String(admission?.state ?? ""))
-        && Number(latestCheckpoint?.id) === Number(admission?.checkpoint_id);
-      if (internalAdmissionDecision) continue;
-      if (previous === status || !["blocked", "failed", "decision"].includes(status)) {
-        this.notifiedStates.set(id, status);
-        continue;
-      }
-      transitions.push({
-        id,
-        status,
-        line: `- ${id} ${status}: ${String(worker.summary ?? worker.error ?? "inspect fleet state")}`,
-      });
-    }
-    if (transitions.length === 0) return;
-
-    const message = [
-      "[autoresearch fleet transition; operational state, not Git truth]",
-      "Worker attention is required:",
-      ...transitions.map((transition) => transition.line),
-      "Inspect the shared fleet state and coordinate the required response.",
-    ].join("\n");
+  private async probeWorkerLiveness(workerId: string, client: RpcWorkerClient): Promise<void> {
     try {
-      this.pi.sendUserMessage(message, { deliverAs: "followUp" });
-      for (const transition of transitions) this.notifiedStates.set(transition.id, transition.status);
+      if (!this.active || this.shuttingDown || this.clients.get(workerId) !== client) return;
+      await this.rpc(workerId, "liveness probe", () => client.getState());
     } catch (error) {
-      ctx.ui.notify(`Could not queue autoresearch transition: ${error instanceof Error ? error.message : String(error)}`, "error");
+      if (!this.active || this.shuttingDown || this.clients.get(workerId) !== client || !this.store || !this.repository) return;
+      await this.stopWorker(workerId, "failed");
+      const worker = this.store.snapshot(this.repository.canonicalRoot, { workerId, recent: 1 }).workers[0];
+      if (worker?.process_state === "stopped") {
+        this.scheduleRecycle(workerId, `worker process failed its liveness probe: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    } finally {
+      this.livenessChecks.delete(workerId);
     }
+  }
+
+  private queueOperationalIncident(workerId: string, reason: string): void {
+    if (this.shuttingDown || !this.store || !this.repository || !this.generation) return;
+    const worker = this.store.snapshot(this.repository.canonicalRoot, { workerId, recent: 1 }).workers[0];
+    const key = `${this.generation}:${workerId}:${String(worker?.session_id ?? "unknown")}:${reason}`;
+    if (this.incidentKeys.has(key)) return;
+    this.incidentKeys.add(key);
+    this.pendingIncidents.set(key, `- ${workerId}: ${reason}; status=${String(worker?.status ?? "unknown")}; process=${String(worker?.process_state ?? "unknown")}; error=${String(worker?.error ?? "-")}`);
+    if (this.incidentTimer !== undefined) return;
+    this.incidentTimer = setTimeout(() => {
+      this.incidentTimer = undefined;
+      const incidents = [...this.pendingIncidents.values()];
+      this.pendingIncidents.clear();
+      if (incidents.length === 0) return;
+      try {
+        this.pi.sendUserMessage([
+          "[autoresearch operational incident; action required]",
+          ...incidents,
+          "Inspect the affected workers and repair or safely control them. Do not merely acknowledge this incident or interpret it only as research evidence.",
+        ].join("\n"), { deliverAs: "followUp" });
+      } catch (error) {
+        this.currentCtx?.ui.notify(`Could not queue autoresearch operational incident: ${error instanceof Error ? error.message : String(error)}`, "error");
+      }
+    }, INCIDENT_COALESCE_MS);
   }
 
   private setToolsActive(enabled: boolean): void {
@@ -1419,39 +1608,81 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
   private failSupervisor(error: unknown, ctx = this.currentCtx): void {
     if (this.shuttingDown) return;
     const message = error instanceof Error ? error.message : String(error);
+    if (this.ownership === "observer") {
+      ctx?.ui.notify(`Autoresearch observer failure: ${message}`, "error");
+      return;
+    }
     this.launching = false;
     if (!(error instanceof FleetAlreadyActiveError)) {
       ++this.operation;
       this.active = false;
       this.launching = true;
       const failedStore = this.store;
-      if (this.store && this.repository) this.store.setFleetStatus(this.repository.canonicalRoot, "failed");
+      if (this.store && this.repository && this.generation) this.store.setFleetStatus(this.repository.canonicalRoot, "failed", (this.options.now ?? Date.now)(), this.generation);
       this.stopDashboard();
       this.setToolsActive(false);
-      void Promise.allSettled([...this.lanes.keys()].map((id) => this.stopWorker(id, "failed"))).then(() => {
-        if (this.store === failedStore) this.closeFleetResources();
-        this.launching = false;
-      });
+      this.forkTask(async () => {
+        const results = await Promise.allSettled([...this.lanes.keys()].map((id) => this.stopWorker(id, "failed")));
+        this.controller.tell({ _tag: "FailureStopCompleted", store: failedStore, unresolved: results.filter((result) => result.status === "rejected").length });
+      }, () => {});
     }
     ctx?.ui.notify(`Autoresearch supervisor failure: ${message}`, "error");
   }
 
-  async shutdown(ctx: ExtensionContext): Promise<void> {
+  shutdown(ctx: ExtensionContext): Promise<void> {
+    return this.controller.request<void>((reply) => ({ _tag: "SessionShutdown", ctx, reply }));
+  }
+
+  private async shutdownImpl(ctx: ExtensionContext): Promise<void> {
     if (this.shuttingDown) return;
+    if (this.incidentTimer !== undefined) clearTimeout(this.incidentTimer);
+    this.incidentTimer = undefined;
+    this.pendingIncidents.clear();
     this.shuttingDown = true;
+    if (this.ownership === "observer") {
+      this.active = false;
+      this.launching = false;
+      this.stopDashboard();
+      this.setToolsActive(false);
+      this.closeFleetResources();
+      this.currentCtx = undefined;
+      ctx.ui.setWidget(AUTORESEARCH_FLEET_WIDGET_ID, undefined);
+      return;
+    }
+    const wasEnabled = this.launching || this.active;
     ++this.operation;
+    for (const workerId of this.lanes.keys()) this.bumpWorkerOperation(workerId);
     this.launching = false;
     this.active = false;
     this.stopDashboard();
     this.setToolsActive(false);
-    await Promise.allSettled([...this.lanes.keys()].map((id) => this.stopWorker(id, "paused")));
-    if (this.store && this.repository) this.store.setFleetStatus(this.repository.canonicalRoot, "paused");
-    this.closeFleetResources();
+    const results = await Promise.allSettled([...this.lanes.keys()].map((id) => this.stopWorker(id, "paused")));
+    const allStopped = results.every((result) => result.status === "fulfilled");
+    if (this.store && this.repository && this.generation) {
+      this.store.setFleetStatus(this.repository.canonicalRoot, wasEnabled ? "paused" : allStopped ? "stopped" : "off", (this.options.now ?? Date.now)(), this.generation);
+    }
+    if (allStopped) this.closeFleetResources();
+    else this.store?.close();
     this.currentCtx = undefined;
     ctx.ui.setWidget(AUTORESEARCH_FLEET_WIDGET_ID, undefined);
   }
 }
 
-export function registerAutoresearchSupervisor(pi: ExtensionAPI, options: SupervisorOptions = {}): FleetCommandHandler {
-  return new AutoresearchSupervisor(pi, options);
+export function registerAutoresearchSupervisor(pi: ExtensionAPI, options?: SupervisorOptions): FleetCommandHandler;
+export function registerAutoresearchSupervisor(
+  pi: ExtensionAPI,
+  runtime: AutoresearchManagedRuntime,
+  options?: SupervisorOptions,
+): FleetCommandHandler;
+export function registerAutoresearchSupervisor(
+  pi: ExtensionAPI,
+  runtimeOrOptions: AutoresearchManagedRuntime | SupervisorOptions = {},
+  providedOptions: SupervisorOptions = {},
+): FleetCommandHandler {
+  const sharedRuntime = typeof (runtimeOrOptions as AutoresearchManagedRuntime).runPromise === "function";
+  const options = sharedRuntime ? providedOptions : runtimeOrOptions as SupervisorOptions;
+  const runtime = sharedRuntime ? runtimeOrOptions as AutoresearchManagedRuntime : makeAutoresearchRuntime(pi, { now: options.now ?? Date.now });
+  const supervisor = new AutoresearchSupervisor(pi, runtime, options);
+  if (!sharedRuntime) pi.on("session_shutdown", () => runtime.dispose());
+  return supervisor;
 }

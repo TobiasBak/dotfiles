@@ -1,11 +1,11 @@
 ---
 name: autoresearch-program-design
-description: Design or review a project-specific autoresearch program, program.md, benchmark, test/evidence protocol, or autoresearch setup. Use when a project lacks program.md, when creating or revising program.md, when defining scientific claims and terminal outcomes, when designing executable benchmarks or evidence gates, or when reviewing budgets, concurrency, worker coordination, checkpoints, Git/worktree boundaries, artifacts, and stop conditions.
+description: Design or review a project-specific autoresearch program, program.md, benchmark, test/evidence protocol, or autoresearch setup. Use when a project lacks program.md, when creating or revising program.md, when defining scientific claims and terminal outcomes, when designing executable benchmarks or evidence gates, or when reviewing budgets, autonomous worker operation, checkpoints, Git/worktree boundaries, artifacts, and stop conditions.
 ---
 
 # Autoresearch Program Design
 
-Build a reviewable research contract with the human. Do not blindly generate `program.md`, infer preferences that materially affect cost or risk, or start a fleet as part of setup.
+Build a reviewable research contract with the human. Do not blindly generate `program.md`, infer preferences that materially affect cost or risk, or launch autoresearch workers as part of setup.
 
 Use progressive disclosure:
 
@@ -35,7 +35,7 @@ Read the repository's instructions and orientation files. Inspect only enough im
 - compute, network, credentials, services, devices, rate limits, paid APIs, and safety constraints
 - prior experiments, known failures, accepted tradeoffs, and where reusable knowledge belongs
 
-Run cheap read-only discovery first. Do not run expensive benchmarks, modify the project, create worktrees, initialize fleet state, or provision external resources merely to design the program. If a small command is needed to verify an assumption, explain it and keep the result as design evidence.
+Run cheap read-only discovery first. Do not run expensive benchmarks, modify the project, create worktrees, launch workers, or provision external resources merely to design the program. If a small command is needed to verify an assumption, explain it and keep the result as design evidence.
 
 Summarize what was observed, what remains unknown, and which unknowns change the design. Ask focused questions instead of making the human restate facts already present in the project.
 
@@ -71,9 +71,10 @@ Name terminal outcomes in advance. Typical outcomes are:
 - **accepted**: candidate passes all validity gates and the predeclared promotion rule
 - **rejected**: valid evidence does not beat the champion or violates a gate
 - **inconclusive**: evidence is valid but insufficient to decide within budget
-- **blocked**: required input, access, environment, or human decision is unavailable
+- **external-blocked**: required input, access, environment, or human decision is unavailable after every useful legal action was tried
 - **exhausted**: campaign budget or hypothesis space is consumed without acceptance
-- **unsafe/invalid**: evidence or execution integrity failed, so no scientific conclusion is allowed
+
+Unsafe, invalid, crashed, missing, or malformed evidence is not itself a sixth fleet outcome. Define whether it makes the campaign `rejected`, `inconclusive`, or `exhausted`, or whether a genuinely unavailable external prerequisite makes it `external-blocked`.
 
 A timeout, crash, missing result, malformed result, benchmark drift, or leaked holdout is not silently converted into a poor score. Define whether it invalidates a replicate, rejects a candidate, or stops the campaign.
 
@@ -97,32 +98,30 @@ For each stage define entry gate, command, inputs, maximum attempts, resource cl
 Budget the campaign, not just one command:
 
 - wall-clock deadline and per-command timeout
-- maximum hypotheses, candidates, runs, retries, and evidence-stage reservations
+- maximum hypotheses, candidates, runs, retries, and evidence attempts
 - CPU, memory, accelerator, disk, and process limits
 - external requests, tokens, dollars, devices, rate limits, and permitted hours
-- maximum parent workers and maximum concurrent scarce evidence stages
+- maximum concurrent scarce scientific operations when the project itself enforces that limit
 - retry policy, backoff, cancellation, and cleanup
 
-Choose concurrency from actual bottlenecks. Parallel development may be safe while evidence runs must be serialized. Account for correlated noise, shared caches, thermal effects, service quotas, database contention, and integration bandwidth. More workers do not create more independent evidence.
+`/autoresearch N` is the only extension operational load limit: `N` sets the number of simultaneously running researchers. Do not add an arbitrary worker cap to `program.md`, especially not a default cap of four. Project-level scientific budgets and validity rules remain legitimate, including limits on hypotheses, evidence attempts, external cost, devices, or concurrent measurements. Enforce those limits in project commands or infrastructure when correctness or safety depends on them. Account for correlated noise, shared caches, thermal effects, service quotas, database contention, and integration bandwidth. More workers do not create more independent evidence.
 
 ### 6. Design shared and private memory
 
-Workers need bounded shared operational state, not each other's transcripts.
+Workers need bounded shared observations, not each other's transcripts. Shared state does not dispatch tasks or grant exclusive ownership.
 
-Shared memory should contain only coordination and durable findings, such as:
+Shared memory should contain only durable findings and current observations, such as:
 
 - campaign and hypothesis identifiers
-- claimed scopes and ownership
-- current stage and status
+- non-exclusive intent, current stage, and status
 - concise findings, blockers, and next actions
 - champion and candidate commit identities
 - run and artifact identifiers
-- continuation command and launch receipt
-- active evidence reservations and terminal receipts
+- continuation command and launch receipt for crash recovery
 
 Private memory may contain scratch analysis, verbose logs, failed local drafts, and worker transcript context. Promote a private observation only when another worker or future campaign can act on it. Include provenance and confidence when trust depends on environment or data.
 
-Define a checkpoint schema in `program.md`. At minimum include campaign, hypothesis, stage, status, summary, findings, blockers, next actions, run IDs, claimed scopes, candidate commit, champion commit, continuation command, and launch receipt when applicable. Checkpoint after material findings, before long or external work, before pausing, and at every terminal transition.
+Define a checkpoint schema in `program.md`. At minimum include campaign, hypothesis, stage, status, summary, findings, blockers, next actions, run IDs, non-exclusive intent, candidate commit, champion commit, continuation command, and launch receipt when applicable. Checkpoints exist only for observability and crash recovery. They are not claims, locks, leases, task assignments, admission records, or authorization to proceed. Checkpoint after material findings, before long or external work, and at every terminal transition.
 
 ### 7. Define Git, worktree, and integration boundaries
 
@@ -138,22 +137,15 @@ State explicitly:
 - how stale lanes and saved candidate refs are reconciled
 - integration ordering and post-integration verification
 
-The fleet supervisor can preserve and synchronize lanes, but synchronization is not evidence and a candidate ref is not an accepted result. Never let workers concurrently edit the canonical checkout. A worker with an active project portfolio assignment or active evidence reservation must reconcile it before synchronization.
+The extension never changes an active lane. After a worker records a terminal campaign and exits, the supervisor stops its process, preserves the exact terminal commit under a create-only ref, serially merges that terminal branch into the clean canonical branch without rewriting worker commits, resets only the completed lane to the resulting canonical head, and then launches its replacement. Other active lanes converge only after their own campaigns finish. A conflict, dirty or externally changed canonical checkout, ref mismatch, or failed cleanup blocks the affected lane with its terminal ref preserved; the extension does not guess at conflict resolution or modify another active lane. This terminal integration is not scientific evidence or acceptance, so the program must still define post-integration verification and who resolves a blocked merge.
 
-### 8. Integrate generic worker state with project evidence
+### 8. Define disposable autonomous researcher operation
 
-`autoresearch_worker_state` provides generic shared checkpoints and atomic evidence-capacity reservations. The program must bind those operations to project-specific commands:
+Each worker is an autonomous researcher, not a task consumer. It observes the program, repository, and shared checkpoints; chooses a useful campaign within the reviewed scope; records a non-exclusive intent; and executes one full campaign from orientation through a scientific terminal outcome. It then writes a terminal checkpoint, leaves recoverable artifacts and Git state, and exits. The extension replaces exited workers while `/autoresearch N` remains active.
 
-1. Call `snapshot` before claiming work and after resume.
-2. Record a checkpoint with claimed scope and exact candidate/champion identities.
-3. Call `reserve_evidence` before a paid, detached, scarce, or sealed evidence stage.
-4. Pass the reservation identity and worker/generation identity to the project's evidence entrypoint.
-5. Have that entrypoint validate the reservation immediately before acquiring the scarce resource.
-6. Write immutable artifacts and a launch receipt.
-7. Call `release_evidence` with a structured terminal receipt for success, failure, cancellation, or timeout.
-8. Checkpoint the result and next decision.
+There is no task dispatcher, claim protocol, lock, lease, approval or admission step, fencing token, evidence-capacity reservation, or compaction-driven handoff. Intents are informational and may overlap. A worker should use observed intents and findings to avoid waste, but must tolerate duplicate work and independently verify evidence it relies on.
 
-A generic reservation is hard concurrency enforcement only if every project evidence entrypoint validates it. Cooperative agent instructions alone are not a hard limit. The project wrapper should fail closed unless the reservation is active, belongs to the invoking worker and fleet generation, authorizes the requested stage, and has not already received a terminal receipt. Revalidate close to resource acquisition. Define cleanup and reconciliation for a process that dies after launch.
+Checkpoints support observability and crash recovery only. On restart, a worker may continue a recoverable campaign or begin another useful campaign based on the durable state. A continuation command or launch receipt describes process state but does not confer ownership. Project commands remain responsible for scientific budgets, benchmark validity, cost controls, scarce-resource safety, process cleanup, and immutable evidence artifacts.
 
 ### 9. Review, then write
 
@@ -167,7 +159,7 @@ Before creating `program.md`, present a compact design review:
 - memory, Git, artifact, and integration boundaries
 - unresolved `DECISION REQUIRED` items
 
-Ask the human to resolve material decisions. Draft from [the program template](assets/program-template.md), replacing or deleting every instructional placeholder. Mark unverified commands as proposals and do not describe them as executable until checked. Keep the resulting program operational and concise enough for workers to reread after compaction.
+Ask the human to resolve material decisions. Draft from [the program template](assets/program-template.md), replacing or deleting every instructional placeholder. Mark unverified commands as proposals and do not describe them as executable until checked. Keep the resulting program operational and concise enough for each autonomous researcher to reread at campaign start or after crash recovery.
 
 After drafting, review it against this checklist:
 
@@ -176,8 +168,9 @@ After drafting, review it against this checklist:
 - champion and candidate identities cannot be confused
 - budgets, timeouts, crashes, invalid evidence, and stop conditions are explicit
 - evidence artifacts and plans are immutable and attributable
-- shared checkpoints are bounded and actionable
-- evidence reservations are validated by the project entrypoint where hard enforcement is required
+- shared checkpoints are bounded, informational, and sufficient for observability and crash recovery
+- `/autoresearch N` is the only extension worker-load setting, while project commands enforce legitimate scientific and resource limits
+- each worker completes one campaign, records a terminal outcome, and exits for replacement
 - Git/worktree synchronization cannot be mistaken for integration or evidence
 - knowledge promotion and terminal receipts have destinations
 - all project-specific decisions are resolved or visibly block launch

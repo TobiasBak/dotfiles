@@ -16,17 +16,22 @@ export interface SubtaskGroupStatusItem {
 }
 
 export interface SubtaskGroupWaitResult {
-  groups: SubtaskGroupStatusItem[];
+  groups: SubtaskGroupWaitItem[];
   aborted: boolean;
-}
-
-export interface SubtaskGroupCompletion {
-  allFailed: boolean;
 }
 
 export interface BackgroundSubtaskDelivery {
   content: string;
   details: Record<string, unknown>;
+}
+
+export interface SubtaskGroupWaitItem extends SubtaskGroupStatusItem {
+  result?: BackgroundSubtaskDelivery;
+}
+
+export interface SubtaskGroupCompletion {
+  status: Exclude<SubtaskGroupStatus, "running">;
+  result: BackgroundSubtaskDelivery;
 }
 
 export type BackgroundSubtaskDeliveryAdapter = (delivery: BackgroundSubtaskDelivery) => void;
@@ -98,6 +103,7 @@ interface SubtaskGroupRecord {
   taskIds: string[];
   controller?: AbortController;
   status: SubtaskGroupStatus;
+  result?: BackgroundSubtaskDelivery;
   settled: Promise<void>;
 }
 
@@ -133,16 +139,11 @@ class SubtaskGroupRegistry {
       status: "running",
       settled: Promise.resolve(),
     };
-    record.settled = completion.then(
-      (result) => {
-        record.status = result.allFailed ? "failed" : "completed";
-        record.controller = undefined;
-      },
-      () => {
-        record.status = controller.signal.aborted ? "cancelled" : "failed";
-        record.controller = undefined;
-      },
-    );
+    record.settled = completion.then((result) => {
+      record.result = result.result;
+      record.status = result.status;
+      record.controller = undefined;
+    });
     this.groups.set(id, record);
   }
 
@@ -159,12 +160,19 @@ class SubtaskGroupRegistry {
     if (unknown.length > 0) throw new Error(`Unknown subtask group IDs: ${unknown.join(", ")}`);
 
     const records = requested.map((id) => this.groups.get(id)!);
+    const listWaitItems = (): SubtaskGroupWaitItem[] =>
+      records.map((record) => ({
+        id: record.id,
+        taskIds: [...record.taskIds],
+        status: record.status,
+        ...(record.result ? { result: record.result } : {}),
+      }));
     const completion = Promise.all(records.map((record) => record.settled));
     if (!signal) {
       await completion;
-      return { groups: this.list(requested), aborted: false };
+      return { groups: listWaitItems(), aborted: false };
     }
-    if (signal.aborted) return { groups: this.list(requested), aborted: true };
+    if (signal.aborted) return { groups: listWaitItems(), aborted: true };
 
     const aborted = await new Promise<boolean>((resolve) => {
       let finished = false;
@@ -178,7 +186,7 @@ class SubtaskGroupRegistry {
       signal.addEventListener("abort", onAbort, { once: true });
       void completion.then(() => finish(false));
     });
-    return { groups: this.list(requested), aborted };
+    return { groups: listWaitItems(), aborted };
   }
 
   forget(ids: Iterable<string>): void {

@@ -8,6 +8,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+
+import { beginActivityDock, endActivityDock } from "../activity-dock.ts";
 import {
   FORK_CONTEXT_BLOCK_PERCENT,
   SUBTASK_CHILD_ENV,
@@ -41,7 +43,10 @@ import {
   truncateResult,
 } from "./core.ts";
 import { createCapturedChangesWriter, createOverflowResultWriter } from "./overflow.ts";
-import { getSubtaskRuntimeState } from "./runtime.ts";
+import {
+  type SubtaskGroupCompletion,
+  getSubtaskRuntimeState,
+} from "./runtime.ts";
 
 const MAX_SUBTASKS = 16;
 const MAX_ERROR_BYTES = 4 * 1024;
@@ -206,55 +211,77 @@ function getSelectableToolNames(pi: ExtensionAPI): string[] {
 }
 
 function registerSubtaskWidget(
+  pi: ExtensionAPI,
   ctx: ExtensionContext,
   widgetId: string,
   tasks: SubtaskStatusItem[],
 ): { update(tasks: SubtaskStatusItem[]): void; clear(): void } {
   if (ctx.mode !== "tui") return { update() {}, clear() {} };
 
-  return registerMutableWidget({
-    setWidget: (key, content, options) => ctx.ui.setWidget(key, content, options),
-    key: widgetId,
-    initialValue: tasks,
-    placement: "belowEditor",
-    createComponent: (getTasks, theme) => ({
-      render(width: number): string[] {
-        return formatSubtaskWidgetLines(getTasks(), width).map((widgetLine) => {
-          const statusColor =
-            widgetLine.status === "completed"
-              ? "success"
-              : widgetLine.status === "failed" || widgetLine.status === "cancelled"
-                ? "error"
-                : widgetLine.status === "running"
-                  ? "accent"
-                  : "muted";
-          const line = widgetLine.segments
-            .map((segment) => {
-              switch (segment.role) {
-                case "frame":
-                  return theme.fg("borderMuted", segment.text);
-                case "group":
-                  return theme.fg("accent", theme.bold(segment.text));
-                case "status":
-                  return theme.fg(statusColor, theme.bold(segment.text));
-                case "model":
-                case "metadata":
-                  return theme.fg("dim", segment.text);
-                case "summary":
-                  return theme.fg("text", segment.text);
-              }
-            })
-            .join("");
-          return truncateToWidth(line, width);
-        });
+  beginActivityDock(pi, ctx, widgetId);
+  try {
+    const widget = registerMutableWidget({
+      setWidget: (key, content, options) => ctx.ui.setWidget(key, content, options),
+      key: widgetId,
+      initialValue: tasks,
+      placement: "aboveEditor",
+      createComponent: (getTasks, theme) => ({
+        render(width: number): string[] {
+          return formatSubtaskWidgetLines(getTasks(), width).map((widgetLine) => {
+            const statusColor =
+              widgetLine.status === "completed"
+                ? "success"
+                : widgetLine.status === "failed" || widgetLine.status === "cancelled"
+                  ? "error"
+                  : widgetLine.status === "running"
+                    ? "accent"
+                    : "muted";
+            const line = widgetLine.segments
+              .map((segment) => {
+                switch (segment.role) {
+                  case "frame":
+                    return theme.fg("borderMuted", segment.text);
+                  case "group":
+                    return theme.fg("accent", theme.bold(segment.text));
+                  case "status":
+                    return theme.fg(statusColor, theme.bold(segment.text));
+                  case "model":
+                  case "metadata":
+                    return theme.fg("dim", segment.text);
+                  case "summary":
+                    return theme.fg("text", segment.text);
+                }
+              })
+              .join("");
+            return truncateToWidth(line, width);
+          });
+        },
+        invalidate() {},
+      }),
+    });
+    return {
+      update: widget.update,
+      clear() {
+        try {
+          widget.clear();
+        } finally {
+          endActivityDock(pi, ctx, widgetId);
+        }
       },
-      invalidate() {},
-    }),
-  });
+    };
+  } catch (error) {
+    endActivityDock(pi, ctx, widgetId);
+    throw error;
+  }
 }
 
-function clearSubtaskWidget(ctx: ExtensionContext, widgetId: string): void {
-  if (ctx.mode === "tui") ctx.ui.setWidget(widgetId, undefined);
+function clearSubtaskWidget(pi: ExtensionAPI, ctx: ExtensionContext, widgetId: string): void {
+  if (ctx.mode !== "tui") return;
+  try {
+    ctx.ui.setWidget(widgetId, undefined);
+  } finally {
+    endActivityDock(pi, ctx, widgetId);
+  }
 }
 
 function validateSubtask(
@@ -319,7 +346,7 @@ export function createSubtasksExtension(
           inheritedWidget.update(inheritedTasks);
         } else {
           activeWidgetIds.add(inheritedWidgetId);
-          inheritedWidget = registerSubtaskWidget(ctx, inheritedWidgetId, inheritedTasks);
+          inheritedWidget = registerSubtaskWidget(pi, ctx, inheritedWidgetId, inheritedTasks);
         }
       };
 
@@ -362,7 +389,7 @@ export function createSubtasksExtension(
       shuttingDown = true;
       if (inheritedWidgetTimer) clearInterval(inheritedWidgetTimer);
       inheritedWidgetTimer = undefined;
-      for (const widgetId of activeWidgetIds) clearSubtaskWidget(ctx, widgetId);
+      for (const widgetId of activeWidgetIds) clearSubtaskWidget(pi, ctx, widgetId);
       activeWidgetIds.clear();
       inheritedWidget = undefined;
 
@@ -413,7 +440,7 @@ export function createSubtasksExtension(
         wait: Type.Optional(
           Type.Boolean({
             description:
-              "Wait for every task to finish before this tool call returns. Results will be delivered automatically when subtasks finish. Use false only while unrelated work can continue; caller abort detaches without cancelling. Default: true.",
+              "Wait for every task to finish before this tool call returns. Completion is queued for automatic delivery and retained for subtasks_wait retrieval. Use false only while unrelated work can continue; caller abort detaches without cancelling. Default: true.",
             default: true,
           }),
         ),
@@ -504,20 +531,26 @@ export function createSubtasksExtension(
               content: [
                 {
                   type: "text" as const,
-                  text: `Stopped waiting for subtask groups: ${groupStatuses}. The subtasks continue running, and results will be delivered automatically when they finish.`,
+                  text: `Stopped waiting for subtask groups: ${groupStatuses}. Running subtasks continue, and terminal results remain available for a later subtasks_wait call.`,
                 },
               ],
               details: result,
             };
           }
 
+          const retainedResults = result.groups.map((group) => {
+            if (!group.result) {
+              throw new Error(`Subtask group ${group.id} reached terminal state without a retained result`);
+            }
+            return group.result;
+          });
           runtime.forgetGroups(params.groupIds);
           updateCoordinationTools();
           return {
             content: [
               {
                 type: "text" as const,
-                text: `Subtask groups reached terminal state: ${groupStatuses}. Results were delivered automatically.`,
+                text: retainedResults.map((retained) => retained.content).join("\n\n"),
               },
             ],
             details: result,
@@ -658,7 +691,7 @@ export function createSubtasksExtension(
               }
 
               activeWidgetIds.add(widgetId);
-              widget = registerSubtaskWidget(executionCtx, widgetId, tasks);
+              widget = registerSubtaskWidget(pi, executionCtx, widgetId, tasks);
               publish();
               durationTimer = setInterval(refreshWidget, 1_000);
               durationTimer.unref();
@@ -802,21 +835,52 @@ export function createSubtasksExtension(
             }
           };
 
-          const completion = runBatch();
+          let deliveryStatus: "running" | "completed" | "failed" | "cancelled" = "running";
+          const completion: Promise<SubtaskGroupCompletion> = runBatch().then(
+            ({ result, allFailed }) => {
+              deliveryStatus = allFailed ? "failed" : "completed";
+              return {
+                status: deliveryStatus,
+                result: {
+                  content: `## Subtask group ${groupId} [${deliveryStatus}]\n\n${result.content[0]?.text ?? ""}`,
+                  details: {
+                    ...result.details,
+                    delivery: "steer",
+                    groupId,
+                    batchId: toolCallId,
+                    status: deliveryStatus,
+                  },
+                },
+              };
+            },
+            (error) => {
+              deliveryStatus = controller.signal.aborted ? "cancelled" : "failed";
+              const boundedError = truncateResult(errorMessage(error), {
+                maxBytes: MAX_ERROR_BYTES,
+                maxLines: MAX_ERROR_LINES,
+              });
+              return {
+                status: deliveryStatus,
+                result: {
+                  content: `## Subtask group ${groupId} [${deliveryStatus}]\n\n${boundedError.content}`,
+                  details: {
+                    ...copyDetails(tasks),
+                    delivery: "steer",
+                    groupId,
+                    batchId: toolCallId,
+                    status: deliveryStatus,
+                    error: boundedError.content,
+                  },
+                },
+              };
+            },
+          );
           runtime.trackGroup(
             groupId,
             tasks.map((task) => task.id),
             controller,
             completion,
           );
-
-          const deliverSteerResult = (
-            content: string,
-            details: Record<string, unknown>,
-          ): void => {
-            runtime.deliver({ content, details });
-          };
-          let deliveryStatus: "running" | "completed" | "failed" = "running";
 
           await executeBatchMode({
             wait: params.wait !== false,
@@ -825,40 +889,14 @@ export function createSubtasksExtension(
             detach() {
               detachedFromToolResult = true;
             },
-            deliverSuccess({ result, allFailed }) {
-              deliveryStatus = allFailed ? "failed" : "completed";
-              deliverSteerResult(
-                `## Subtask group ${groupId} [${deliveryStatus}]\n\n${result.content[0]?.text ?? ""}`,
-                {
-                  ...result.details,
-                  delivery: "steer",
-                  groupId,
-                  batchId: toolCallId,
-                  status: deliveryStatus,
-                },
-              );
+            deliverSuccess({ result }) {
+              runtime.deliver(result);
             },
             deliverFailure(error) {
-              deliveryStatus = "failed";
-              const boundedError = truncateResult(errorMessage(error), {
-                maxBytes: MAX_ERROR_BYTES,
-                maxLines: MAX_ERROR_LINES,
-              });
-              deliverSteerResult(
-                `## Subtask group ${groupId} [failed]\n\n${boundedError.content}`,
-                {
-                  ...copyDetails(tasks),
-                  delivery: "steer",
-                  groupId,
-                  batchId: toolCallId,
-                  status: "failed",
-                  error: boundedError.content,
-                },
-              );
+              throw error;
             },
           });
 
-          if (!detachedFromToolResult) runtime.forgetGroups([groupId]);
           updateCoordinationTools();
 
           const taskLabel = `subtask${tasks.length === 1 ? "" : "s"}`;
@@ -867,8 +905,8 @@ export function createSubtasksExtension(
             tasks.length === 1 ? "the subtask finishes" : "all subtasks finish";
           const message =
             deliveryStatus === "running"
-              ? `Started subtask group ${groupId} with ${tasks.length} independent ${taskLabel}: ${taskIds}. Use subtasks_wait for group ${groupId} when independent work is exhausted. Results will be delivered automatically when ${completionTiming}.`
-              : `Finished subtask group ${groupId} with ${tasks.length} independent ${taskLabel}: ${taskIds}. Results were delivered automatically.`;
+              ? `Started subtask group ${groupId} with ${tasks.length} independent ${taskLabel}: ${taskIds}. Use subtasks_wait for group ${groupId} when independent work is exhausted. Completion will be queued for automatic delivery when ${completionTiming} and retained for later retrieval.`
+              : `Finished subtask group ${groupId} with ${tasks.length} independent ${taskLabel}: ${taskIds}. Completion was queued for automatic delivery and remains available through subtasks_wait.`;
           return {
             content: [{ type: "text" as const, text: message }],
             details: {

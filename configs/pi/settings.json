@@ -1,12 +1,15 @@
 {
-  "lastChangelogVersion": "0.80.7",
+  "lastChangelogVersion": "0.80.10",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.6-sol",
   "defaultThinkingLevel": "high",
+  "theme": "rose-pine-moon",
   "collapseChangelog": true,
   "steeringMode": "all",
   "compaction": {
-    "reserveTokens": 32000
+    "enabled": true,
+    "reserveTokens": 32000,
+    "keepRecentTokens": 20000
   },
   "packages": [
     "npm:@hypabolic/pi-hypa",
@@ -16,5 +19,6 @@
     }
   ],
   "defaultProjectTrust": "always",
-  "enableInstallTelemetry": true
+  "enableInstallTelemetry": true,
+  "hideThinkingBlock": false
 }

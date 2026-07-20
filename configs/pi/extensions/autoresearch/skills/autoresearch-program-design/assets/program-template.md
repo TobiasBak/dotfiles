@@ -35,11 +35,10 @@ Terminal outcomes:
 - `accepted`: [all gates and promotion rule]
 - `rejected`: [valid evidence fails rule or gate]
 - `inconclusive`: [valid but insufficient evidence]
-- `blocked`: [missing access/input/decision]
-- `exhausted`: [campaign budget consumed]
-- `invalid`: [integrity failure; no claim may be made]
+- `external-blocked`: [missing access/input/decision after every useful legal action]
+- `exhausted`: [campaign budget or hypothesis space consumed]
 
-Crash/timeout/malformed-result semantics: [PROJECT-SPECIFIC, fail closed]
+Crash/timeout/malformed-result semantics: [PROJECT-SPECIFIC, fail closed; map invalid evidence to rejected, inconclusive, exhausted, or external-blocked rather than inventing another fleet outcome]
 
 ## 3. Executable command contract
 
@@ -88,13 +87,13 @@ Commands marked `[UNVERIFIED PROPOSAL]`: [none, or list and owner for verificati
 
 ### S3: Evidence
 
-- Entry gate: [candidate, champion, plan, environment, and reservation validated]
+- Entry gate: [candidate, champion, plan, environment, scientific budget, and validity prerequisites checked]
 - Immutable predeclared plan: `[PATH + DIGEST]`
 - Sealed case-set policy: [PROJECT-SPECIFIC]
-- Evidence entrypoint: `[EXACT COMMAND INCLUDING RESERVATION ARGUMENT]`
+- Evidence entrypoint: `[EXACT COMMAND]`
 - Validity checks: [schema, identities, digests, environment, completeness]
 - Acceptance rule: [PROJECT-SPECIFIC]
-- Integration authority: [human/parent]
+- Integration authority: [human/project-specific role]
 
 ### S4: Integration and closure
 
@@ -131,17 +130,20 @@ Machine-readable result schema/path: `[PATH OR LINK TO CONTRACT]`
 | Memory/disk | [value] | [value] | [value] |
 | Accelerators/devices | [value] | [value] | [value] |
 | External requests/tokens/cost | [value] | [value] | [value] |
-| Evidence reservations | [value] | 1 per invocation | [value] |
+| Evidence attempts | [value] | 1 attempt | n/a |
+| Scarce scientific operations | [value] | [value] | [project-enforced value if required] |
 
-- Maximum fleet workers: `[1-4]`
-- Maximum hypotheses/candidates/evidence attempts: [values]
+- Extension worker load: chosen only by `/autoresearch N`; do not declare another worker cap here
+- Maximum hypotheses/candidates/evidence attempts: [scientifically justified values]
 - Retry/backoff policy: [PROJECT-SPECIFIC]
 - Cancellation/cleanup command: `[COMMAND]`
 - Permitted execution window: [PROJECT-SPECIFIC]
 
-## 7. Worker coordination and checkpoints
+## 7. Autonomous researchers and checkpoints
 
-Before work, use `autoresearch_worker_state` `snapshot`. Claim a distinct scope in a checkpoint. Checkpoint after material findings, before long/external work, before pause, and at terminal transitions.
+Each worker independently chooses a useful campaign within this program, records a non-exclusive intent, completes the full campaign through a scientific terminal outcome, writes a terminal checkpoint, and exits. While `/autoresearch N` remains active, the extension replaces exited workers. There is no dispatcher, exclusive assignment, lock, lease, approval/admission step, fencing token, or capacity-reservation protocol. Overlap is allowed; use observed intents and findings to reduce waste without treating them as authority.
+
+Checkpoints are only for observability and crash recovery. Record one after material findings, before long or external work, and at terminal transitions. A continuation command or launch receipt describes recoverable process state and grants no ownership or permission.
 
 Required checkpoint fields:
 
@@ -149,39 +151,30 @@ Required checkpoint fields:
 {
   "campaign": "[ID]",
   "hypothesis": "[ID]",
+  "intent": "[non-exclusive description]",
   "stage": "[ID]",
-  "status": "[running|paused|blocked|decision|failed|complete]",
+  "status": "[running|blocked|decision|failed|complete]",
   "summary": "[bounded actionable summary]",
   "findings": ["[finding with provenance]"],
   "blockers": ["[blocker]"],
-  "nextActions": ["[next action]"],
+  "nextActions": ["[next action or empty at terminal outcome]"],
   "runIds": ["[artifact/run ID]"],
-  "claimedScopes": ["[exclusive scope]"],
   "candidateCommit": "[full commit]",
   "championCommit": "[full commit]",
-  "continuationCommand": "[exact command]",
-  "launchReceipt": { "[project-specific]": "[value]" }
+  "continuationCommand": "[exact command if recovering an interrupted process]",
+  "launchReceipt": { "[project-specific process metadata]": "[value]" }
 }
 ```
 
-Shared memory: [bounded operational state and promoted findings]
+Shared memory: [bounded observations and promoted findings]
 
 Private worker memory: [scratch/logs not shared unless promoted]
 
-## 8. Evidence reservation integration
+## 8. Project-enforced scientific and process limits
 
-Generic reservations coordinate capacity. Hard enforcement requires the project evidence entrypoint itself to validate each reservation.
+`/autoresearch N` is the only extension operational load limit. Project-level limits remain valid when they protect scientific validity, cost, scarce resources, or process safety. Define how project commands enforce [evidence-attempt cap, device/API concurrency, cost/rate limit, timeout, cleanup, or other applicable rule]. These controls evaluate the operation itself, not worker identity, ownership, generation, or admission.
 
-Required sequence:
-
-1. Worker calls `reserve_evidence` for `[AUTHORIZED STAGE]`.
-2. Worker invokes `[PROJECT EVIDENCE ENTRYPOINT]` with reservation ID plus worker/fleet generation identity.
-3. Entrypoint checks the active fleet database/state immediately before scarce-resource acquisition and rejects missing, stale, released, wrong-worker, wrong-generation, or wrong-stage reservations.
-4. Entrypoint records an immutable launch receipt: [fields such as reservation, run, PID/job, environment, plan digest, start time].
-5. Worker calls `release_evidence` with a terminal receipt on success, failure, cancellation, or timeout.
-6. On worker/process loss, [PROJECT-SPECIFIC RECONCILIATION PROCEDURE] verifies the external job before release or relaunch.
-
-Validation command or code path: `[PROJECT-SPECIFIC]`
+Enforcement and recovery command/code path: `[PROJECT-SPECIFIC]`
 
 ## 9. Git, worktree, synchronization, and integration
 
@@ -192,11 +185,11 @@ Validation command or code path: `[PROJECT-SPECIFIC]`
 - Commit-before-evidence rule: [PROJECT-SPECIFIC]
 - Dirty-tree policy: [fail closed]
 - Candidate identity rule: [commit/tree/artifact digest]
-- Synchronization authority and prerequisites: [parent only, no active assignment/reservation, reconciled process, clean lane]
-- Conflict handling: [PROJECT-SPECIFIC]
-- Integration authority and method: [PROJECT-SPECIFIC]
+- Synchronization authority and prerequisites: [extension/project-specific authority, reconciled process, preserved candidate, clean lane]
+- Conflict handling and human resolver: [PROJECT-SPECIFIC]
+- Post-integration verification: `[EXACT COMMANDS]`
 
-Synchronization preserves a candidate and updates a lane. It is not evidence, acceptance, or integration.
+The extension never updates an active lane. After a terminal campaign, the supervisor preserves the exact terminal commit, serially merges its branch into the clean canonical branch without rewriting worker commits, resets only that completed lane, and then launches its replacement. Other lanes converge after their campaigns finish. A conflict or canonical safety mismatch blocks the affected lane with its terminal ref preserved. This mechanical integration is not scientific evidence or acceptance.
 
 ## 10. Artifacts, plans, and receipts
 
@@ -212,7 +205,7 @@ Every evidence run preserves:
 - per-case/per-replicate machine-readable observations
 - aggregate score plus separate validity status
 - resource use and timestamps
-- launch and terminal receipts
+- process launch and terminal receipts
 - checksums for immutable inputs/outputs
 
 Naming, retention, redaction, and size limits: [PROJECT-SPECIFIC]
@@ -226,7 +219,7 @@ Promote only reusable findings, useful failures, corrections, procedures, and de
 - Project knowledge destination: [docs/note/path]
 - Operational-only destination: [checkpoint/artifact]
 - Promotion owner and gate: [PROJECT-SPECIFIC]
-- Cross-worker synchronization point: [checkpoint/parent review]
+- Cross-worker observation point: [checkpoint/human review]
 - Contradiction/conflict handling: [PROJECT-SPECIFIC]
 
 Do not promote raw transcripts, secrets, routine activity, or unverified speculation as fact.
@@ -239,7 +232,7 @@ Stop the affected worker when:
 - [required decision or access missing]
 - [budget threshold reached]
 - [benchmark validity cannot be restored]
-- [reservation or identity cannot be reconciled]
+- [candidate identity or external process cannot be reconciled]
 - [unsafe condition]
 
 Stop the campaign when:
@@ -250,7 +243,7 @@ Stop the campaign when:
 - evidence epoch integrity is compromised
 - the human pauses or ends the campaign
 
-At stop, cancel or reconcile external jobs, release reservations with terminal receipts, checkpoint terminal status, preserve immutable artifacts, leave worktrees in the declared clean/committed state, and report the next human decision.
+At stop, cancel or reconcile external jobs, write terminal receipts, checkpoint the scientific terminal status, preserve immutable artifacts, leave worktrees in the declared clean/committed state, and exit. The extension may then start a replacement researcher.
 
 ## 13. Launch review
 
@@ -260,5 +253,7 @@ At stop, cancel or reconcile external jobs, release reservations with terminal r
 - [ ] Benchmark self-tests/calibration passed where applicable.
 - [ ] Canonical `program.md` is a regular, nonsymlink, non-empty file.
 - [ ] Canonical checkout is clean and reviewed changes are committed.
-- [ ] Evidence entrypoint enforces reservations if hard concurrency is claimed.
+- [ ] `/autoresearch N` is the only extension worker-load setting; any scientific/resource concurrency limit is project-enforced and justified.
+- [ ] Workers complete one full campaign, checkpoint a terminal outcome, and exit for replacement.
+- [ ] Checkpoints and intents are informational and cannot be mistaken for ownership or authorization.
 - [ ] Artifact, receipt, reconciliation, and stop procedures are executable.

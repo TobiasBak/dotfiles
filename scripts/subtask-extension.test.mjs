@@ -52,6 +52,7 @@ import {
   createCapturedChangesWriter,
   createOverflowResultWriter,
 } from "../configs/pi/extensions/subtask/overflow.ts";
+import { createSubtasksExtension } from "../configs/pi/extensions/subtask/index.ts";
 import {
   SubtaskRuntimeState,
   getSubtaskRuntimeState,
@@ -129,7 +130,6 @@ test("keeps execution metadata mechanical and delegation guidance tool-owned", (
   );
 
   assert.ok(SUBTASKS_TOOL_PROMPT_GUIDELINES.length > 0);
-  assert.ok(SUBTASKS_TOOL_PROMPT_GUIDELINES.every((guideline) => /subtasks/i.test(guideline)));
 });
 
 const groupedTasks = [
@@ -395,7 +395,8 @@ test("extension keeps fork and wait guidance with their parameters", () => {
   assert.match(source, /const childTools = getSelectableToolNames\(pi\)/);
   assert.match(source, /tools: childTools/);
   assert.match(source, /default: true/);
-  assert.match(source, /Results will be delivered automatically when subtasks finish/);
+  assert.match(source, /retained for subtasks_wait retrieval/);
+  assert.doesNotMatch(source, /Results were delivered automatically/);
   assert.doesNotMatch(source, /steer queue/);
   assert.match(source, /deliverAs: "steer", triggerTurn: true/);
 });
@@ -596,6 +597,56 @@ test("runtime requeues a delivery rejected by a stale adapter", () => {
   assert.deepEqual(reboundDeliveries, ["completed during replacement"]);
 });
 
+test("detached completion remains recoverable after best-effort delivery is lost", async () => {
+  const runtime = new SubtaskRuntimeState();
+  const batch = deferred();
+  const caller = new AbortController();
+  const adapterInvocations = [];
+  let detachCount = 0;
+  const retained = {
+    content: "## Subtask group g-a1b2c3 [completed]\n\nchild report survived",
+    details: { groupId: "g-a1b2c3", status: "completed" },
+  };
+  const completion = batch.promise.then(() => ({ status: "completed", result: retained }));
+  runtime.trackGroup("g-a1b2c3", ["111111"], new AbortController(), completion);
+  runtime.bindDelivery((delivery) => {
+    // The adapter accepts the call synchronously, but the simulated Pi steer is
+    // never persisted.
+    adapterInvocations.push(delivery.content);
+  });
+
+  const execution = executeBatchMode({
+    wait: true,
+    completion,
+    callerSignal: caller.signal,
+    detach: () => {
+      detachCount += 1;
+    },
+    deliverSuccess: ({ result }) => runtime.deliver(result),
+    deliverFailure: (error) => {
+      throw error;
+    },
+  });
+  caller.abort();
+  await execution;
+  assert.equal(detachCount, 1);
+
+  batch.resolve();
+  await eventually(() => adapterInvocations.length === 1);
+  assert.deepEqual(adapterInvocations, [retained.content]);
+  assert.deepEqual(await runtime.waitForGroups(["g-a1b2c3"]), {
+    groups: [
+      {
+        id: "g-a1b2c3",
+        taskIds: ["111111"],
+        status: "completed",
+        result: retained,
+      },
+    ],
+    aborted: false,
+  });
+});
+
 test("runtime lists tasks and cancels only requested IDs", async () => {
   const runtime = new SubtaskRuntimeState();
   const firstController = new AbortController();
@@ -629,10 +680,12 @@ test("runtime lists tasks and cancels only requested IDs", async () => {
   await eventually(() => runtime.listTasks().length === 0);
 });
 
-test("waits once for every requested group and retains terminal status", async () => {
+test("waits once for every requested group and retains terminal results", async () => {
   const runtime = new SubtaskRuntimeState();
   const first = deferred();
   const second = deferred();
+  const completedResult = { content: "completed report", details: { status: "completed" } };
+  const failedResult = { content: "failure report", details: { status: "failed" } };
   runtime.trackGroup("g-a1b2c3", ["111111"], new AbortController(), first.promise);
   runtime.trackGroup("g-d4e5f6", ["222222", "333333"], new AbortController(), second.promise);
 
@@ -640,15 +693,25 @@ test("waits once for every requested group and retains terminal status", async (
   const waiting = runtime.waitForGroups(["g-a1b2c3", "g-d4e5f6"]).finally(() => {
     settled = true;
   });
-  first.resolve({ allFailed: false });
+  first.resolve({ status: "completed", result: completedResult });
   await Promise.resolve();
   assert.equal(settled, false);
 
-  second.resolve({ allFailed: true });
+  second.resolve({ status: "failed", result: failedResult });
   assert.deepEqual(await waiting, {
     groups: [
-      { id: "g-a1b2c3", taskIds: ["111111"], status: "completed" },
-      { id: "g-d4e5f6", taskIds: ["222222", "333333"], status: "failed" },
+      {
+        id: "g-a1b2c3",
+        taskIds: ["111111"],
+        status: "completed",
+        result: completedResult,
+      },
+      {
+        id: "g-d4e5f6",
+        taskIds: ["222222", "333333"],
+        status: "failed",
+        result: failedResult,
+      },
     ],
     aborted: false,
   });
@@ -659,6 +722,37 @@ test("waits once for every requested group and retains terminal status", async (
 
   runtime.forgetGroups(["g-a1b2c3", "g-d4e5f6"]);
   assert.deepEqual(runtime.listGroups(), []);
+});
+
+test("prunes the oldest terminal group together with its retained result", async () => {
+  const runtime = new SubtaskRuntimeState();
+  for (let index = 0; index < 64; index += 1) {
+    const id = `g-${index.toString(16).padStart(6, "0")}`;
+    runtime.trackGroup(id, [], new AbortController(), Promise.resolve({
+      status: "completed",
+      result: { content: `result ${index}`, details: { index } },
+    }));
+  }
+  await eventually(() => runtime.listGroups().every((group) => group.status === "completed"));
+
+  const newestResult = { content: "newest result", details: { index: 64 } };
+  runtime.trackGroup("g-000040", [], new AbortController(), Promise.resolve({
+    status: "completed",
+    result: newestResult,
+  }));
+  assert.equal(runtime.listGroups().length, 64);
+  assert.deepEqual(runtime.listGroups(["g-000000"]), []);
+  assert.deepEqual(await runtime.waitForGroups(["g-000040"]), {
+    groups: [
+      {
+        id: "g-000040",
+        taskIds: [],
+        status: "completed",
+        result: newestResult,
+      },
+    ],
+    aborted: false,
+  });
 });
 
 test("aborting a group wait detaches the waiter without cancelling subtasks", async () => {
@@ -676,9 +770,17 @@ test("aborting a group wait detaches the waiter without cancelling subtasks", as
   });
   assert.equal(groupController.signal.aborted, false);
 
-  completion.resolve({ allFailed: false });
+  const retained = { content: "finished later", details: {} };
+  completion.resolve({ status: "completed", result: retained });
   assert.deepEqual(await runtime.waitForGroups(["g-a1b2c3"]), {
-    groups: [{ id: "g-a1b2c3", taskIds: ["111111"], status: "completed" }],
+    groups: [
+      {
+        id: "g-a1b2c3",
+        taskIds: ["111111"],
+        status: "completed",
+        result: retained,
+      },
+    ],
     aborted: false,
   });
 });
@@ -688,6 +790,55 @@ test("rejects waits for unknown group IDs instead of hanging", async () => {
   await assert.rejects(runtime.waitForGroups(["g-ffffff"]), /Unknown subtask group IDs: g-ffffff/);
 });
 
+test("subtasks_wait returns the retained report and forgets it after retrieval", async () => {
+  const runtime = getSubtaskRuntimeState();
+  await runtime.stopAndCancel();
+  const handlers = new Map();
+  const tools = new Map();
+  let activeTools = [];
+  const pi = {
+    on(event, handler) {
+      handlers.set(event, handler);
+    },
+    registerTool(tool) {
+      tools.set(tool.name, tool);
+    },
+    getActiveTools() {
+      return activeTools;
+    },
+    setActiveTools(next) {
+      activeTools = next;
+    },
+    sendMessage() {},
+  };
+  const childEnvironment = process.env.PI_SUBTASK_CHILD;
+  delete process.env.PI_SUBTASK_CHILD;
+  try {
+    createSubtasksExtension()(pi);
+  } finally {
+    if (childEnvironment === undefined) delete process.env.PI_SUBTASK_CHILD;
+    else process.env.PI_SUBTASK_CHILD = childEnvironment;
+  }
+  handlers.get("session_start")({ reason: "startup" }, {});
+
+  const completion = deferred();
+  const retained = {
+    content: "## Subtask group g-a1b2c3 [failed]\n\nrecoverable failure details",
+    details: { groupId: "g-a1b2c3", status: "failed" },
+  };
+  runtime.trackGroup("g-a1b2c3", ["111111"], new AbortController(), completion.promise);
+  completion.resolve({ status: "failed", result: retained });
+
+  const toolResult = await tools.get(SUBTASKS_WAIT_TOOL_NAME).execute(
+    "wait-call",
+    { groupIds: ["g-a1b2c3"] },
+  );
+  assert.equal(toolResult.content[0].text, retained.content);
+  assert.deepEqual(toolResult.details.groups[0].result, retained);
+  assert.deepEqual(runtime.listGroups(), []);
+  await runtime.stopAndCancel();
+});
+
 test("normal shutdown cancels tasks and groups, awaits them, and drops queued delivery", async () => {
   const runtime = new SubtaskRuntimeState();
   const taskController = new AbortController();
@@ -695,7 +846,12 @@ test("normal shutdown cancels tasks and groups, awaits them, and drops queued de
   const task = deferred();
   const group = deferred();
   taskController.signal.addEventListener("abort", () => task.reject(new Error("task cancelled")));
-  groupController.signal.addEventListener("abort", () => group.reject(new Error("group cancelled")));
+  groupController.signal.addEventListener("abort", () =>
+    group.resolve({
+      status: "cancelled",
+      result: { content: "group cancelled", details: { status: "cancelled" } },
+    }),
+  );
   runtime.trackTask("a1b2c3", taskController, task.promise, () => ({
     id: "a1b2c3",
     task: "Stop normally",

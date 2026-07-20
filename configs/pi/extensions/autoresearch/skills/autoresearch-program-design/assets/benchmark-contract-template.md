@@ -27,6 +27,7 @@ Required inputs:
 
 | Input | Format | Validation |
 |---|---|---|
+|---|---|---|
 | mode | `self-test|calibrate|development|screening|evidence` | [rule] |
 | champion | [commit/tree/artifact digest] | immutable, exists, echoed from loaded artifact |
 | candidate | [commit/tree/artifact digest] | immutable, exists, echoed from loaded artifact |
@@ -36,7 +37,6 @@ Required inputs:
 | replication/order | [format] | [rule] |
 | budget/timeout | [format] | within predeclared cap |
 | output | unique run directory/result path | absent before run, atomic final write |
-| reservation | [ID, worker, generation, stage] | required and actively validated for evidence |
 
 Exit codes:
 
@@ -44,7 +44,7 @@ Exit codes:
 - `[CODE]`: invalid command/identity/plan
 - `[CODE]`: benchmark infrastructure failure
 - `[CODE]`: timeout/resource enforcement failure
-- `[CODE]`: reservation rejected
+- `[CODE]`: scientific budget or project resource limit exceeded
 
 Candidate rejection is [a valid result / an exit code, with rationale].
 
@@ -154,7 +154,6 @@ Required schema fields:
   "uncertainty": {},
   "validity": { "passed": false, "gates": [], "violations": [] },
   "resources": {},
-  "reservation": {},
   "artifacts": [],
   "started_at": "[RFC3339]",
   "finished_at": "[RFC3339]"
@@ -177,7 +176,7 @@ Atomic-write and schema validation procedure: [PROJECT-SPECIFIC]
 | Candidate valid but worse | [valid/reject] |
 | Candidate crash | [PROJECT-SPECIFIC] |
 | Evaluator crash | invalid, no comparison |
-| Timeout | [candidate reject or invalid, ownership defined] |
+| Timeout | [candidate reject or invalid, cause attribution defined] |
 | External outage | [blocked/invalid unless part of construct] |
 | Missing/malformed result | invalid |
 | Cancellation | cancelled, terminal receipt |
@@ -197,25 +196,19 @@ Predeclared plan path/digest: [values]
 
 Run artifact namespace: [path]
 
-Launch receipt fields: [reservation, worker/generation, champion, candidate, plan/cases/evaluator digests, environment, job/PID, timestamp]
+Launch receipt fields: [run ID, champion, candidate, plan/cases/evaluator digests, environment, job/PID, timestamp]
 
 Terminal receipt fields: [terminal status, exit/signal/timeout, result/artifact digests, external-job state, finish timestamp]
 
 Overwrite policy: never overwrite evidence artifacts. Amendments create [new plan/version/epoch rule].
 
-## Reservation enforcement
+## Scientific budget and resource enforcement
 
-Evidence entrypoint validation source/path: [PROJECT-SPECIFIC]
+Evidence entrypoint enforcement source/path: [PROJECT-SPECIFIC]
 
-Immediately before scarce-resource acquisition it must reject:
+Immediately before work and while it runs, enforce applicable project-level limits such as evidence-attempt count, external cost/rate, device concurrency, process count, and timeout. These are scientific or resource controls, not worker admission, ownership, or authorization. Reject mismatched plan/champion/candidate identity independently of those limits.
 
-- absent or inactive reservation
-- stale fleet generation or wrong worker identity/token
-- wrong evidence stage
-- released reservation or existing terminal receipt
-- mismatched plan/champion/candidate identity where bound
-
-Detached-job labeling and crash reconciliation: [PROJECT-SPECIFIC]
+Detached-job labeling, cleanup, and crash reconciliation: [PROJECT-SPECIFIC]
 
 ## Self-tests and calibration
 
@@ -230,7 +223,7 @@ Detached-job labeling and crash reconciliation: [PROJECT-SPECIFIC]
 | Duplicate/missing cases | `[COMMAND]` | invalid |
 | Fixed-state rerun | `[COMMAND]` | deterministic within declared tolerance |
 | Seed/order replay | `[COMMAND]` | same schedule |
-| Reservation misuse matrix | `[COMMAND]` | every invalid identity rejected |
+| Scientific/resource limit enforcement | `[COMMAND]` | applicable limits fail closed |
 | Score recomputation | `[COMMAND]` | exact match |
 | Holdout boundary | `[COMMAND]` | no unauthorized access |
 
@@ -247,5 +240,5 @@ Calibration acceptance: [variance, sensitivity, runtime, resource thresholds]
 - [ ] Budgets and all failure semantics are enforced.
 - [ ] Self-tests and calibration pass.
 - [ ] Evidence epoch/version policy prevents invalid comparison.
-- [ ] Project entrypoint validates reservations if hard concurrency is claimed.
+- [ ] Scientific budgets and project resource limits are enforced independently of worker identity.
 - [ ] Human reviewer: [NAME/DATE/DECISION]

@@ -47,7 +47,6 @@ Provide one stable entrypoint. Avoid undocumented sequences of shell commands. T
 - resource budget and timeout
 - isolated work/output directory
 - final machine-readable result path
-- reservation and worker/generation identity when evidence capacity is controlled
 
 A command might look like:
 
@@ -61,9 +60,6 @@ A command might look like:
   --plan-sha256 "$PLAN_SHA256" \
   --case-set "$CASE_SET" \
   --seed "$SEED" \
-  --reservation-id "$RESERVATION_ID" \
-  --worker-id "$AUTORESEARCH_WORKER_ID" \
-  --generation "$AUTORESEARCH_GENERATION" \
   --output "$RUN_DIR/result.json"
 ```
 
@@ -172,7 +168,6 @@ Version the result schema. A final result should include:
   "uncertainty": { "method": "...", "interval": [] },
   "validity": { "passed": true, "gates": [], "violations": [] },
   "resources": { "wall_ms": 0, "cpu_ms": 0, "peak_memory_bytes": 0, "external_cost": 0 },
-  "reservation": { "id": 0, "worker_id": "...", "generation": 0 },
   "artifacts": [],
   "started_at": "...",
   "finished_at": "..."
@@ -200,7 +195,7 @@ Define each failure class:
 | Candidate returns a valid but poor answer | Valid observation or gate failure, according to claim |
 | Candidate process crash | Usually candidate invalid/reject for that case; predeclare threshold |
 | Harness/evaluator crash | Infrastructure-invalid run, no comparison |
-| Whole-run timeout | Predeclared candidate reject or invalid run, depending on ownership |
+| Whole-run timeout | Predeclared candidate reject or invalid run, depending on attributed cause |
 | External service unavailable | Infrastructure-invalid/blocked unless service reliability is the construct |
 | Missing/malformed result | Invalid run, never accepted |
 | User cancellation | Cancelled receipt; no scientific conclusion unless plan says partial evidence is valid |
@@ -227,7 +222,7 @@ Do not rely solely on hidden cases. Strong contracts combine isolation, provenan
 
 ## 11. Immutable plans and artifacts
 
-Before evidence, write a predeclared plan containing identities, cases, exclusions, ordering, seeds, replications, budgets, score, validity gates, and decision rule. Hash it and include the digest in the reservation launch receipt and final result. Never edit it in place. Amendments create a new plan/version and explain why prior evidence is not being selectively reused.
+Before evidence, write a predeclared plan containing identities, cases, exclusions, ordering, seeds, replications, budgets, score, validity gates, and decision rule. Hash it and include the digest in the process launch receipt and final result. Never edit it in place. Amendments create a new plan/version and explain why prior evidence is not being selectively reused.
 
 Create a unique run directory before launch. Use append-only/immutable storage as practical. Preserve:
 
@@ -254,7 +249,7 @@ The harness itself needs evidence. Include tests for:
 - duplicate/missing case detection
 - deterministic rerun under fixed state
 - randomization reproducibility from seed
-- reservation rejection for absent, stale, released, wrong-worker, wrong-generation, and wrong-stage identities
+- scientific budget and project resource-limit enforcement
 - score recomputation from observations
 - holdout access boundary
 
@@ -279,22 +274,13 @@ A schema-only backward-compatible serialization change may keep the epoch if dem
 
 Never pool or directly rank results from incompatible epochs. If comparison is needed, run a bridge study with selected champion/candidates under both protocols, predeclare how the bridge will be interpreted, and preserve both identities.
 
-## 14. Reservation enforcement for scarce evidence
+## 14. Scientific budgets and scarce-resource safety
 
-`autoresearch_worker_state reserve_evidence` atomically coordinates generic fleet capacity. That is not hard enforcement if a worker can bypass it by directly running the project command.
+`/autoresearch N` is the extension's only operational load limit. The benchmark must not depend on worker claims, locks, approval/admission, fencing identities, or evidence-capacity reservations.
 
-Every scarce evidence entrypoint must fail closed unless it can verify, immediately before resource acquisition:
+Project-level controls remain necessary when they define scientific validity or protect scarce resources. The evidence entrypoint should fail closed when a predeclared evidence-attempt budget, external cost/rate limit, device/process concurrency limit, timeout, or immutable plan identity is violated. Enforce these controls against the operation and underlying resource, not against a worker identity or purported ownership.
 
-- fleet and protocol identity are expected
-- reservation exists and is active
-- reservation belongs to the invoking worker token/identity and generation
-- requested evidence stage is authorized
-- reservation has no terminal release receipt
-- plan/candidate/champion digests match the launch request where bound
-
-Pass the reservation into detached jobs and record it in external job labels or launch metadata. If validation and acquisition cannot be atomic, minimize the gap and define reconciliation. A crashed launcher may leave an external job active; the next generation must inspect the durable launch receipt and external system before releasing or relaunching.
-
-Release with a structured terminal receipt for every terminal status. Capacity limits should count unresolved durable reservations, not merely live local processes.
+Label detached jobs with run, plan, candidate, and champion identities. A crashed launcher may leave an external job active; recovery must inspect the durable launch receipt and external system before relaunching or declaring a terminal result. Preserve a structured terminal receipt for every terminal status.
 
 ## 15. Review checklist
 
@@ -309,5 +295,5 @@ Release with a structured terminal receipt for every terminal status. Capacity l
 - Do self-tests detect known good, known bad, corruption, timeout, and identity faults?
 - Do version/epoch changes prevent invalid cross-protocol comparison?
 - Are budgets and crash semantics enforced rather than aspirational?
-- If hard evidence concurrency is claimed, does the project entrypoint validate the reservation?
+- Are scientific/resource limits enforced by the project without worker ownership or admission machinery?
 - Would ordinary deterministic tests answer the question more directly?

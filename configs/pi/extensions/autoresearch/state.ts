@@ -1,10 +1,9 @@
-import { createHash } from "node:crypto";
-import { closeSync, constants as fsConstants, fstatSync, mkdirSync, openSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { randomUUID } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
-export const AUTORESEARCH_PROTOCOL_VERSION = 2;
-export const DEFAULT_MAX_EVIDENCE_STAGES = 2;
+export const AUTORESEARCH_PROTOCOL_VERSION = 3;
 
 export type WorkerStatus =
   | "queued"
@@ -13,65 +12,66 @@ export type WorkerStatus =
   | "idle"
   | "paused"
   | "blocked"
-  | "decision"
   | "failed"
   | "complete"
   | "stopped";
+
+export type IntentStatus = "active" | "complete" | "blocked" | "failed";
+export type CampaignOutcome = "accepted" | "rejected" | "inconclusive" | "exhausted" | "external-blocked";
 
 export interface WorkerIdentity {
   canonicalRoot: string;
   workerId: string;
   sessionId: string;
   generation: number;
-  token: string;
 }
 
 export interface WorkerSeed {
   workerId: string;
   sessionId: string;
-  token: string;
   worktree: string;
   branch: string;
   sessionsRoot: string;
 }
 
-export interface AdmissionOfferInput {
-  campaign: string;
-  hypothesis: string;
-  stage: string;
-  claimedScopes: string[];
-  summary?: string;
+export interface ResearchIntentInput {
+  question: string;
+  experiment: string;
+  reason: string;
+  baselineHead?: string;
 }
 
 export interface CheckpointInput {
-  campaign?: string;
-  hypothesis?: string;
   stage?: string;
-  status?: WorkerStatus;
   summary?: string;
   findings?: string[];
   blockers?: string[];
   nextActions?: string[];
   runIds?: string[];
-  claimedScopes?: string[];
   candidateCommit?: string;
   championCommit?: string;
   continuationCommand?: string;
   launchReceipt?: Record<string, unknown>;
 }
 
+export interface FinishCampaignInput {
+  outcome: CampaignOutcome;
+  summary: string;
+  findings?: string[];
+  runIds?: string[];
+  terminalHead: string;
+}
+
 export interface FleetSnapshot {
   fleet: Record<string, unknown> | null;
   workers: Array<Record<string, unknown>>;
-  reservations: Array<Record<string, unknown>>;
-  admissions: Array<Record<string, unknown>>;
+  intents: Array<Record<string, unknown>>;
   checkpoints: Array<Record<string, unknown>>;
   events: Array<Record<string, unknown>>;
-  evidence: { active: number; max: number };
 }
 
 export class FleetAlreadyActiveError extends Error {}
-export class FenceError extends Error {}
+export class StaleWorkerError extends Error {}
 
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -95,107 +95,58 @@ function parseJson(value: unknown): unknown {
 function rowsToObjects(rows: unknown[]): Array<Record<string, unknown>> {
   return rows.map((row) => {
     const result = { ...(row as Record<string, unknown>) };
-    for (const key of ["findings", "blockers", "next_actions", "run_ids", "claimed_scopes", "launch_receipt", "receipt"]) {
+    for (const key of ["findings", "blockers", "next_actions", "run_ids", "launch_receipt"]) {
       if (key in result && result[key] !== null) result[key] = parseJson(result[key]);
     }
     return result;
   });
 }
 
-function isNonEmptyRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length > 0;
-}
-
-function requireTerminalReceipt(value: unknown): Record<string, unknown> {
-  if (isNonEmptyRecord(value)) {
-    try {
-      const durable = JSON.parse(JSON.stringify(value)) as unknown;
-      if (isNonEmptyRecord(durable)) return durable;
-    } catch {}
-  }
-  throw new Error("release_evidence requires a non-empty structured terminal receipt");
-}
-
-function requirePortfolioAssignment(identity: WorkerIdentity, campaign: string, hypothesis?: string, required = false): void {
-  const portfolioPath = join(identity.canonicalRoot, ".autoresearch", "portfolio.json");
-  let descriptor: number;
-  try {
-    descriptor = openSync(portfolioPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT" && !required) return;
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new FenceError("portfolio assignment is required for campaign admission");
-    throw new Error("portfolio assignment is unavailable or unsafe", { cause: error });
-  }
-  try {
-    const metadata = fstatSync(descriptor);
-    if (!metadata.isFile() || metadata.nlink !== 1 || metadata.size > 16 * 1024 * 1024) {
-      throw new Error("portfolio assignment must be a bounded single-link regular file");
-    }
-    let state: unknown;
-    try {
-      state = JSON.parse(readFileSync(descriptor, "utf8"));
-    } catch (error) {
-      throw new Error("portfolio assignment is malformed", { cause: error });
-    }
-    if (!isNonEmptyRecord(state) || state.schema_version !== 2 || !isNonEmptyRecord(state.active_assignments)
-      || (required && (!Number.isInteger(state.revision) || !isNonEmptyRecord(state.hypotheses)))) {
-      throw new Error("portfolio assignment schema is incompatible with fleet admission");
-    }
-    const assignment = state.active_assignments[identity.workerId];
-    const assignedHypothesis = required && isNonEmptyRecord(state.hypotheses)
-      && isNonEmptyRecord(assignment) && typeof assignment.hypothesis_id === "string"
-      ? state.hypotheses[assignment.hypothesis_id]
-      : undefined;
-    const tokenDigest = createHash("sha256").update(identity.token).digest("hex");
-    if (!isNonEmptyRecord(assignment)
-      || assignment.worker_id !== identity.workerId
-      || assignment.campaign_id !== campaign
-      || (hypothesis !== undefined && assignment.hypothesis_id !== hypothesis)
-      || assignment.worker_token_sha256 !== tokenDigest
-      || (required && (!isNonEmptyRecord(assignedHypothesis) || assignedHypothesis.status !== "active"))) {
-      throw new FenceError("evidence campaign is not owned by the fenced portfolio worker");
-    }
-  } finally {
-    closeSync(descriptor);
-  }
+function requiredText(value: string, name: string): string {
+  const normalized = value.trim();
+  if (!normalized) throw new Error(`${name} must be a non-empty string`);
+  return normalized;
 }
 
 export class FleetStore {
   readonly db: DatabaseSync;
-  readonly identity?: WorkerIdentity;
+  readonly identity: WorkerIdentity | undefined;
 
   constructor(path: string, identity?: WorkerIdentity) {
     mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
     this.identity = identity;
     this.db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");
+    this.assertLegacyProcessesStopped();
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS fleets (
+      CREATE TABLE IF NOT EXISTS fleets_v3 (
         canonical_root TEXT PRIMARY KEY,
         generation INTEGER NOT NULL,
         status TEXT NOT NULL,
         parent_session TEXT,
+        canonical_branch TEXT,
         canonical_head TEXT,
+        integration_error TEXT,
         protocol_version INTEGER NOT NULL,
-        max_evidence_stages INTEGER NOT NULL,
-        max_workers INTEGER NOT NULL DEFAULT 1,
+        max_workers INTEGER NOT NULL,
         started_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         stopped_at INTEGER
       );
-      CREATE TABLE IF NOT EXISTS workers (
+      CREATE TABLE IF NOT EXISTS workers_v3 (
         canonical_root TEXT NOT NULL,
         worker_id TEXT NOT NULL,
         generation INTEGER NOT NULL,
-        token TEXT NOT NULL,
         worktree TEXT NOT NULL,
         branch TEXT NOT NULL,
         session_id TEXT NOT NULL,
         session_dir TEXT NOT NULL,
         session_file TEXT,
         status TEXT NOT NULL,
+        process_state TEXT NOT NULL DEFAULT 'stopped',
         stage TEXT,
         current_tool TEXT,
+        current_tool_started_at INTEGER,
         summary TEXT,
         error TEXT,
         task TEXT,
@@ -212,39 +163,63 @@ export class FleetStore {
         dirty INTEGER NOT NULL DEFAULT 0,
         protocol_version INTEGER NOT NULL,
         PRIMARY KEY (canonical_root, worker_id),
-        FOREIGN KEY (canonical_root) REFERENCES fleets(canonical_root) ON DELETE CASCADE
+        FOREIGN KEY (canonical_root) REFERENCES fleets_v3(canonical_root) ON DELETE CASCADE
       );
-      CREATE TABLE IF NOT EXISTS admissions (
+      CREATE UNIQUE INDEX IF NOT EXISTS workers_v3_unique_session
+        ON workers_v3(canonical_root, lower(session_id));
+      CREATE TABLE IF NOT EXISTS intents_v3 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
         canonical_root TEXT NOT NULL,
         worker_id TEXT NOT NULL,
         generation INTEGER NOT NULL,
-        token TEXT NOT NULL,
-        state TEXT NOT NULL,
-        campaign TEXT,
-        hypothesis TEXT,
-        stage TEXT,
-        claimed_scopes TEXT NOT NULL DEFAULT '[]',
-        checkpoint_id INTEGER,
-        reason TEXT,
-        started_at INTEGER,
-        elapsed_ms INTEGER NOT NULL DEFAULT 0,
-        resolved_at INTEGER,
-        baseline_cost REAL NOT NULL DEFAULT 0,
-        baseline_turns INTEGER NOT NULL DEFAULT 0,
-        baseline_tool_calls INTEGER NOT NULL DEFAULT 0,
+        session_id TEXT NOT NULL,
+        question TEXT NOT NULL,
+        experiment TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        status TEXT NOT NULL,
+        outcome TEXT,
         baseline_head TEXT,
-        baseline_dirty INTEGER NOT NULL DEFAULT 0,
-        max_cost REAL NOT NULL DEFAULT 0.5,
-        max_turns INTEGER NOT NULL DEFAULT 8,
-        max_tool_calls INTEGER NOT NULL DEFAULT 16,
-        timeout_ms INTEGER NOT NULL DEFAULT 60000,
+        terminal_head TEXT,
+        integration_phase TEXT,
+        integration_ref TEXT,
+        integration_base_head TEXT,
+        integration_result_head TEXT,
+        integration_error TEXT,
+        integration_updated_at INTEGER,
+        summary TEXT,
+        findings TEXT NOT NULL DEFAULT '[]',
+        run_ids TEXT NOT NULL DEFAULT '[]',
+        started_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
-        PRIMARY KEY (canonical_root, worker_id),
-        FOREIGN KEY (canonical_root, worker_id) REFERENCES workers(canonical_root, worker_id) ON DELETE CASCADE
+        completed_at INTEGER
       );
-      CREATE INDEX IF NOT EXISTS admissions_generation_state
-        ON admissions(canonical_root, generation, state, worker_id);
-      CREATE TABLE IF NOT EXISTS events (
+      DROP INDEX IF EXISTS intents_v3_one_working_per_worker;
+      CREATE UNIQUE INDEX IF NOT EXISTS intents_v3_one_active_per_worker
+        ON intents_v3(canonical_root, worker_id) WHERE status='active';
+      CREATE INDEX IF NOT EXISTS intents_v3_active
+        ON intents_v3(canonical_root, status, worker_id, id DESC);
+      CREATE TABLE IF NOT EXISTS checkpoints_v3 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        canonical_root TEXT NOT NULL,
+        worker_id TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        session_id TEXT NOT NULL,
+        intent_id INTEGER,
+        stage TEXT,
+        summary TEXT,
+        findings TEXT NOT NULL,
+        blockers TEXT NOT NULL,
+        next_actions TEXT NOT NULL,
+        run_ids TEXT NOT NULL,
+        candidate_commit TEXT,
+        champion_commit TEXT,
+        continuation_command TEXT,
+        launch_receipt TEXT,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS checkpoints_v3_recent
+        ON checkpoints_v3(canonical_root, worker_id, id DESC);
+      CREATE TABLE IF NOT EXISTS events_v3 (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         canonical_root TEXT NOT NULL,
         worker_id TEXT,
@@ -253,124 +228,83 @@ export class FleetStore {
         summary TEXT NOT NULL,
         created_at INTEGER NOT NULL
       );
-      CREATE INDEX IF NOT EXISTS events_recent ON events(canonical_root, id DESC);
-      CREATE TABLE IF NOT EXISTS checkpoints (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        canonical_root TEXT NOT NULL,
-        worker_id TEXT NOT NULL,
-        generation INTEGER NOT NULL,
-        campaign TEXT,
-        hypothesis TEXT,
-        stage TEXT,
-        status TEXT,
-        summary TEXT,
-        findings TEXT NOT NULL,
-        blockers TEXT NOT NULL,
-        next_actions TEXT NOT NULL,
-        run_ids TEXT NOT NULL,
-        claimed_scopes TEXT NOT NULL,
-        created_at INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS checkpoints_recent ON checkpoints(canonical_root, worker_id, id DESC);
-      CREATE TABLE IF NOT EXISTS evidence_reservations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        canonical_root TEXT NOT NULL,
-        worker_id TEXT NOT NULL,
-        generation INTEGER NOT NULL,
-        token TEXT NOT NULL,
-        stage TEXT NOT NULL,
-        campaign TEXT,
-        status TEXT NOT NULL,
-        launch_receipt TEXT,
-        receipt TEXT,
-        created_at INTEGER NOT NULL,
-        released_at INTEGER
-      );
-      CREATE UNIQUE INDEX IF NOT EXISTS evidence_one_active_per_worker
-        ON evidence_reservations(canonical_root, worker_id) WHERE status = 'active';
-      CREATE INDEX IF NOT EXISTS evidence_active
-        ON evidence_reservations(canonical_root, status, id);
+      CREATE INDEX IF NOT EXISTS events_v3_recent ON events_v3(canonical_root, id DESC);
     `);
-    this.ensureFleetAdmissionColumns();
-    this.ensureAdmissionColumns();
-    this.ensureWorkerSessionColumn();
-    this.ensureWorkerDashboardColumns();
-    this.ensureCheckpointColumns();
-    this.ensureEvidenceReservationColumns();
+    this.db.exec("UPDATE intents_v3 SET status='active' WHERE status='working'");
+    this.ensureAdditiveColumns();
+    this.removeObsoleteCoordinationSchema();
   }
 
-  private ensureFleetAdmissionColumns(): void {
-    const existing = new Set(
-      (this.db.prepare("PRAGMA table_info(fleets)").all() as Array<{ name: string }>).map((column) => column.name),
-    );
-    if (!existing.has("max_workers")) this.db.exec("ALTER TABLE fleets ADD COLUMN max_workers INTEGER NOT NULL DEFAULT 1");
-  }
-
-  private ensureAdmissionColumns(): void {
-    const existing = new Set(
-      (this.db.prepare("PRAGMA table_info(admissions)").all() as Array<{ name: string }>).map((column) => column.name),
-    );
-    if (!existing.has("elapsed_ms")) this.db.exec("ALTER TABLE admissions ADD COLUMN elapsed_ms INTEGER NOT NULL DEFAULT 0");
-    if (!existing.has("baseline_head")) this.db.exec("ALTER TABLE admissions ADD COLUMN baseline_head TEXT");
-    if (!existing.has("baseline_dirty")) this.db.exec("ALTER TABLE admissions ADD COLUMN baseline_dirty INTEGER NOT NULL DEFAULT 0");
-  }
-
-  private ensureWorkerSessionColumn(): void {
-    const existing = new Set(
+  private assertLegacyProcessesStopped(): void {
+    const legacyWorkers = this.db.prepare("SELECT type FROM sqlite_master WHERE name='workers'").get() as { type?: string } | undefined;
+    if (!legacyWorkers) return;
+    if (legacyWorkers.type !== "table") throw new Error("Legacy worker coordination schema is malformed");
+    const columns = new Set(
       (this.db.prepare("PRAGMA table_info(workers)").all() as Array<{ name: string }>).map((column) => column.name),
     );
-    if (!existing.has("session_id")) this.db.exec("ALTER TABLE workers ADD COLUMN session_id TEXT");
-    this.db.exec(`
-      CREATE UNIQUE INDEX IF NOT EXISTS workers_unique_session
-        ON workers(canonical_root, lower(session_id)) WHERE session_id IS NOT NULL;
-    `);
-  }
-
-  private ensureWorkerDashboardColumns(): void {
-    const existing = new Set(
-      (this.db.prepare("PRAGMA table_info(workers)").all() as Array<{ name: string }>).map((column) => column.name),
-    );
-    const columns = [
-      ["task", "TEXT"],
-      ["model", "TEXT"],
-      ["thinking", "TEXT"],
-      ["context_window", "INTEGER NOT NULL DEFAULT 0"],
-      ["context_tokens", "INTEGER NOT NULL DEFAULT 0"],
-      ["cost", "REAL NOT NULL DEFAULT 0"],
-      ["turns", "INTEGER NOT NULL DEFAULT 0"],
-      ["tool_calls", "INTEGER NOT NULL DEFAULT 0"],
-    ] as const;
-    for (const [name, type] of columns) {
-      if (!existing.has(name)) this.db.exec(`ALTER TABLE workers ADD COLUMN ${name} ${type}`);
+    if (!columns.has("status")) throw new Error("Legacy worker coordination schema is malformed");
+    const live = this.db.prepare("SELECT COUNT(*) AS count FROM workers WHERE status IS NULL OR status <> 'stopped'").get() as { count: number };
+    if (Number(live.count) > 0) {
+      throw new Error("Cannot migrate protocol v2 while legacy worker processes may still be running; stop and externally reconcile them first");
     }
   }
 
-  private ensureCheckpointColumns(): void {
-    const existing = new Set(
-      (this.db.prepare("PRAGMA table_info(checkpoints)").all() as Array<{ name: string }>).map((column) => column.name),
-    );
-    const columns = [
-      ["candidate_commit", "TEXT"],
-      ["champion_commit", "TEXT"],
-      ["continuation_command", "TEXT"],
-      ["launch_receipt", "TEXT"],
-    ] as const;
-    for (const [name, type] of columns) {
-      if (!existing.has(name)) this.db.exec(`ALTER TABLE checkpoints ADD COLUMN ${name} ${type}`);
+  private removeObsoleteCoordinationSchema(): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const tables = new Set(
+        (this.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((row) => row.name),
+      );
+      if (tables.has("checkpoints")) {
+        this.db.exec(`
+          INSERT INTO checkpoints_v3(
+            canonical_root,worker_id,generation,session_id,intent_id,stage,summary,findings,blockers,next_actions,
+            run_ids,candidate_commit,champion_commit,continuation_command,launch_receipt,created_at
+          )
+          SELECT canonical_root,worker_id,generation,'legacy-v2',NULL,stage,summary,findings,blockers,next_actions,
+            run_ids,candidate_commit,champion_commit,continuation_command,launch_receipt,created_at
+          FROM checkpoints
+        `);
+      }
+      if (tables.has("events")) {
+        this.db.exec(`
+          INSERT INTO events_v3(canonical_root,worker_id,generation,kind,summary,created_at)
+          SELECT canonical_root,worker_id,generation,kind,summary,created_at FROM events
+        `);
+      }
+      this.db.exec(`
+        DROP TABLE IF EXISTS admission_attempts;
+        DROP TABLE IF EXISTS admissions;
+        DROP TABLE IF EXISTS evidence_reservations;
+        DROP TABLE IF EXISTS checkpoints;
+        DROP TABLE IF EXISTS events;
+        DROP TABLE IF EXISTS workers;
+        DROP TABLE IF EXISTS fleets;
+        PRAGMA user_version=3;
+        COMMIT;
+      `);
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
     }
   }
 
-  private ensureEvidenceReservationColumns(): void {
-    const existing = new Set(
-      (this.db.prepare("PRAGMA table_info(evidence_reservations)").all() as Array<{ name: string }>).map((column) => column.name),
-    );
-    if (!existing.has("campaign")) this.db.exec("ALTER TABLE evidence_reservations ADD COLUMN campaign TEXT");
-    if (!existing.has("launch_receipt")) this.db.exec("ALTER TABLE evidence_reservations ADD COLUMN launch_receipt TEXT");
-    this.db.exec(`
-      CREATE UNIQUE INDEX IF NOT EXISTS evidence_one_active_per_campaign
-        ON evidence_reservations(canonical_root, campaign)
-        WHERE status = 'active' AND campaign IS NOT NULL;
-    `);
+  private ensureAdditiveColumns(): void {
+    const ensure = (table: string, columns: Array<[string, string]>): void => {
+      const existing = new Set(
+        (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name),
+      );
+      for (const [name, type] of columns) {
+        if (!existing.has(name)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+      }
+    };
+    ensure("fleets_v3", [["canonical_branch", "TEXT"], ["integration_error", "TEXT"]]);
+    ensure("workers_v3", [["current_tool_started_at", "INTEGER"]]);
+    ensure("intents_v3", [
+      ["baseline_head", "TEXT"], ["terminal_head", "TEXT"], ["integration_phase", "TEXT"],
+      ["integration_ref", "TEXT"], ["integration_base_head", "TEXT"], ["integration_result_head", "TEXT"],
+      ["integration_error", "TEXT"], ["integration_updated_at", "INTEGER"],
+    ]);
   }
 
   close(): void {
@@ -390,22 +324,22 @@ export class FleetStore {
   }
 
   private requireIdentity(): WorkerIdentity {
-    if (!this.identity) throw new FenceError("Worker identity is required");
+    if (!this.identity) throw new StaleWorkerError("Worker identity is required");
     return this.identity;
   }
 
-  private assertFence(): WorkerIdentity {
+  private assertCurrent(): WorkerIdentity {
     const identity = this.requireIdentity();
     const row = this.db.prepare(`
-      SELECT w.generation,w.token,f.status AS fleet_status,f.generation AS fleet_generation
-      FROM workers w JOIN fleets f ON f.canonical_root=w.canonical_root
+      SELECT w.generation,w.session_id,f.status AS fleet_status,f.generation AS fleet_generation
+      FROM workers_v3 w JOIN fleets_v3 f ON f.canonical_root=w.canonical_root
       WHERE w.canonical_root=? AND w.worker_id=?
     `).get(identity.canonicalRoot, identity.workerId) as {
-      generation?: number; token?: string; fleet_status?: string; fleet_generation?: number;
+      generation?: number; session_id?: string; fleet_status?: string; fleet_generation?: number;
     } | undefined;
     if (!row || row.generation !== identity.generation || row.fleet_generation !== identity.generation
-      || row.token !== identity.token || !["launching", "active"].includes(row.fleet_status ?? "")) {
-      throw new FenceError(`Stale autoresearch worker fence for ${identity.workerId}`);
+      || row.session_id !== identity.sessionId || !["launching", "active"].includes(row.fleet_status ?? "")) {
+      throw new StaleWorkerError(`Stale autoresearch worker session for ${identity.workerId}`);
     }
     return identity;
   }
@@ -413,14 +347,13 @@ export class FleetStore {
   beginFleet(input: {
     canonicalRoot: string;
     parentSession?: string;
+    canonicalBranch?: string;
     canonicalHead?: string;
-    maxEvidenceStages?: number;
-    admission?: { timeoutMs: number; maxCost: number; maxTurns: number; maxToolCalls: number };
     workers: WorkerSeed[];
     now?: number;
   }): number {
+    if (input.workers.length < 1) throw new Error("Autoresearch requires at least one worker");
     const now = input.now ?? Date.now();
-    const maxEvidence = Math.max(1, Math.floor(input.maxEvidenceStages ?? DEFAULT_MAX_EVIDENCE_STAGES));
     const sessionIds = new Set<string>();
     for (const worker of input.workers) {
       assertWorkerSessionId(worker.sessionId);
@@ -429,519 +362,405 @@ export class FleetStore {
       sessionIds.add(normalized);
     }
     return this.transaction(() => {
-      const previous = this.db
-        .prepare("SELECT generation, status FROM fleets WHERE canonical_root=?")
+      const previous = this.db.prepare("SELECT generation,status FROM fleets_v3 WHERE canonical_root=?")
         .get(input.canonicalRoot) as { generation?: number; status?: string } | undefined;
-      if (previous) {
-        const requested = new Set(input.workers.map((worker) => worker.workerId));
-        const activeReservations = this.db.prepare(
-          "SELECT worker_id FROM evidence_reservations WHERE canonical_root=? AND status='active' ORDER BY worker_id",
-        ).all(input.canonicalRoot) as Array<{ worker_id: string }>;
-        const omitted = activeReservations.filter((reservation) => !requested.has(reservation.worker_id));
-        if (omitted.length > 0) {
+      if (previous && ["launching", "active", "paused", "off", "failed"].includes(previous.status ?? "")) {
+        const unresolved = this.db.prepare(`
+          SELECT worker_id,process_state FROM workers_v3
+          WHERE canonical_root=? AND generation=? AND process_state!='stopped' ORDER BY worker_id
+        `).all(input.canonicalRoot, previous.generation!) as Array<{ worker_id: string; process_state: string }>;
+        if (unresolved.length > 0) {
           throw new FleetAlreadyActiveError(
-            `Cannot recover autoresearch fleet while omitted workers own active evidence reservations: ${omitted.map((item) => item.worker_id).join(", ")}`,
+            `Previous autoresearch processes are not stopped: ${unresolved.map((item) => `${item.worker_id}=${item.process_state}`).join(", ")}`,
           );
         }
         if (["launching", "active"].includes(previous.status ?? "")) {
-          const workers = this.db.prepare(
-            "SELECT worker_id,status FROM workers WHERE canonical_root=? AND generation=? ORDER BY worker_id",
-          ).all(input.canonicalRoot, previous.generation) as Array<{ worker_id: string; status: string }>;
-          const terminal = new Set(["paused", "stopped", "failed", "complete"]);
-          const live = workers.filter((worker) => !terminal.has(worker.status));
-          if (workers.length === 0 || live.length > 0) {
-            const detail = live.length > 0
-              ? `; non-terminal workers: ${live.map((worker) => `${worker.worker_id}=${worker.status}`).join(", ")}`
-              : "; no durable worker reconciliation exists";
-            throw new FleetAlreadyActiveError(`An autoresearch fleet is already ${previous.status}${detail}`);
-          }
+          throw new FleetAlreadyActiveError(`An autoresearch fleet is already ${previous.status}`);
         }
       }
+
       const generation = (previous?.generation ?? 0) + 1;
       this.db.prepare(`
-        INSERT INTO fleets(canonical_root,generation,status,parent_session,canonical_head,protocol_version,max_evidence_stages,max_workers,started_at,updated_at,stopped_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?,NULL)
+        INSERT INTO fleets_v3(canonical_root,generation,status,parent_session,canonical_branch,canonical_head,integration_error,protocol_version,max_workers,started_at,updated_at,stopped_at)
+        VALUES(?,?,?,?,?,?,NULL,?,?,?,?,NULL)
         ON CONFLICT(canonical_root) DO UPDATE SET
           generation=excluded.generation,status=excluded.status,parent_session=excluded.parent_session,
-          canonical_head=excluded.canonical_head,protocol_version=excluded.protocol_version,
-          max_evidence_stages=excluded.max_evidence_stages,max_workers=excluded.max_workers,
+          canonical_branch=excluded.canonical_branch,canonical_head=excluded.canonical_head,integration_error=NULL,
+          protocol_version=excluded.protocol_version,max_workers=excluded.max_workers,
           started_at=excluded.started_at,updated_at=excluded.updated_at,stopped_at=NULL
-      `).run(input.canonicalRoot, generation, "launching", input.parentSession ?? null, input.canonicalHead ?? null,
-        AUTORESEARCH_PROTOCOL_VERSION, maxEvidence, input.workers.length, now, now);
+      `).run(input.canonicalRoot, generation, "launching", input.parentSession ?? null, input.canonicalBranch ?? null,
+        input.canonicalHead ?? null, AUTORESEARCH_PROTOCOL_VERSION, input.workers.length, now, now);
+
+      const requested = new Set(input.workers.map((worker) => worker.workerId));
+      this.db.prepare("DELETE FROM workers_v3 WHERE canonical_root=? AND worker_id NOT IN (SELECT value FROM json_each(?))")
+        .run(input.canonicalRoot, json([...requested]));
       const upsert = this.db.prepare(`
-        INSERT INTO workers(canonical_root,worker_id,generation,token,worktree,branch,session_id,session_dir,status,started_at,last_seen,protocol_version)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+        INSERT INTO workers_v3(canonical_root,worker_id,generation,worktree,branch,session_id,session_dir,status,process_state,started_at,last_seen,protocol_version)
+        VALUES(?,?,?,?,?,?,?,?,'stopped',?,?,?)
         ON CONFLICT(canonical_root,worker_id) DO UPDATE SET
-          generation=excluded.generation,token=excluded.token,worktree=excluded.worktree,branch=excluded.branch,
-          session_id=excluded.session_id,session_dir=excluded.session_dir,session_file=NULL,status=excluded.status,
-          stage=NULL,current_tool=NULL,summary=NULL,error=NULL,task=NULL,model=NULL,thinking=NULL,
+          generation=excluded.generation,worktree=excluded.worktree,branch=excluded.branch,
+          session_id=excluded.session_id,session_dir=excluded.session_dir,session_file=NULL,status=excluded.status,process_state='stopped',
+          stage=NULL,current_tool=NULL,current_tool_started_at=NULL,summary=NULL,error=NULL,task=NULL,model=NULL,thinking=NULL,
           context_window=0,context_tokens=0,cost=0,turns=0,tool_calls=0,
-          started_at=excluded.started_at,last_seen=excluded.last_seen,
-          head=NULL,dirty=0,protocol_version=excluded.protocol_version
+          started_at=excluded.started_at,last_seen=excluded.last_seen,head=NULL,dirty=0,protocol_version=excluded.protocol_version
       `);
-      const admission = input.admission ?? { timeoutMs: 60_000, maxCost: 0.5, maxTurns: 8, maxToolCalls: 16 };
-      const upsertAdmission = this.db.prepare(`
-        INSERT INTO admissions(canonical_root,worker_id,generation,token,state,claimed_scopes,baseline_cost,baseline_turns,baseline_tool_calls,max_cost,max_turns,max_tool_calls,timeout_ms,updated_at)
-        VALUES(?,?,?,?,?,'[]',0,0,0,?,?,?,?,?)
-        ON CONFLICT(canonical_root,worker_id) DO UPDATE SET
-          generation=excluded.generation,token=excluded.token,state=excluded.state,campaign=NULL,hypothesis=NULL,
-          stage=NULL,claimed_scopes='[]',checkpoint_id=NULL,reason=NULL,started_at=NULL,elapsed_ms=0,resolved_at=NULL,
-          baseline_cost=0,baseline_turns=0,baseline_tool_calls=0,baseline_head=NULL,baseline_dirty=0,
-          max_cost=excluded.max_cost,
-          max_turns=excluded.max_turns,max_tool_calls=excluded.max_tool_calls,timeout_ms=excluded.timeout_ms,
-          updated_at=excluded.updated_at
-      `);
-      for (const [index, worker] of input.workers.entries()) {
-        upsert.run(input.canonicalRoot, worker.workerId, generation, worker.token, worker.worktree,
-          worker.branch, worker.sessionId, join(worker.sessionsRoot, `generation-${generation}`),
-          index === 0 ? "launching" : "queued", now, now, AUTORESEARCH_PROTOCOL_VERSION);
-        upsertAdmission.run(input.canonicalRoot, worker.workerId, generation, worker.token, "queued",
-          admission.maxCost, admission.maxTurns, admission.maxToolCalls, admission.timeoutMs, now);
+      for (const worker of input.workers) {
+        upsert.run(input.canonicalRoot, worker.workerId, generation, worker.worktree, worker.branch,
+          worker.sessionId, `${worker.sessionsRoot}/generation-${generation}`, "queued", now, now, AUTORESEARCH_PROTOCOL_VERSION);
       }
-      this.addEventUnsafe(input.canonicalRoot, null, generation, "fleet_launch", `${input.workers.length} worker slots reserved; w1 admission launching`, now);
+      this.addEventUnsafe(input.canonicalRoot, null, generation, "fleet_launch", `${input.workers.length} autonomous worker slots started`, now);
       return generation;
     });
   }
 
   activateFleet(canonicalRoot: string, generation: number, now = Date.now()): void {
-    const result = this.db.prepare("UPDATE fleets SET status='active',updated_at=? WHERE canonical_root=? AND generation=?")
+    const result = this.db.prepare("UPDATE fleets_v3 SET status='active',updated_at=? WHERE canonical_root=? AND generation=?")
       .run(now, canonicalRoot, generation);
-    if (Number(result.changes) !== 1) throw new FenceError("Fleet generation changed during launch");
+    if (Number(result.changes) !== 1) throw new StaleWorkerError("Fleet generation changed during launch");
   }
 
-  setFleetStatus(canonicalRoot: string, status: string, now = Date.now()): void {
-    this.db.prepare("UPDATE fleets SET status=?,updated_at=?,stopped_at=? WHERE canonical_root=?")
-      .run(status, now, ["off", "stopped"].includes(status) ? now : null, canonicalRoot);
-  }
-
-  claimNextQueuedAdmission(canonicalRoot: string, generation: number, now = Date.now()): Record<string, unknown> | undefined {
-    return this.transaction(() => {
-      const row = this.db.prepare(`
-        SELECT w.* FROM admissions a JOIN workers w
-          ON w.canonical_root=a.canonical_root AND w.worker_id=a.worker_id AND w.generation=a.generation
-        WHERE a.canonical_root=? AND a.generation=? AND a.state='queued' AND w.status='queued'
-        ORDER BY a.worker_id LIMIT 1
-      `).get(canonicalRoot, generation) as Record<string, unknown> | undefined;
-      if (!row) return undefined;
-      const result = this.db.prepare(`
-        UPDATE workers SET status='launching',last_seen=?
-        WHERE canonical_root=? AND worker_id=? AND generation=? AND token=? AND status='queued'
-      `).run(now, canonicalRoot, String(row.worker_id), generation, String(row.token));
-      if (Number(result.changes) !== 1) return undefined;
-      row.status = "launching";
-      this.addEventUnsafe(canonicalRoot, String(row.worker_id), generation, "admission_claimed", "queued planner claimed", now);
-      return row;
-    });
-  }
-
-  beginAdmission(canonicalRoot: string, workerId: string, generation: number, laneState: { head: string; dirty: boolean }, now = Date.now()): void {
-    this.transaction(() => {
-      const worker = this.db.prepare(`
-        SELECT token,cost,turns,tool_calls FROM workers
-        WHERE canonical_root=? AND worker_id=? AND generation=?
-      `).get(canonicalRoot, workerId, generation) as Record<string, unknown> | undefined;
-      if (!worker) throw new FenceError(`Missing current worker fence for ${workerId}`);
-      const admission = this.db.prepare(`
-        SELECT state,token,elapsed_ms,baseline_cost,baseline_turns,baseline_tool_calls,baseline_head,baseline_dirty FROM admissions
-        WHERE canonical_root=? AND worker_id=? AND generation=?
-      `).get(canonicalRoot, workerId, generation) as Record<string, unknown> | undefined;
-      if (!admission || admission.token !== worker.token) throw new FenceError(`Admission fence is unavailable for ${workerId}`);
-      if (admission.state === "admitted" || admission.state === "planning") return;
-      if (!["queued", "blocked"].includes(String(admission.state))) throw new FenceError(`Admission fence is unavailable for ${workerId}`);
-      const retry = admission.state === "blocked";
-      const elapsed = retry ? 0 : Math.max(0, Number(admission.elapsed_ms ?? 0));
-      const result = this.db.prepare(`
-        UPDATE admissions SET state='planning',campaign=NULL,hypothesis=NULL,stage=NULL,claimed_scopes='[]',
-          checkpoint_id=NULL,reason=NULL,started_at=?,elapsed_ms=?,resolved_at=NULL,baseline_cost=?,baseline_turns=?,
-          baseline_tool_calls=?,baseline_head=?,baseline_dirty=?,updated_at=?
-        WHERE canonical_root=? AND worker_id=? AND generation=? AND token=? AND state=?
-      `).run(now - elapsed, elapsed,
-        retry ? Number(worker.cost ?? 0) : Number(admission.baseline_cost ?? 0),
-        retry ? Number(worker.turns ?? 0) : Number(admission.baseline_turns ?? 0),
-        retry ? Number(worker.tool_calls ?? 0) : Number(admission.baseline_tool_calls ?? 0),
-        retry || typeof admission.baseline_head !== "string" ? laneState.head : admission.baseline_head,
-        retry || typeof admission.baseline_head !== "string" ? (laneState.dirty ? 1 : 0) : Number(admission.baseline_dirty ?? 0),
-        now, canonicalRoot, workerId, generation, String(worker.token), String(admission.state));
-      if (Number(result.changes) !== 1) throw new FenceError(`Admission fence is unavailable for ${workerId}`);
-      this.addEventUnsafe(canonicalRoot, workerId, generation, "admission_planning", "bounded campaign admission started", now);
-    });
-  }
-
-  offerAdmission(input: AdmissionOfferInput, now = Date.now()): { offered: true; checkpointId: number } {
-    const campaign = input.campaign.trim();
-    const hypothesis = input.hypothesis.trim();
-    const stage = input.stage.trim();
-    const scopes = [...new Set(input.claimedScopes.map((scope) => scope.trim()))];
-    if (!campaign || !hypothesis || !stage || scopes.length === 0 || scopes.some((scope) => !scope)) {
-      throw new Error("admission offer requires exact campaign, hypothesis, stage, and non-empty claimed scopes");
-    }
-    return this.transaction(() => {
-      const identity = this.assertFence();
-      requirePortfolioAssignment(identity, campaign, hypothesis, true);
-      const admission = this.db.prepare(`
-        SELECT * FROM admissions WHERE canonical_root=? AND worker_id=? AND generation=? AND token=?
-      `).get(identity.canonicalRoot, identity.workerId, identity.generation, identity.token) as Record<string, unknown> | undefined;
-      if (!admission || admission.state !== "planning") throw new FenceError("campaign admission is not in the planning state");
-      const worker = this.db.prepare(`
-        SELECT cost,turns,tool_calls FROM workers
-        WHERE canonical_root=? AND worker_id=? AND generation=? AND token=?
-      `).get(identity.canonicalRoot, identity.workerId, identity.generation, identity.token) as Record<string, unknown>;
-      const elapsed = now - Number(admission.started_at ?? now);
-      const cost = Number(worker.cost ?? 0) - Number(admission.baseline_cost ?? 0);
-      const turns = Number(worker.turns ?? 0) - Number(admission.baseline_turns ?? 0);
-      const toolCalls = Number(worker.tool_calls ?? 0) - Number(admission.baseline_tool_calls ?? 0);
-      if (Number(admission.timeout_ms) > 0 && elapsed > Number(admission.timeout_ms)) throw new Error("campaign admission time budget exhausted");
-      if (Number(admission.max_cost) >= 0 && cost > Number(admission.max_cost)) throw new Error("campaign admission cost budget exhausted");
-      if (Number(admission.max_turns) >= 0 && turns > Number(admission.max_turns)) throw new Error("campaign admission turn budget exhausted");
-      if (Number(admission.max_tool_calls) >= 0 && toolCalls > Number(admission.max_tool_calls)) throw new Error("campaign admission tool budget exhausted");
-      const summary = input.summary?.trim() || `Admission offer for ${campaign}`;
-      const checkpoint = this.db.prepare(`
-        INSERT INTO checkpoints(canonical_root,worker_id,generation,campaign,hypothesis,stage,status,summary,findings,blockers,next_actions,run_ids,claimed_scopes,candidate_commit,champion_commit,continuation_command,launch_receipt,created_at)
-        VALUES(?,?,?,?,?,?,?,?,'[]','[]','[]','[]',?,NULL,NULL,NULL,NULL,?)
-      `).run(identity.canonicalRoot, identity.workerId, identity.generation, campaign, hypothesis, stage,
-        "decision", summary, json(scopes), now);
-      const checkpointId = Number(checkpoint.lastInsertRowid);
-      const updated = this.db.prepare(`
-        UPDATE admissions SET state='offered',campaign=?,hypothesis=?,stage=?,claimed_scopes=?,checkpoint_id=?,
-          reason=NULL,updated_at=? WHERE canonical_root=? AND worker_id=? AND generation=? AND token=? AND state='planning'
-      `).run(campaign, hypothesis, stage, json(scopes), checkpointId, now,
-        identity.canonicalRoot, identity.workerId, identity.generation, identity.token);
-      if (Number(updated.changes) !== 1) throw new FenceError("campaign admission changed while publishing the offer");
-      this.workerHeartbeat({ status: "decision", stage, currentTool: null, task: hypothesis, summary, error: null }, now);
-      this.addEventUnsafe(identity.canonicalRoot, identity.workerId, identity.generation, "admission_offered", campaign.slice(0, 500), now);
-      return { offered: true, checkpointId };
-    });
-  }
-
-  admitOfferedCampaign(canonicalRoot: string, workerId: string, generation: number, now = Date.now()): { admitted: boolean; reason?: string } {
-    return this.transaction(() => {
-      const offer = this.db.prepare(`
-        SELECT a.*,w.session_id,w.cost,w.turns,w.tool_calls FROM admissions a JOIN workers w
-          ON w.canonical_root=a.canonical_root AND w.worker_id=a.worker_id
-        WHERE a.canonical_root=? AND a.worker_id=? AND a.generation=?
-      `).get(canonicalRoot, workerId, generation) as Record<string, unknown> | undefined;
-      if (!offer || offer.state !== "offered") return { admitted: offer?.state === "admitted" };
-      const identity: WorkerIdentity = {
-        canonicalRoot,
-        workerId,
-        generation,
-        token: String(offer.token),
-        sessionId: String(offer.session_id),
-      };
-      requirePortfolioAssignment(identity, String(offer.campaign), String(offer.hypothesis), true);
-      const elapsed = now - Number(offer.started_at ?? now);
-      const cost = Number(offer.cost ?? 0) - Number(offer.baseline_cost ?? 0);
-      const turns = Number(offer.turns ?? 0) - Number(offer.baseline_turns ?? 0);
-      const tools = Number(offer.tool_calls ?? 0) - Number(offer.baseline_tool_calls ?? 0);
-      if (Number(offer.timeout_ms) > 0 && elapsed >= Number(offer.timeout_ms)) return { admitted: false, reason: "campaign admission time budget exhausted" };
-      if (Number(offer.max_cost) >= 0 && cost > Number(offer.max_cost)) return { admitted: false, reason: "campaign admission cost budget exhausted" };
-      if (Number(offer.max_turns) >= 0 && turns > Number(offer.max_turns)) return { admitted: false, reason: "campaign admission turn budget exhausted" };
-      if (Number(offer.max_tool_calls) >= 0 && tools > Number(offer.max_tool_calls)) return { admitted: false, reason: "campaign admission tool budget exhausted" };
-      const scopes = parseJson(offer.claimed_scopes);
-      if (!Array.isArray(scopes) || scopes.length === 0 || scopes.some((scope) => typeof scope !== "string" || !scope.trim())) {
-        return { admitted: false, reason: "admission offer has invalid claimed scopes" };
-      }
-      const occupied = this.db.prepare(`
-        SELECT worker_id,claimed_scopes FROM admissions
-        WHERE canonical_root=? AND generation=? AND state='admitted' AND worker_id<>?
-      `).all(canonicalRoot, generation, workerId) as Array<{ worker_id: string; claimed_scopes: string }>;
-      const claimed = new Set(scopes.map((scope) => String(scope).trim()));
-      for (const row of occupied) {
-        const other = parseJson(row.claimed_scopes);
-        if (Array.isArray(other) && other.some((scope) => typeof scope === "string" && claimed.has(scope.trim()))) {
-          return { admitted: false, reason: `claimed scope conflicts with ${row.worker_id}` };
-        }
-      }
-      const result = this.db.prepare(`
-        UPDATE admissions SET state='admitted',resolved_at=?,updated_at=?
-        WHERE canonical_root=? AND worker_id=? AND generation=? AND token=? AND state='offered'
-      `).run(now, now, canonicalRoot, workerId, generation, String(offer.token));
-      if (Number(result.changes) !== 1) return { admitted: false, reason: "admission offer changed before acceptance" };
-      this.addEventUnsafe(canonicalRoot, workerId, generation, "admission_accepted", String(offer.campaign).slice(0, 500), now);
-      return { admitted: true };
-    });
-  }
-
-  admissionLaneChanged(canonicalRoot: string, workerId: string, generation: number, laneState: { head: string; dirty: boolean }): boolean {
-    const row = this.db.prepare(`
-      SELECT baseline_head,baseline_dirty FROM admissions
-      WHERE canonical_root=? AND worker_id=? AND generation=?
-    `).get(canonicalRoot, workerId, generation) as { baseline_head?: string | null; baseline_dirty?: number } | undefined;
-    return !row || typeof row.baseline_head !== "string"
-      || row.baseline_head !== laneState.head || Boolean(row.baseline_dirty) !== laneState.dirty;
-  }
-
-  admissionBudgetViolation(canonicalRoot: string, workerId: string, generation: number, now = Date.now()): string | undefined {
-    const row = this.db.prepare(`
-      SELECT a.*,w.cost,w.turns,w.tool_calls FROM admissions a JOIN workers w
-        ON w.canonical_root=a.canonical_root AND w.worker_id=a.worker_id
-      WHERE a.canonical_root=? AND a.worker_id=? AND a.generation=?
-    `).get(canonicalRoot, workerId, generation) as Record<string, unknown> | undefined;
-    if (!row || !["planning", "offered"].includes(String(row.state))) return undefined;
-    const elapsed = now - Number(row.started_at ?? now);
-    const cost = Number(row.cost ?? 0) - Number(row.baseline_cost ?? 0);
-    const turns = Number(row.turns ?? 0) - Number(row.baseline_turns ?? 0);
-    const tools = Number(row.tool_calls ?? 0) - Number(row.baseline_tool_calls ?? 0);
-    if (Number(row.timeout_ms) > 0 && elapsed >= Number(row.timeout_ms)) return `campaign admission exceeded ${Math.round(Number(row.timeout_ms) / 1_000)} seconds`;
-    if (Number(row.max_cost) >= 0 && cost > Number(row.max_cost)) return `campaign admission cost $${cost.toFixed(3)} exceeded $${Number(row.max_cost).toFixed(2)}`;
-    if (Number(row.max_turns) >= 0 && turns > Number(row.max_turns)) return `campaign admission used ${turns} model turns, limit ${row.max_turns}`;
-    if (Number(row.max_tool_calls) >= 0 && tools > Number(row.max_tool_calls)) return `campaign admission used ${tools} tool calls, limit ${row.max_tool_calls}`;
-    return undefined;
-  }
-
-  blockAdmission(canonicalRoot: string, workerId: string, generation: number, reason: string, now = Date.now()): void {
-    this.db.prepare(`
-      UPDATE admissions SET state='blocked',reason=?,resolved_at=?,updated_at=?
-      WHERE canonical_root=? AND worker_id=? AND generation=? AND state IN ('planning','offered')
-    `).run(reason.slice(0, 500), now, now, canonicalRoot, workerId, generation);
-  }
-
-  pauseAdmission(canonicalRoot: string, workerId: string, generation: number, now = Date.now()): void {
-    this.db.prepare(`
-      UPDATE admissions SET state='queued',campaign=NULL,hypothesis=NULL,stage=NULL,claimed_scopes='[]',
-        checkpoint_id=NULL,elapsed_ms=MAX(0,?-started_at),started_at=NULL,resolved_at=NULL,reason=NULL,updated_at=?
-      WHERE canonical_root=? AND worker_id=? AND generation=? AND state IN ('planning','offered')
-    `).run(now, now, canonicalRoot, workerId, generation);
-  }
-
-  parentUpdateWorker(canonicalRoot: string, workerId: string, patch: {
-    status?: WorkerStatus;
-    sessionFile?: string | null;
-    summary?: string;
-    error?: string | null;
-    stage?: string | null;
-    currentTool?: string | null;
-    task?: string;
-    model?: string;
-    thinking?: string;
-    contextWindow?: number;
-    head?: string;
-    dirty?: boolean;
-  }, now = Date.now()): void {
-    const assignments = ["last_seen=?"];
-    const values: unknown[] = [now];
-    const fields: Array<[keyof typeof patch, string, (value: unknown) => unknown]> = [
-      ["status", "status", (value) => value], ["sessionFile", "session_file", (value) => value],
-      ["summary", "summary", (value) => value], ["error", "error", (value) => value],
-      ["stage", "stage", (value) => value], ["currentTool", "current_tool", (value) => value],
-      ["task", "task", (value) => value], ["model", "model", (value) => value],
-      ["thinking", "thinking", (value) => value], ["contextWindow", "context_window", (value) => value],
-      ["head", "head", (value) => value], ["dirty", "dirty", (value) => value ? 1 : 0],
-    ];
-    for (const [key, column, transform] of fields) {
-      if (patch[key] !== undefined) {
-        assignments.push(`${column}=?`);
-        values.push(transform(patch[key]));
-      }
-    }
-    values.push(canonicalRoot, workerId);
-    this.db.prepare(`UPDATE workers SET ${assignments.join(",")} WHERE canonical_root=? AND worker_id=?`).run(...values);
-  }
-
-  workerHeartbeat(patch: { status?: WorkerStatus; stage?: string | null; currentTool?: string | null; task?: string; summary?: string; error?: string | null }, now = Date.now()): void {
-    const identity = this.assertFence();
-    const assignments = ["last_seen=?"];
-    const values: unknown[] = [now];
-    const mapping: Array<[keyof typeof patch, string]> = [
-      ["status", "status"], ["stage", "stage"], ["currentTool", "current_tool"],
-      ["task", "task"], ["summary", "summary"], ["error", "error"],
-    ];
-    for (const [key, column] of mapping) {
-      if (patch[key] !== undefined) {
-        assignments.push(`${column}=?`);
-        values.push(patch[key]);
-      }
-    }
-    values.push(identity.canonicalRoot, identity.workerId, identity.generation, identity.token);
-    const result = this.db.prepare(`UPDATE workers SET ${assignments.join(",")} WHERE canonical_root=? AND worker_id=? AND generation=? AND token=?`).run(...values);
-    if (Number(result.changes) !== 1) throw new FenceError(`Stale autoresearch worker fence for ${identity.workerId}`);
-  }
-
-  recordToolCall(now = Date.now()): void {
-    const identity = this.assertFence();
+  captureCanonicalBranch(canonicalRoot: string, generation: number, branch: string, expectedHead: string, now = Date.now()): void {
     const result = this.db.prepare(`
-      UPDATE workers SET tool_calls=tool_calls+1,last_seen=?
-      WHERE canonical_root=? AND worker_id=? AND generation=? AND token=?
-    `).run(now, identity.canonicalRoot, identity.workerId, identity.generation, identity.token);
-    if (Number(result.changes) !== 1) throw new FenceError(`Stale autoresearch worker fence for ${identity.workerId}`);
+      UPDATE fleets_v3 SET canonical_branch=?,updated_at=?
+      WHERE canonical_root=? AND generation=? AND canonical_head=? AND canonical_branch IS NULL
+    `).run(requiredText(branch, "canonical branch"), now, canonicalRoot, generation, expectedHead);
+    if (Number(result.changes) !== 1) throw new StaleWorkerError("Could not safely capture canonical branch for restored fleet");
   }
 
-  recordTurnUsage(input: { contextTokens?: number; cost?: number }, now = Date.now()): void {
-    const identity = this.assertFence();
-    const contextTokens = Number.isFinite(input.contextTokens) ? Math.max(0, Math.floor(input.contextTokens!)) : 0;
-    const cost = Number.isFinite(input.cost) ? Math.max(0, input.cost!) : 0;
+  setFleetStatus(canonicalRoot: string, status: string, now = Date.now(), expectedGeneration?: number): void {
+    const generationClause = expectedGeneration === undefined ? "" : " AND generation=?";
+    const values: SQLInputValue[] = [status, now, ["off", "stopped"].includes(status) ? now : null, canonicalRoot];
+    if (expectedGeneration !== undefined) values.push(expectedGeneration);
+    const result = this.db.prepare(`UPDATE fleets_v3 SET status=?,updated_at=?,stopped_at=? WHERE canonical_root=?${generationClause}`).run(...values);
+    if (expectedGeneration !== undefined && Number(result.changes) !== 1) throw new StaleWorkerError("Fleet generation changed");
+  }
+
+  resetWorkerSession(
+    canonicalRoot: string,
+    workerId: string,
+    generation: number,
+    sessionId: string,
+    now = Date.now(),
+  ): void {
+    assertWorkerSessionId(sessionId);
     const result = this.db.prepare(`
-      UPDATE workers SET turns=turns+1,context_tokens=?,cost=cost+?,last_seen=?
-      WHERE canonical_root=? AND worker_id=? AND generation=? AND token=?
-    `).run(contextTokens, cost, now, identity.canonicalRoot, identity.workerId, identity.generation, identity.token);
-    if (Number(result.changes) !== 1) throw new FenceError(`Stale autoresearch worker fence for ${identity.workerId}`);
+      UPDATE workers_v3 SET session_id=?,status='launching',process_state='stopped',session_file=NULL,
+        stage=NULL,current_tool=NULL,current_tool_started_at=NULL,summary=NULL,error=NULL,task=NULL,
+        context_tokens=0,cost=0,turns=0,tool_calls=0,started_at=?,last_seen=?
+      WHERE canonical_root=? AND worker_id=? AND generation=? AND process_state='stopped'
+    `).run(sessionId, now, now, canonicalRoot, workerId, generation);
+    if (Number(result.changes) !== 1) throw new StaleWorkerError(`Could not install fresh worker session for ${workerId}`);
+    this.addEventUnsafe(canonicalRoot, workerId, generation, "worker_replaced", sessionId, now);
+  }
+
+  publishIntent(input: ResearchIntentInput, now = Date.now()): { intentId: number } {
+    const question = requiredText(input.question, "intent question");
+    const experiment = requiredText(input.experiment, "intent experiment");
+    const reason = requiredText(input.reason, "intent reason");
+    return this.transaction(() => {
+      const identity = this.assertCurrent();
+      const existing = this.db.prepare(`
+        SELECT id FROM intents_v3 WHERE canonical_root=? AND worker_id=? AND status='active'
+      `).get(identity.canonicalRoot, identity.workerId) as { id?: number } | undefined;
+      if (existing?.id !== undefined) throw new Error("worker already has an active research intent; resume it or finish it before publishing another");
+      const result = this.db.prepare(`
+        INSERT INTO intents_v3(canonical_root,worker_id,generation,session_id,question,experiment,reason,status,baseline_head,started_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,'active',?,?,?)
+      `).run(identity.canonicalRoot, identity.workerId, identity.generation, identity.sessionId,
+        question, experiment, reason, input.baselineHead ?? null, now, now);
+      const intentId = Number(result.lastInsertRowid);
+      this.db.prepare(`
+        UPDATE workers_v3 SET status='running',task=?,summary=?,last_seen=?
+        WHERE canonical_root=? AND worker_id=? AND generation=? AND session_id=?
+      `).run(question, experiment, now, identity.canonicalRoot, identity.workerId, identity.generation, identity.sessionId);
+      this.addEventUnsafe(identity.canonicalRoot, identity.workerId, identity.generation, "intent_published", question.slice(0, 500), now);
+      return { intentId };
+    });
   }
 
   checkpoint(input: CheckpointInput, now = Date.now()): number {
     return this.transaction(() => {
-      const identity = this.assertFence();
-      if (input.launchReceipt !== undefined) {
-        const rawReservationId = input.launchReceipt.reservation_id ?? input.launchReceipt.reservationId;
-        if (rawReservationId !== undefined && !Number.isInteger(rawReservationId)) {
-          throw new Error("launch receipt reservation identity must be a positive integer");
-        }
-        const reservationId = rawReservationId === undefined ? undefined : Number(rawReservationId);
-        const campaign = input.campaign?.trim();
-        const stage = input.stage?.trim();
-        if (reservationId !== undefined && (reservationId <= 0 || !campaign || !stage)) {
-          throw new Error("a reservation launch receipt requires positive reservation identity, campaign, and stage");
-        }
-        if (reservationId !== undefined) {
-          const encoded = json(input.launchReceipt);
-          const reservation = this.db.prepare(`
-            SELECT launch_receipt FROM evidence_reservations
-            WHERE id=? AND canonical_root=? AND worker_id=? AND generation=? AND token=?
-              AND campaign=? AND stage=? AND status='active'
-          `).get(reservationId, identity.canonicalRoot, identity.workerId, identity.generation,
-            identity.token, campaign, stage) as { launch_receipt?: string | null } | undefined;
-          if (!reservation) throw new FenceError("Launch receipt does not match an active campaign reservation");
-          if (reservation.launch_receipt !== null && reservation.launch_receipt !== undefined
-            && reservation.launch_receipt !== encoded) {
-            throw new Error("active evidence reservation already has a different launch receipt");
-          }
-          if (reservation.launch_receipt === null || reservation.launch_receipt === undefined) {
-            this.db.prepare("UPDATE evidence_reservations SET launch_receipt=? WHERE id=?").run(encoded, reservationId);
-          }
-        }
-      }
+      const identity = this.assertCurrent();
+      const intent = this.currentIntentUnsafe(identity.canonicalRoot, identity.workerId);
+      if (!intent) throw new Error("publish a research intent before checkpointing campaign work");
       const result = this.db.prepare(`
-        INSERT INTO checkpoints(canonical_root,worker_id,generation,campaign,hypothesis,stage,status,summary,findings,blockers,next_actions,run_ids,claimed_scopes,candidate_commit,champion_commit,continuation_command,launch_receipt,created_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-      `).run(identity.canonicalRoot, identity.workerId, identity.generation, input.campaign ?? null,
-        input.hypothesis ?? null, input.stage ?? null, input.status ?? null, input.summary ?? null,
-        json(input.findings), json(input.blockers), json(input.nextActions), json(input.runIds),
-        json(input.claimedScopes), input.candidateCommit ?? null, input.championCommit ?? null,
+        INSERT INTO checkpoints_v3(canonical_root,worker_id,generation,session_id,intent_id,stage,summary,findings,blockers,next_actions,run_ids,candidate_commit,champion_commit,continuation_command,launch_receipt,created_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      `).run(identity.canonicalRoot, identity.workerId, identity.generation, identity.sessionId, Number(intent.id),
+        input.stage ?? null, input.summary ?? null, json(input.findings), json(input.blockers), json(input.nextActions),
+        json(input.runIds), input.candidateCommit ?? null, input.championCommit ?? null,
         input.continuationCommand ?? null, input.launchReceipt === undefined ? null : json(input.launchReceipt), now);
+      this.db.prepare("UPDATE intents_v3 SET updated_at=? WHERE id=?").run(now, Number(intent.id));
       this.workerHeartbeat({
-        status: input.status,
-        stage: input.stage,
-        currentTool: null,
-        task: input.hypothesis ?? input.campaign,
-        summary: input.summary,
+        ...(input.stage !== undefined ? { stage: input.stage } : {}),
+        ...(input.summary !== undefined ? { summary: input.summary } : {}),
         error: input.blockers?.length ? input.blockers.join("; ").slice(0, 500) : null,
+        currentTool: null,
       }, now);
-      this.addEventUnsafe(identity.canonicalRoot, identity.workerId, identity.generation,
-        input.status === "blocked" || input.status === "failed" || input.status === "decision" ? input.status : "checkpoint",
-        (input.summary ?? input.stage ?? "checkpoint").slice(0, 500), now);
+      this.addEventUnsafe(identity.canonicalRoot, identity.workerId, identity.generation, "checkpoint",
+        (input.summary ?? input.stage ?? "campaign progress").slice(0, 500), now);
       return Number(result.lastInsertRowid);
     });
   }
 
-  reserveEvidence(stage: string, campaign: string, now = Date.now()): { reserved: boolean; wait: boolean; reservationId?: number; active: number; max: number; requiresReconciliation?: boolean } {
-    const normalizedStage = stage.trim();
-    const normalizedCampaign = campaign.trim();
-    if (!normalizedStage) throw new Error("evidence reservation stage must be a non-empty string");
-    if (!normalizedCampaign) throw new Error("evidence reservation campaign must be a non-empty string");
+  finishCampaign(input: FinishCampaignInput, now = Date.now()): { intentId: number; status: IntentStatus } {
+    const summary = requiredText(input.summary, "campaign summary");
     return this.transaction(() => {
-      const identity = this.assertFence();
-      requirePortfolioAssignment(identity, normalizedCampaign);
-      const fleet = this.db.prepare("SELECT max_evidence_stages FROM fleets WHERE canonical_root=? AND generation=?")
-        .get(identity.canonicalRoot, identity.generation) as { max_evidence_stages?: number } | undefined;
-      if (!fleet) throw new FenceError("Fleet generation is no longer active");
-      const existing = this.db.prepare("SELECT id,generation,token,stage,campaign FROM evidence_reservations WHERE canonical_root=? AND worker_id=? AND status='active'")
-        .get(identity.canonicalRoot, identity.workerId) as { id?: number; generation?: number; token?: string; stage?: string; campaign?: string | null } | undefined;
-      const countRow = this.db.prepare("SELECT COUNT(*) AS count FROM evidence_reservations WHERE canonical_root=? AND status='active'")
-        .get(identity.canonicalRoot) as { count: number };
-      const active = Number(countRow.count);
-      const max = Number(fleet.max_evidence_stages ?? DEFAULT_MAX_EVIDENCE_STAGES);
-      if (existing?.id !== undefined) {
-        if (existing.generation === identity.generation && existing.token === identity.token) {
-          if (existing.campaign === null || existing.campaign === undefined) {
-            return { reserved: false, wait: true, reservationId: existing.id, active, max, requiresReconciliation: true };
-          }
-          if (existing.stage !== normalizedStage || existing.campaign !== normalizedCampaign) {
-            throw new Error("active evidence reservation belongs to a different stage or campaign");
-          }
-          return { reserved: true, wait: false, reservationId: existing.id, active, max };
-        }
-        return { reserved: false, wait: true, reservationId: existing.id, active, max, requiresReconciliation: true };
-      }
-      const campaignReservation = this.db.prepare("SELECT id FROM evidence_reservations WHERE canonical_root=? AND campaign=? AND status='active'")
-        .get(identity.canonicalRoot, normalizedCampaign) as { id?: number } | undefined;
-      if (campaignReservation?.id !== undefined) {
-        return { reserved: false, wait: true, reservationId: campaignReservation.id, active, max };
-      }
-      if (active >= max) return { reserved: false, wait: true, active, max };
+      const identity = this.assertCurrent();
+      const intent = this.currentIntentUnsafe(identity.canonicalRoot, identity.workerId);
+      if (!intent) throw new Error("no active research intent to finish");
+      const status: IntentStatus = input.outcome === "external-blocked" ? "blocked" : "complete";
+      const terminalHead = requiredText(input.terminalHead, "campaign terminal head");
       const result = this.db.prepare(`
-        INSERT INTO evidence_reservations(canonical_root,worker_id,generation,token,stage,campaign,status,created_at)
-        VALUES(?,?,?,?,?,?,'active',?)
-      `).run(identity.canonicalRoot, identity.workerId, identity.generation, identity.token,
-        normalizedStage, normalizedCampaign, now);
-      this.addEventUnsafe(identity.canonicalRoot, identity.workerId, identity.generation, "evidence_reserved",
-        `${normalizedStage}:${normalizedCampaign}`.slice(0, 500), now);
-      return { reserved: true, wait: false, reservationId: Number(result.lastInsertRowid), active: active + 1, max };
+        UPDATE intents_v3 SET status=?,outcome=?,summary=?,findings=?,run_ids=?,terminal_head=?,integration_phase='pending',
+          integration_ref=NULL,integration_base_head=NULL,integration_result_head=NULL,integration_error=NULL,integration_updated_at=?,updated_at=?,completed_at=?
+        WHERE id=? AND status='active'
+      `).run(status, input.outcome, summary, json(input.findings), json(input.runIds), terminalHead, now, now, now, Number(intent.id));
+      if (Number(result.changes) !== 1) throw new StaleWorkerError("research intent changed before completion");
+      const workerStatus: WorkerStatus = status === "complete" ? "complete" : status;
+      this.workerHeartbeat({ status: workerStatus, currentTool: null, summary, error: status === "complete" ? null : summary }, now);
+      this.addEventUnsafe(identity.canonicalRoot, identity.workerId, identity.generation, "intent_finished",
+        `${input.outcome}: ${summary}`.slice(0, 500), now);
+      return { intentId: Number(intent.id), status };
     });
   }
 
-  releaseEvidence(input: { reservationId?: number; receipt?: unknown; summary?: string }, now = Date.now()): { released: boolean; reservationId?: number } {
-    const receipt = requireTerminalReceipt(input.receipt);
-    return this.transaction(() => {
-      const identity = this.assertFence();
-      const reservation = input.reservationId === undefined
-        ? this.db.prepare("SELECT id FROM evidence_reservations WHERE canonical_root=? AND worker_id=? AND status='active' ORDER BY id DESC LIMIT 1")
-            .get(identity.canonicalRoot, identity.workerId) as { id?: number } | undefined
-        : { id: input.reservationId };
-      if (reservation?.id === undefined) return { released: false };
-      const status = "receipt";
+  currentIntent(canonicalRoot: string, workerId: string): Record<string, unknown> | undefined {
+    const row = this.currentIntentUnsafe(canonicalRoot, workerId);
+    return row ? rowsToObjects([row])[0] : undefined;
+  }
+
+  private currentIntentUnsafe(canonicalRoot: string, workerId: string): Record<string, unknown> | undefined {
+    return this.db.prepare(`
+      SELECT * FROM intents_v3 WHERE canonical_root=? AND worker_id=? AND status='active' ORDER BY id DESC LIMIT 1
+    `).get(canonicalRoot, workerId) as Record<string, unknown> | undefined;
+  }
+
+  latestIntegration(canonicalRoot: string, workerId: string): Record<string, unknown> | undefined {
+    const row = this.db.prepare(`
+      SELECT * FROM intents_v3
+      WHERE canonical_root=? AND worker_id=? AND integration_phase IS NOT NULL
+      ORDER BY id DESC LIMIT 1
+    `).get(canonicalRoot, workerId) as Record<string, unknown> | undefined;
+    return row ? rowsToObjects([row])[0] : undefined;
+  }
+
+  pendingIntegration(canonicalRoot: string, workerId: string): Record<string, unknown> | undefined {
+    const row = this.latestIntegration(canonicalRoot, workerId);
+    return row && row.integration_phase !== "complete" ? row : undefined;
+  }
+
+  markIntegrationRef(canonicalRoot: string, workerId: string, _generation: number, intentId: number, ref: string, now = Date.now()): void {
+    const result = this.db.prepare(`
+      UPDATE intents_v3 SET integration_phase='ref_created',integration_ref=?,integration_error=NULL,integration_updated_at=?
+      WHERE id=? AND canonical_root=? AND worker_id=? AND integration_phase IN ('pending','ref_created')
+    `).run(requiredText(ref, "terminal ref"), now, intentId, canonicalRoot, workerId);
+    if (Number(result.changes) !== 1) throw new StaleWorkerError(`Integration state changed for ${workerId}`);
+  }
+
+  beginIntegration(canonicalRoot: string, workerId: string, generation: number, intentId: number, baseHead: string, now = Date.now()): void {
+    this.transaction(() => {
+      const fleet = this.db.prepare("SELECT canonical_head,integration_error FROM fleets_v3 WHERE canonical_root=? AND generation=?")
+        .get(canonicalRoot, generation) as { canonical_head?: string; integration_error?: string } | undefined;
+      if (!fleet || fleet.integration_error) throw new StaleWorkerError("Canonical integration is globally blocked");
+      if (fleet.canonical_head !== baseHead) throw new StaleWorkerError("Persisted canonical HEAD changed before integration");
       const result = this.db.prepare(`
-        UPDATE evidence_reservations SET status=?,receipt=?,released_at=?
-        WHERE id=? AND canonical_root=? AND worker_id=? AND status='active'
-      `).run(status, json(receipt), now, reservation.id, identity.canonicalRoot, identity.workerId);
-      if (Number(result.changes) !== 1) return { released: false, reservationId: reservation.id };
-      this.addEventUnsafe(identity.canonicalRoot, identity.workerId, identity.generation, "evidence_released",
-        (input.summary ?? status).slice(0, 500), now);
-      return { released: true, reservationId: reservation.id };
+        UPDATE intents_v3 SET integration_phase='integrating',integration_base_head=?,integration_error=NULL,integration_updated_at=?
+        WHERE id=? AND canonical_root=? AND worker_id=? AND integration_phase IN ('ref_created','integrating')
+      `).run(baseHead, now, intentId, canonicalRoot, workerId);
+      if (Number(result.changes) !== 1) throw new StaleWorkerError(`Integration state changed for ${workerId}`);
     });
   }
 
-  hasActiveReservation(canonicalRoot: string, workerId: string): boolean {
-    const row = this.db.prepare("SELECT 1 AS found FROM evidence_reservations WHERE canonical_root=? AND worker_id=? AND status='active' LIMIT 1")
-      .get(canonicalRoot, workerId) as { found?: number } | undefined;
-    return row?.found === 1;
+  completeCanonicalIntegration(canonicalRoot: string, workerId: string, generation: number, intentId: number, baseHead: string, resultHead: string, now = Date.now()): void {
+    this.transaction(() => {
+      const fleet = this.db.prepare("UPDATE fleets_v3 SET canonical_head=?,updated_at=? WHERE canonical_root=? AND generation=? AND canonical_head=? AND integration_error IS NULL")
+        .run(resultHead, now, canonicalRoot, generation, baseHead);
+      if (Number(fleet.changes) !== 1) throw new StaleWorkerError("Persisted canonical HEAD changed while completing integration");
+      const intent = this.db.prepare(`
+        UPDATE intents_v3 SET integration_phase='integrated',integration_result_head=?,integration_error=NULL,integration_updated_at=?
+        WHERE id=? AND canonical_root=? AND worker_id=? AND integration_phase='integrating' AND integration_base_head=?
+      `).run(resultHead, now, intentId, canonicalRoot, workerId, baseHead);
+      if (Number(intent.changes) !== 1) throw new StaleWorkerError(`Integration state changed for ${workerId}`);
+      this.addEventUnsafe(canonicalRoot, workerId, generation, "terminal_integrated", resultHead, now);
+    });
+  }
+
+  completeLaneReset(canonicalRoot: string, workerId: string, _generation: number, intentId: number, now = Date.now()): void {
+    const result = this.db.prepare(`
+      UPDATE intents_v3 SET integration_phase='complete',integration_error=NULL,integration_updated_at=?
+      WHERE id=? AND canonical_root=? AND worker_id=? AND integration_phase='integrated'
+    `).run(now, intentId, canonicalRoot, workerId);
+    if (Number(result.changes) !== 1) throw new StaleWorkerError(`Integration reset state changed for ${workerId}`);
+  }
+
+  blockIntegration(canonicalRoot: string, workerId: string, generation: number, intentId: number, error: string, now = Date.now()): void {
+    this.transaction(() => {
+      this.db.prepare(`
+        UPDATE intents_v3 SET integration_phase='blocked',integration_error=?,integration_updated_at=?
+        WHERE id=? AND canonical_root=? AND worker_id=? AND integration_phase<>'complete'
+      `).run(error.slice(0, 2000), now, intentId, canonicalRoot, workerId);
+      this.db.prepare(`
+        UPDATE workers_v3 SET status='blocked',current_tool=NULL,current_tool_started_at=NULL,
+          summary='Terminal integration is blocked; lane and terminal ref were preserved.',error=?,last_seen=?
+        WHERE canonical_root=? AND worker_id=? AND generation=?
+      `).run(error.slice(0, 500), now, canonicalRoot, workerId, generation);
+      this.addEventUnsafe(canonicalRoot, workerId, generation, "terminal_integration_blocked", error.slice(0, 500), now);
+    });
+  }
+
+  blockAllIntegrations(canonicalRoot: string, generation: number, error: string, now = Date.now()): void {
+    const result = this.db.prepare("UPDATE fleets_v3 SET integration_error=?,updated_at=? WHERE canonical_root=? AND generation=?")
+      .run(error.slice(0, 2000), now, canonicalRoot, generation);
+    if (Number(result.changes) !== 1) throw new StaleWorkerError("Fleet changed while blocking canonical integration");
+  }
+
+  workerHeartbeat(patch: {
+    status?: WorkerStatus;
+    stage?: string | null;
+    currentTool?: string | null;
+    task?: string;
+    summary?: string;
+    error?: string | null;
+  }, now = Date.now()): void {
+    const identity = this.assertCurrent();
+    const fields: string[] = ["last_seen=?"];
+    const values: SQLInputValue[] = [now];
+    const mappings: Array<[keyof typeof patch, string]> = [
+      ["status", "status"], ["stage", "stage"], ["currentTool", "current_tool"],
+      ["task", "task"], ["summary", "summary"], ["error", "error"],
+    ];
+    if (patch.currentTool !== undefined) {
+      fields.push("current_tool_started_at=?");
+      values.push(patch.currentTool === null ? null : now);
+    }
+    for (const [key, column] of mappings) {
+      if (patch[key] !== undefined) {
+        fields.push(`${column}=?`);
+        values.push(patch[key] as SQLInputValue);
+      }
+    }
+    values.push(identity.canonicalRoot, identity.workerId, identity.generation, identity.sessionId);
+    const result = this.db.prepare(`
+      UPDATE workers_v3 SET ${fields.join(",")}
+      WHERE canonical_root=? AND worker_id=? AND generation=? AND session_id=?
+    `).run(...values);
+    if (Number(result.changes) !== 1) throw new StaleWorkerError(`Stale autoresearch worker session for ${identity.workerId}`);
+  }
+
+  recordToolCall(now = Date.now()): void {
+    const identity = this.assertCurrent();
+    this.db.prepare(`
+      UPDATE workers_v3 SET tool_calls=tool_calls+1,last_seen=?
+      WHERE canonical_root=? AND worker_id=? AND generation=? AND session_id=?
+    `).run(now, identity.canonicalRoot, identity.workerId, identity.generation, identity.sessionId);
+  }
+
+  recordTurnUsage(input: { contextTokens?: number; cost?: number }, now = Date.now()): void {
+    const identity = this.assertCurrent();
+    this.db.prepare(`
+      UPDATE workers_v3 SET turns=turns+1,context_tokens=?,cost=cost+?,last_seen=?
+      WHERE canonical_root=? AND worker_id=? AND generation=? AND session_id=?
+    `).run(Math.max(0, Math.floor(input.contextTokens ?? 0)), Math.max(0, input.cost ?? 0), now,
+      identity.canonicalRoot, identity.workerId, identity.generation, identity.sessionId);
+  }
+
+  parentUpdateWorker(canonicalRoot: string, workerId: string, patch: {
+    status?: WorkerStatus;
+    processState?: "starting" | "owned" | "stopped" | "unreconciled";
+    sessionFile?: string | null;
+    stage?: string | null;
+    currentTool?: string | null;
+    summary?: string;
+    error?: string | null;
+    task?: string;
+    model?: string;
+    thinking?: string;
+    contextWindow?: number;
+    head?: string | null;
+    dirty?: boolean;
+  }, now = Date.now(), expectedGeneration?: number): void {
+    const fields: string[] = ["last_seen=?"];
+    const values: SQLInputValue[] = [now];
+    const mappings: Array<[keyof typeof patch, string, (value: never) => SQLInputValue]> = [
+      ["status", "status", (value) => value], ["processState", "process_state", (value) => value],
+      ["sessionFile", "session_file", (value) => value], ["stage", "stage", (value) => value],
+      ["currentTool", "current_tool", (value) => value], ["summary", "summary", (value) => value],
+      ["error", "error", (value) => value], ["task", "task", (value) => value],
+      ["model", "model", (value) => value], ["thinking", "thinking", (value) => value],
+      ["contextWindow", "context_window", (value) => Number(value)], ["head", "head", (value) => value],
+      ["dirty", "dirty", (value) => value ? 1 : 0],
+    ];
+    if (patch.currentTool !== undefined) {
+      fields.push("current_tool_started_at=?");
+      values.push(patch.currentTool === null ? null : now);
+    }
+    for (const [key, column, convert] of mappings) {
+      if (patch[key] !== undefined) {
+        fields.push(`${column}=?`);
+        values.push(convert(patch[key] as never));
+      }
+    }
+    const generationClause = expectedGeneration === undefined ? "" : " AND generation=?";
+    values.push(canonicalRoot, workerId);
+    if (expectedGeneration !== undefined) values.push(expectedGeneration);
+    const result = this.db.prepare(`UPDATE workers_v3 SET ${fields.join(",")} WHERE canonical_root=? AND worker_id=?${generationClause}`).run(...values);
+    if (Number(result.changes) !== 1) throw new StaleWorkerError(`Worker state changed for ${workerId}`);
   }
 
   addEvent(kind: string, summary: string, now = Date.now()): void {
-    const identity = this.assertFence();
+    const identity = this.assertCurrent();
     this.addEventUnsafe(identity.canonicalRoot, identity.workerId, identity.generation, kind, summary.slice(0, 500), now);
   }
 
+  parentAddWorkerEvent(canonicalRoot: string, workerId: string, generation: number, kind: string, summary: string, now = Date.now()): void {
+    const worker = this.db.prepare("SELECT generation FROM workers_v3 WHERE canonical_root=? AND worker_id=?").get(canonicalRoot, workerId) as Record<string, unknown> | undefined;
+    if (!worker || Number(worker.generation) !== generation) throw new StaleWorkerError(`Worker generation changed for ${workerId}`);
+    this.addEventUnsafe(canonicalRoot, workerId, generation, requiredText(kind, "event kind"), summary.slice(0, 500), now);
+  }
+
+  recoveryAttemptCount(canonicalRoot: string, workerId: string, generation: number): number {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM events_v3
+      WHERE canonical_root=? AND worker_id=? AND generation=? AND kind='automatic_recovery_attempt'
+        AND id > COALESCE((
+          SELECT MAX(id) FROM events_v3
+          WHERE canonical_root=? AND worker_id=? AND generation=? AND kind='automatic_recovery_healthy'
+        ), 0)
+    `).get(canonicalRoot, workerId, generation, canonicalRoot, workerId, generation) as Record<string, unknown>;
+    return Number(row.count ?? 0);
+  }
+
   private addEventUnsafe(canonicalRoot: string, workerId: string | null, generation: number, kind: string, summary: string, now: number): void {
-    this.db.prepare("INSERT INTO events(canonical_root,worker_id,generation,kind,summary,created_at) VALUES(?,?,?,?,?,?)")
+    this.db.prepare("INSERT INTO events_v3(canonical_root,worker_id,generation,kind,summary,created_at) VALUES(?,?,?,?,?,?)")
       .run(canonicalRoot, workerId, generation, kind, summary, now);
   }
 
   snapshot(canonicalRoot: string, options: { workerId?: string; recent?: number } = {}): FleetSnapshot {
     const recent = Math.max(1, Math.min(100, Math.floor(options.recent ?? 12)));
-    const fleet = this.db.prepare("SELECT * FROM fleets WHERE canonical_root=?").get(canonicalRoot) as Record<string, unknown> | undefined;
+    const fleet = this.db.prepare("SELECT * FROM fleets_v3 WHERE canonical_root=?").get(canonicalRoot) as Record<string, unknown> | undefined;
+    const completedCampaigns = this.db.prepare(
+      "SELECT COUNT(*) AS count FROM intents_v3 WHERE canonical_root=? AND status<>'active'",
+    ).get(canonicalRoot) as { count: number };
     const generation = Number(fleet?.generation ?? -1);
     const workers = options.workerId
-      ? this.db.prepare("SELECT * FROM workers WHERE canonical_root=? AND worker_id=? AND generation=?").all(canonicalRoot, options.workerId, generation)
-      : this.db.prepare("SELECT * FROM workers WHERE canonical_root=? AND generation=? ORDER BY worker_id").all(canonicalRoot, generation);
-    const reservations = options.workerId
-      ? this.db.prepare("SELECT * FROM evidence_reservations WHERE canonical_root=? AND worker_id=? AND status='active' ORDER BY id").all(canonicalRoot, options.workerId)
-      : this.db.prepare("SELECT * FROM evidence_reservations WHERE canonical_root=? AND status='active' ORDER BY id").all(canonicalRoot);
-    const admissions = options.workerId
-      ? this.db.prepare("SELECT * FROM admissions WHERE canonical_root=? AND worker_id=? AND generation=?").all(canonicalRoot, options.workerId, generation)
-      : this.db.prepare("SELECT * FROM admissions WHERE canonical_root=? AND generation=? ORDER BY worker_id").all(canonicalRoot, generation);
+      ? this.db.prepare("SELECT * FROM workers_v3 WHERE canonical_root=? AND worker_id=? AND generation=?").all(canonicalRoot, options.workerId, generation)
+      : this.db.prepare("SELECT * FROM workers_v3 WHERE canonical_root=? AND generation=? ORDER BY worker_id").all(canonicalRoot, generation);
+    const intents = options.workerId
+      ? this.db.prepare("SELECT * FROM intents_v3 WHERE canonical_root=? AND worker_id=? ORDER BY status='active' DESC,id DESC LIMIT ?").all(canonicalRoot, options.workerId, recent)
+      : this.db.prepare("SELECT * FROM intents_v3 WHERE canonical_root=? ORDER BY status='active' DESC,id DESC LIMIT ?").all(canonicalRoot, recent);
     const checkpoints = options.workerId
-      ? this.db.prepare("SELECT * FROM checkpoints WHERE canonical_root=? AND worker_id=? AND generation=? ORDER BY id DESC LIMIT ?").all(canonicalRoot, options.workerId, generation, recent)
-      : this.db.prepare("SELECT * FROM checkpoints WHERE canonical_root=? AND generation=? ORDER BY id DESC LIMIT ?").all(canonicalRoot, generation, recent);
+      ? this.db.prepare("SELECT * FROM checkpoints_v3 WHERE canonical_root=? AND worker_id=? ORDER BY id DESC LIMIT ?").all(canonicalRoot, options.workerId, recent)
+      : this.db.prepare("SELECT * FROM checkpoints_v3 WHERE canonical_root=? ORDER BY id DESC LIMIT ?").all(canonicalRoot, recent);
     const events = options.workerId
-      ? this.db.prepare("SELECT * FROM events WHERE canonical_root=? AND worker_id=? AND generation=? ORDER BY id DESC LIMIT ?").all(canonicalRoot, options.workerId, generation, recent)
-      : this.db.prepare("SELECT * FROM events WHERE canonical_root=? AND generation=? ORDER BY id DESC LIMIT ?").all(canonicalRoot, generation, recent);
+      ? this.db.prepare("SELECT * FROM events_v3 WHERE canonical_root=? AND worker_id=? ORDER BY id DESC LIMIT ?").all(canonicalRoot, options.workerId, recent)
+      : this.db.prepare("SELECT * FROM events_v3 WHERE canonical_root=? ORDER BY id DESC LIMIT ?").all(canonicalRoot, recent);
     return {
-      fleet: fleet ? { ...fleet } : null,
+      fleet: fleet ? { ...fleet, completed_campaigns: Number(completedCampaigns.count) } : null,
       workers: rowsToObjects(workers),
-      reservations: rowsToObjects(reservations),
-      admissions: rowsToObjects(admissions),
+      intents: rowsToObjects(intents),
       checkpoints: rowsToObjects(checkpoints),
       events: rowsToObjects(events),
-      evidence: { active: reservations.length, max: Number(fleet?.max_evidence_stages ?? DEFAULT_MAX_EVIDENCE_STAGES) },
     };
   }
 }

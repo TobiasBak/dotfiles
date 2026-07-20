@@ -2,8 +2,6 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } fro
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 
-import { DEFAULT_MAX_EVIDENCE_STAGES } from "./state.ts";
-
 export interface CommandRunner {
   (command: string, args: string[], options?: { cwd?: string }): string;
 }
@@ -14,9 +12,9 @@ const defaultRun: CommandRunner = (command, args, options) =>
 export interface RepositoryInfo {
   canonicalRoot: string;
   commonDir: string;
+  branch: string;
   head: string;
   dirty: boolean;
-  maxEvidenceStages: number;
 }
 
 export interface WorkerLane {
@@ -24,17 +22,6 @@ export interface WorkerLane {
   index: number;
   path: string;
   branch: string;
-}
-
-export function readMaxEvidenceStages(canonicalRoot: string): number {
-  const configPath = join(canonicalRoot, ".autoresearch", "config.json");
-  if (!existsSync(configPath)) return DEFAULT_MAX_EVIDENCE_STAGES;
-  const parsed = JSON.parse(readFileSync(configPath, "utf8")) as { maxEvidenceStages?: unknown };
-  if (parsed.maxEvidenceStages === undefined) return DEFAULT_MAX_EVIDENCE_STAGES;
-  if (!Number.isInteger(parsed.maxEvidenceStages) || Number(parsed.maxEvidenceStages) < 1) {
-    throw new Error(".autoresearch/config.json maxEvidenceStages must be a positive integer");
-  }
-  return Number(parsed.maxEvidenceStages);
 }
 
 export function inspectRepository(cwd: string, run: CommandRunner = defaultRun): RepositoryInfo {
@@ -45,9 +32,11 @@ export function inspectRepository(cwd: string, run: CommandRunner = defaultRun):
   if (topLevel !== realpathSync(canonicalRoot)) {
     throw new Error(`Cannot identify canonical checkout from Git common dir: ${commonDir}`);
   }
+  const branch = run("git", ["-C", canonicalRoot, "symbolic-ref", "--quiet", "--short", "HEAD"]);
+  if (!branch) throw new Error("Canonical checkout must be on a named branch");
   const head = run("git", ["-C", canonicalRoot, "rev-parse", "HEAD"]);
   const dirty = run("git", ["-C", canonicalRoot, "status", "--porcelain"]).length > 0;
-  return { canonicalRoot, commonDir, head, dirty, maxEvidenceStages: readMaxEvidenceStages(canonicalRoot) };
+  return { canonicalRoot, commonDir, branch, head, dirty };
 }
 
 export function workerLanes(canonicalRoot: string, count: number): WorkerLane[] {
@@ -134,6 +123,161 @@ export function syncLaneToCanonical(input: {
   run("git", ["-C", input.lane.path, "update-ref", candidateRef, state.head]);
   run("git", ["-C", input.lane.path, "reset", "--hard", canonicalHead]);
   return { candidateRef, canonicalHead };
+}
+
+function isAncestor(canonicalRoot: string, ancestor: string, descendant: string, run: CommandRunner): boolean {
+  try {
+    run("git", ["-C", canonicalRoot, "merge-base", "--is-ancestor", ancestor, descendant]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function canonicalOperationState(canonicalRoot: string, run: CommandRunner): string | undefined {
+  for (const name of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"]) {
+    const path = run("git", ["-C", canonicalRoot, "rev-parse", "--git-path", name]);
+    if (existsSync(resolve(canonicalRoot, path))) return name.toLowerCase();
+  }
+  for (const name of ["rebase-merge", "rebase-apply"]) {
+    const path = run("git", ["-C", canonicalRoot, "rev-parse", "--git-path", name]);
+    if (existsSync(resolve(canonicalRoot, path))) return name;
+  }
+  return undefined;
+}
+
+export class TerminalIntegrationCleanupError extends Error {}
+
+export function preserveTerminalRef(input: {
+  canonicalRoot: string;
+  lane: WorkerLane;
+  generation: number;
+  intentId: number;
+  baselineHead: string;
+  terminalHead: string;
+  integratedHead?: string;
+  run?: CommandRunner;
+}): string {
+  const run = input.run ?? defaultRun;
+  const lane = laneGitState(input.lane.path, run);
+  const allowedHeads = [input.terminalHead, input.integratedHead].filter((head): head is string => Boolean(head));
+  if (lane.dirty || !allowedHeads.includes(lane.head)) {
+    throw new Error(`${input.lane.workerId} lane must be clean at its exact terminal or integrated head`);
+  }
+  const branch = run("git", ["-C", input.lane.path, "symbolic-ref", "--quiet", "--short", "HEAD"]);
+  if (branch !== input.lane.branch) throw new Error(`${input.lane.workerId} lane is not on ${input.lane.branch}`);
+  if (!isAncestor(input.canonicalRoot, input.baselineHead, input.terminalHead, run)) {
+    throw new Error(`Campaign baseline ${input.baselineHead} is not an ancestor of terminal ${input.terminalHead}`);
+  }
+
+  const ref = `refs/autoresearch/terminals/g${input.generation}/i${input.intentId}`;
+  try {
+    run("git", ["-C", input.canonicalRoot, "update-ref", ref, input.terminalHead, ""]);
+  } catch {
+    let existing: string;
+    try {
+      existing = run("git", ["-C", input.canonicalRoot, "rev-parse", "--verify", ref]);
+    } catch {
+      throw new Error(`Could not create terminal ref ${ref}`);
+    }
+    if (existing !== input.terminalHead) throw new Error(`Terminal ref ${ref} was modified to ${existing}`);
+  }
+  return ref;
+}
+
+export function integrateTerminalRef(input: {
+  canonicalRoot: string;
+  canonicalBranch: string;
+  expectedHead: string;
+  terminalRef: string;
+  recoverMerged?: boolean;
+  run?: CommandRunner;
+}): { resultHead: string; alreadyIntegrated: boolean } {
+  const run = input.run ?? defaultRun;
+  const branch = run("git", ["-C", input.canonicalRoot, "symbolic-ref", "--quiet", "--short", "HEAD"]);
+  if (branch !== input.canonicalBranch) throw new Error(`Canonical checkout is on ${branch || "detached HEAD"}, expected ${input.canonicalBranch}`);
+  const state = canonicalOperationState(input.canonicalRoot, run);
+  if (state) throw new Error(`Canonical checkout has active ${state} state`);
+  if (run("git", ["-C", input.canonicalRoot, "status", "--porcelain"])) throw new Error("Canonical checkout is dirty");
+  const head = run("git", ["-C", input.canonicalRoot, "rev-parse", "HEAD"]);
+  if (head !== input.expectedHead) {
+    if (input.recoverMerged && isAncestor(input.canonicalRoot, input.terminalRef, head, run)) {
+      const firstParent = run("git", ["-C", input.canonicalRoot, "rev-parse", `${head}^1`]);
+      if (firstParent === input.expectedHead) return { resultHead: head, alreadyIntegrated: true };
+    }
+    throw new Error(`Canonical HEAD changed from expected ${input.expectedHead} to ${head}`);
+  }
+  if (isAncestor(input.canonicalRoot, input.terminalRef, head, run)) {
+    return { resultHead: head, alreadyIntegrated: true };
+  }
+
+  try {
+    run("git", [
+      "-C", input.canonicalRoot,
+      "-c", "core.hooksPath=/dev/null",
+      "-c", "commit.gpgSign=false",
+      "-c", "merge.gpgSign=false",
+      "merge", "--no-ff", "--no-edit", input.terminalRef,
+    ]);
+  } catch (mergeError) {
+    let cleanupError: unknown;
+    try {
+      if (canonicalOperationState(input.canonicalRoot, run)) {
+        run("git", ["-C", input.canonicalRoot, "-c", "core.hooksPath=/dev/null", "merge", "--abort"]);
+      }
+      const restoredBranch = run("git", ["-C", input.canonicalRoot, "symbolic-ref", "--quiet", "--short", "HEAD"]);
+      const restoredHead = run("git", ["-C", input.canonicalRoot, "rev-parse", "HEAD"]);
+      const dirty = run("git", ["-C", input.canonicalRoot, "status", "--porcelain"]);
+      const operation = canonicalOperationState(input.canonicalRoot, run);
+      if (restoredBranch !== input.canonicalBranch || restoredHead !== input.expectedHead || dirty || operation) {
+        cleanupError = new Error(`canonical cleanup verification failed: branch=${restoredBranch}, head=${restoredHead}, dirty=${Boolean(dirty)}, operation=${operation ?? "none"}`);
+      }
+    } catch (error) {
+      cleanupError = error;
+    }
+    if (cleanupError) {
+      throw new TerminalIntegrationCleanupError(`Merge failed and canonical checkout could not be restored: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+    }
+    throw new Error(`Terminal integration merge failed: ${mergeError instanceof Error ? mergeError.message : String(mergeError)}`);
+  }
+
+  const resultHead = run("git", ["-C", input.canonicalRoot, "rev-parse", "HEAD"]);
+  const postconditionError = run("git", ["-C", input.canonicalRoot, "status", "--porcelain"]) || canonicalOperationState(input.canonicalRoot, run)
+    ? "Canonical checkout was not clean after terminal integration"
+    : !isAncestor(input.canonicalRoot, input.terminalRef, resultHead, run)
+      ? "Terminal ref is not reachable from canonical integration result"
+      : undefined;
+  if (postconditionError) {
+    try {
+      run("git", ["-C", input.canonicalRoot, "-c", "core.hooksPath=/dev/null", "reset", "--hard", input.expectedHead]);
+      const restoredHead = run("git", ["-C", input.canonicalRoot, "rev-parse", "HEAD"]);
+      const dirty = run("git", ["-C", input.canonicalRoot, "status", "--porcelain"]);
+      if (restoredHead !== input.expectedHead || dirty || canonicalOperationState(input.canonicalRoot, run)) {
+        throw new Error("canonical checkout did not return to its expected clean HEAD");
+      }
+    } catch (error) {
+      throw new TerminalIntegrationCleanupError(`${postconditionError}; cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    throw new Error(postconditionError);
+  }
+  return { resultHead, alreadyIntegrated: false };
+}
+
+export function resetIntegratedLane(input: {
+  lane: WorkerLane;
+  terminalHead: string;
+  resultHead: string;
+  run?: CommandRunner;
+}): void {
+  const run = input.run ?? defaultRun;
+  const branch = run("git", ["-C", input.lane.path, "symbolic-ref", "--quiet", "--short", "HEAD"]);
+  if (branch !== input.lane.branch) throw new Error(`${input.lane.workerId} lane is not on ${input.lane.branch}`);
+  const state = laneGitState(input.lane.path, run);
+  if (state.dirty) throw new Error(`${input.lane.workerId} lane is dirty after integration`);
+  if (state.head !== input.terminalHead && state.head !== input.resultHead) {
+    throw new Error(`${input.lane.workerId} lane changed from terminal head before reset`);
+  }
+  if (state.head !== input.resultHead) run("git", ["-C", input.lane.path, "reset", "--hard", input.resultHead]);
 }
 
 export { defaultRun as runGitCommand };
