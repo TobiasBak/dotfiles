@@ -17,15 +17,6 @@ resources:
     source: winget
     useLatest: true
 
-# WinGet has regular Hack, but not Hack Nerd Font in the public package index.
-# HackNerdFont below installs the Nerd-patched font that WezTerm uses.
-- type: Microsoft.WinGet/Package
-  name: HackFont
-  properties:
-    id: SourceFoundry.HackFonts
-    source: winget
-    useLatest: true
-
 - type: Microsoft.WinGet/Package
   name: Git
   properties:
@@ -40,35 +31,49 @@ resources:
     source: winget
     useLatest: true
 
+# Install the Nerd-patched Hack faces used by WezTerm.
 - name: HackNerdFont
   type: Microsoft.DSC.Transitional/PowerShellScript
-  dependsOn:
-    - HackFont
   properties:
     getScript: |
-      $fontName = 'Hack Nerd Font'
+      $requiredFonts = @(
+        'Hack Nerd Font Regular (TrueType)',
+        'Hack Nerd Font Bold (TrueType)',
+        'Hack Nerd Font Italic (TrueType)',
+        'Hack Nerd Font Bold Italic (TrueType)'
+      )
       $registryPaths = @(
         'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts',
         'HKCU:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts'
       )
       $installed = @($registryPaths | Where-Object { Test-Path $_ } | ForEach-Object {
-        $key = Get-Item $_
-        $key.GetValueNames() | Where-Object { $_ -like "$fontName*" }
-      })
-      return @{ installed = [bool]$installed; fonts = $installed }
+        (Get-Item $_).GetValueNames()
+      } | Select-Object -Unique)
+      $missing = @($requiredFonts | Where-Object { $_ -notin $installed })
+      return @{ installed = ($missing.Count -eq 0); fonts = $installed; missing = $missing }
     testScript: |
-      $fontName = 'Hack Nerd Font'
+      $requiredFonts = @(
+        'Hack Nerd Font Regular (TrueType)',
+        'Hack Nerd Font Bold (TrueType)',
+        'Hack Nerd Font Italic (TrueType)',
+        'Hack Nerd Font Bold Italic (TrueType)'
+      )
       $registryPaths = @(
         'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts',
         'HKCU:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts'
       )
       $installed = @($registryPaths | Where-Object { Test-Path $_ } | ForEach-Object {
-        $key = Get-Item $_
-        $key.GetValueNames() | Where-Object { $_ -like "$fontName*" }
-      })
-      return [bool]$installed
+        (Get-Item $_).GetValueNames()
+      } | Select-Object -Unique)
+      return (@($requiredFonts | Where-Object { $_ -notin $installed }).Count -eq 0)
     setScript: |
       $fontName = 'Hack Nerd Font'
+      $requiredBaseNames = @(
+        'HackNerdFont-Regular',
+        'HackNerdFont-Bold',
+        'HackNerdFont-Italic',
+        'HackNerdFont-BoldItalic'
+      )
       $downloadUrl = 'https://github.com/ryanoasis/nerd-fonts/releases/latest/download/Hack.zip'
       $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ('hack-nerd-font-' + [System.Guid]::NewGuid())
       $zipPath = Join-Path $tempDir 'Hack.zip'
@@ -80,9 +85,13 @@ resources:
       try {
         Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath
         Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
-        $fontFiles = Get-ChildItem -Path $extractDir -Recurse -File -Include '*.ttf' |
-          Where-Object { $_.Name -like 'HackNerdFont-*.ttf' -and $_.Name -notlike '*Mono*' -and $_.Name -notlike '*Propo*' }
-        if (-not $fontFiles) { throw "No $fontName TTF files found in the downloaded archive." }
+        $fontFiles = @(Get-ChildItem -Path $extractDir -Recurse -File -Include '*.ttf' |
+          Where-Object { $_.BaseName -in $requiredBaseNames })
+        $foundBaseNames = @($fontFiles.BaseName | Select-Object -Unique)
+        $missingBaseNames = @($requiredBaseNames | Where-Object { $_ -notin $foundBaseNames })
+        if ($missingBaseNames.Count -gt 0) {
+          throw "Missing required $fontName faces in the downloaded archive: $($missingBaseNames -join ', ')"
+        }
 
         New-Item -Path $registryPath -Force | Out-Null
         foreach ($fontFile in $fontFiles) {
@@ -140,9 +149,9 @@ resources:
           [Parameter(Mandatory=$true)][string]$Path,
           [Parameter(Mandatory=$true)][string]$ExpectedTarget
         )
-        if (-not (Test-Path -LiteralPath $Path) -or -not (Test-Path -LiteralPath $ExpectedTarget)) { return $false }
-        $item = Get-Item -LiteralPath $Path -Force
-        if (-not $item.LinkType) { return $false }
+        if (-not (Test-Path -LiteralPath $ExpectedTarget)) { return $false }
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+        if ($null -eq $item -or -not $item.LinkType) { return $false }
         return ((Get-NormalizedPath ($item.Target -join ';')) -eq (Get-NormalizedPath $ExpectedTarget))
       }
 
@@ -167,16 +176,15 @@ resources:
         return [System.IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path))
       }
       function Ensure-DotfilesLink {
-        if (Test-Path -LiteralPath $stableRepoRoot) {
-          $item = Get-Item -LiteralPath $stableRepoRoot -Force
+        $item = Get-Item -LiteralPath $stableRepoRoot -Force -ErrorAction SilentlyContinue
+        if ($null -ne $item) {
           if ($item.LinkType) {
             if ((Get-NormalizedPath ($item.Target -join ';')) -eq (Get-NormalizedPath $repoRoot)) {
               return $stableRepoRoot
             }
             Remove-Item -LiteralPath $stableRepoRoot -Force
           } else {
-            Write-Warning "$stableRepoRoot exists and is not a link. Config links will use $repoRoot."
-            return $repoRoot
+            throw "$stableRepoRoot exists and is not a link. Move it aside before rebuilding."
           }
         }
         try {
@@ -195,19 +203,23 @@ resources:
         $sourcePath = Get-NormalizedPath $Source
         New-Item -ItemType Directory -Force -Path (Split-Path $Target -Parent) | Out-Null
 
-        if (Test-Path -LiteralPath $Target) {
-          $item = Get-Item -LiteralPath $Target -Force
-          if ($item.LinkType -and (Get-NormalizedPath ($item.Target -join ';')) -eq $sourcePath) { return }
-          New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
-          $backupName = (Get-NormalizedPath $Target) -replace '[:\\/]', '__'
-          $backupTarget = Join-Path $backupDir $backupName
-          $baseBackupTarget = $backupTarget
-          $counter = 1
-          while (Test-Path -LiteralPath $backupTarget) {
-            $backupTarget = "$baseBackupTarget.$counter"
-            $counter++
+        $item = Get-Item -LiteralPath $Target -Force -ErrorAction SilentlyContinue
+        if ($null -ne $item) {
+          if ($item.LinkType) {
+            if ((Get-NormalizedPath ($item.Target -join ';')) -eq $sourcePath) { return }
+            Remove-Item -LiteralPath $Target -Force
+          } else {
+            New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
+            $backupName = (Get-NormalizedPath $Target) -replace '[:\\/]', '__'
+            $backupTarget = Join-Path $backupDir $backupName
+            $baseBackupTarget = $backupTarget
+            $counter = 1
+            while (Test-Path -LiteralPath $backupTarget) {
+              $backupTarget = "$baseBackupTarget.$counter"
+              $counter++
+            }
+            Move-Item -LiteralPath $Target -Destination $backupTarget -Force
           }
-          Move-Item -LiteralPath $Target -Destination $backupTarget -Force
         }
 
         New-Item -ItemType SymbolicLink -Path $Target -Target $sourcePath | Out-Null
@@ -420,11 +432,14 @@ resources:
   type: Microsoft.DSC.Transitional/WindowsPowerShellScript
   properties:
     getScript: |
-      $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='vmcompute'"
-      return @{ vmcomputePresent = [bool]$svc }
+      $featureNames = @('Microsoft-Windows-Subsystem-Linux', 'VirtualMachinePlatform')
+      $features = @(Get-WindowsOptionalFeature -Online | Where-Object { $_.FeatureName -in $featureNames })
+      $configured = @($features | Where-Object { $_.State -in @('Enabled', 'EnablePending') } | Select-Object -ExpandProperty FeatureName)
+      return @{ configuredFeatures = $configured; configured = ($configured.Count -eq $featureNames.Count) }
     testScript: |
-      $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='vmcompute'"
-      return [bool]$svc
+      $featureNames = @('Microsoft-Windows-Subsystem-Linux', 'VirtualMachinePlatform')
+      $features = @(Get-WindowsOptionalFeature -Online | Where-Object { $_.FeatureName -in $featureNames })
+      return (@($features | Where-Object { $_.State -in @('Enabled', 'EnablePending') }).Count -eq $featureNames.Count)
     setScript: |
       Write-Host "InstallWslComponents: running wsl --install --no-distribution..."
       $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c wsl --install --no-distribution >nul 2>&1" -Wait -PassThru
@@ -443,15 +458,22 @@ resources:
     - InstallWslComponents
   properties:
     getScript: |
-      $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='vmcompute'"
-      return @{ vmcomputePresent = [bool]$svc }
+      $featureNames = @('Microsoft-Windows-Subsystem-Linux', 'VirtualMachinePlatform')
+      $features = @(Get-WindowsOptionalFeature -Online | Where-Object { $_.FeatureName -in $featureNames })
+      $featuresReady = (@($features | Where-Object { $_.State -eq 'Enabled' }).Count -eq $featureNames.Count)
+      & wsl --list --quiet *> $null
+      return @{ featuresReady = $featuresReady; wslReady = ($featuresReady -and ($LASTEXITCODE -eq 0)) }
     testScript: |
-      $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='vmcompute'"
-      return [bool]$svc
+      $featureNames = @('Microsoft-Windows-Subsystem-Linux', 'VirtualMachinePlatform')
+      $features = @(Get-WindowsOptionalFeature -Online | Where-Object { $_.FeatureName -in $featureNames })
+      if (@($features | Where-Object { $_.State -eq 'Enabled' }).Count -ne $featureNames.Count) { return $false }
+      & wsl --list --quiet *> $null
+      return ($LASTEXITCODE -eq 0)
     setScript: |
       $configFile = "${WinGetConfigRoot}\configuration.winget"
       $resumeCmd  = "winget configure --file `"$configFile`" --accept-configuration-agreements --disable-interactivity"
       $runOncePath = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
+      New-Item -Path $runOncePath -Force | Out-Null
       Set-ItemProperty -Path $runOncePath -Name 'DotfilesWingetConfigureResume' -Value $resumeCmd -Force
       Write-Host "RebootForVmp: registered RunOnce resume key."
       Restart-Computer -Force

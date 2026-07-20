@@ -57,8 +57,14 @@
   };
 
   systemd.services.samba-smbd = {
-    requires = [ "srv-nas.mount" "nas-directory-permissions.service" ];
-    after = [ "srv-nas.mount" "nas-directory-permissions.service" ];
+    requires = [
+      "srv-nas.mount"
+      "nas-directory-permissions.service"
+    ];
+    after = [
+      "srv-nas.mount"
+      "nas-directory-permissions.service"
+    ];
     unitConfig = {
       AssertPathIsMountPoint = "/srv/nas";
       AssertPathIsDirectory = "/srv/nas/files";
@@ -84,8 +90,6 @@
     '';
   };
 
-  networking.firewall.interfaces.tailscale0.allowedTCPPorts = [ 445 ];
-
   systemd.tmpfiles.rules = [
     "d /srv/nas 0755 tobias users -"
   ];
@@ -95,7 +99,11 @@
   users.users.tobias = {
     isNormalUser = true;
     description = "tobias";
-    extraGroups = [ "wheel" "networkmanager" "docker" ];
+    extraGroups = [
+      "wheel"
+      "networkmanager"
+      "docker"
+    ];
     openssh.authorizedKeys.keys = [
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFEvr2qCdxh7peyDqmauJKmLiql3e77uo8+IrkmSwRDe tobias@windows"
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPwf+bDRHxfll2vHjpPt33kQyFacdcr/wuXqJvUVKNx+ tobias@DESKTOP-LOEC6VP"
@@ -107,7 +115,7 @@
       users = [ "tobias" ];
       commands = [
         {
-          command = "/run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/code/dotfiles/nixos";
+          command = "/run/current-system/sw/bin/systemd-run --unit=nixos-switch-tobias-serv01 --collect --service-type=exec /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/code/dotfiles/nixos#tobias-serv01";
           options = [ "NOPASSWD" ];
         }
       ];

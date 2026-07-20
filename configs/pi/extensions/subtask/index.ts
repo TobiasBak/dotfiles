@@ -7,9 +7,8 @@ import {
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 
-import { beginActivityDock, endActivityDock } from "../activity-dock.ts";
 import {
   FORK_CONTEXT_BLOCK_PERCENT,
   SUBTASK_CHILD_ENV,
@@ -58,7 +57,7 @@ interface SubtaskRequest {
   task: string;
   model: SubtaskModel;
   thinking: SubtaskThinkingLevel;
-  fork?: boolean;
+  fork?: boolean | undefined;
 }
 
 interface SubtaskDetails {
@@ -74,10 +73,10 @@ interface SubtaskDetails {
   contextWindow: number;
   cost: number;
   toolCalls: number;
-  progress?: string;
-  exitCode?: number;
-  stopReason?: string;
-  error?: string;
+  progress?: string | undefined;
+  exitCode?: number | undefined;
+  stopReason?: string | undefined;
+  error?: string | undefined;
   usage?: {
     input: number;
     output: number;
@@ -86,15 +85,15 @@ interface SubtaskDetails {
     cost: number;
     contextTokens: number;
     turns: number;
-  };
-  outputTruncated?: boolean;
-  overflowPath?: string;
-  changeArtifactPath?: string;
-  observedChanges?: ObservedChanges;
+  } | undefined;
+  outputTruncated?: boolean | undefined;
+  overflowPath?: string | undefined;
+  changeArtifactPath?: string | undefined;
+  observedChanges?: ObservedChanges | undefined;
 }
 
 interface SubtaskState extends SubtaskDetails {
-  startedAt?: number;
+  startedAt?: number | undefined;
 }
 
 interface SubtaskBatchDetails {
@@ -211,77 +210,60 @@ function getSelectableToolNames(pi: ExtensionAPI): string[] {
 }
 
 function registerSubtaskWidget(
-  pi: ExtensionAPI,
+  _pi: ExtensionAPI,
   ctx: ExtensionContext,
   widgetId: string,
   tasks: SubtaskStatusItem[],
 ): { update(tasks: SubtaskStatusItem[]): void; clear(): void } {
   if (ctx.mode !== "tui") return { update() {}, clear() {} };
 
-  beginActivityDock(pi, ctx, widgetId);
-  try {
-    const widget = registerMutableWidget({
-      setWidget: (key, content, options) => ctx.ui.setWidget(key, content, options),
-      key: widgetId,
-      initialValue: tasks,
-      placement: "aboveEditor",
-      createComponent: (getTasks, theme) => ({
-        render(width: number): string[] {
-          return formatSubtaskWidgetLines(getTasks(), width).map((widgetLine) => {
-            const statusColor =
-              widgetLine.status === "completed"
-                ? "success"
-                : widgetLine.status === "failed" || widgetLine.status === "cancelled"
-                  ? "error"
-                  : widgetLine.status === "running"
-                    ? "accent"
-                    : "muted";
-            const line = widgetLine.segments
-              .map((segment) => {
-                switch (segment.role) {
-                  case "frame":
-                    return theme.fg("borderMuted", segment.text);
-                  case "group":
-                    return theme.fg("accent", theme.bold(segment.text));
-                  case "status":
-                    return theme.fg(statusColor, theme.bold(segment.text));
-                  case "model":
-                  case "metadata":
-                    return theme.fg("dim", segment.text);
-                  case "summary":
-                    return theme.fg("text", segment.text);
-                }
-              })
-              .join("");
-            return truncateToWidth(line, width);
-          });
-        },
-        invalidate() {},
-      }),
-    });
-    return {
-      update: widget.update,
-      clear() {
-        try {
-          widget.clear();
-        } finally {
-          endActivityDock(pi, ctx, widgetId);
-        }
+  const widget = registerMutableWidget<
+    SubtaskStatusItem[],
+    ExtensionContext["ui"]["theme"]
+  >({
+    setWidget: (key, content, options) => ctx.ui.setWidget(key, content, options),
+    key: widgetId,
+    initialValue: tasks,
+    placement: "aboveEditor",
+    createComponent: (getTasks, theme) => ({
+      render(width: number): string[] {
+        return formatSubtaskWidgetLines(getTasks(), width).map((widgetLine) => {
+          const statusColor =
+            widgetLine.status === "completed"
+              ? "success"
+              : widgetLine.status === "failed" || widgetLine.status === "cancelled"
+                ? "error"
+                : widgetLine.status === "running"
+                  ? "accent"
+                  : "muted";
+          const line = widgetLine.segments
+            .map((segment) => {
+              switch (segment.role) {
+                case "frame":
+                  return theme.fg("borderMuted", segment.text);
+                case "group":
+                  return theme.fg("accent", theme.bold(segment.text));
+                case "status":
+                  return theme.fg(statusColor, theme.bold(segment.text));
+                case "model":
+                case "metadata":
+                  return theme.fg("dim", segment.text);
+                case "summary":
+                  return theme.fg("text", segment.text);
+              }
+            })
+            .join("");
+          return truncateToWidth(line, width);
+        });
       },
-    };
-  } catch (error) {
-    endActivityDock(pi, ctx, widgetId);
-    throw error;
-  }
+      invalidate() {},
+    }),
+  });
+  return { update: widget.update, clear: widget.clear };
 }
 
-function clearSubtaskWidget(pi: ExtensionAPI, ctx: ExtensionContext, widgetId: string): void {
-  if (ctx.mode !== "tui") return;
-  try {
-    ctx.ui.setWidget(widgetId, undefined);
-  } finally {
-    endActivityDock(pi, ctx, widgetId);
-  }
+function clearSubtaskWidget(_pi: ExtensionAPI, ctx: ExtensionContext, widgetId: string): void {
+  if (ctx.mode === "tui") ctx.ui.setWidget(widgetId, undefined);
 }
 
 function validateSubtask(
@@ -566,7 +548,8 @@ export function createSubtasksExtension(
         promptGuidelines: SUBTASKS_TOOL_PROMPT_GUIDELINES,
         executionMode: "parallel",
         parameters: SubtaskParams,
-        prepareArguments: prepareSubtasksArguments,
+        prepareArguments: (args): Static<typeof SubtaskParams> =>
+          prepareSubtasksArguments(args) as Static<typeof SubtaskParams>,
 
         async execute(toolCallId, params, signal, onUpdate, executionCtx) {
           const requests = params.tasks as SubtaskRequest[];

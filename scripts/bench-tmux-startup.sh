@@ -4,6 +4,7 @@ set -euo pipefail
 iterations="${1:-25}"
 tmux_conf="${TMUX_CONF:-$HOME/.config/tmux/tmux.conf}"
 session_prefix="dotfiles-bench-$$"
+socket_name="$session_prefix"
 
 if ! command -v tmux >/dev/null 2>&1; then
   echo "tmux not found on PATH" >&2
@@ -24,9 +25,7 @@ time_ms() {
 }
 
 cleanup() {
-  tmux list-sessions -F '#S' 2>/dev/null \
-    | awk -v prefix="$session_prefix" 'index($0, prefix) == 1 { print }' \
-    | xargs -r -n1 tmux kill-session -t 2>/dev/null || true
+  tmux -L "$socket_name" kill-server >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -69,56 +68,46 @@ bench_new_session() {
   local session="$session_prefix-new-$RANDOM-$RANDOM"
   local ready="$session-ready"
   time_ms bash -c '
-    tmux -f "$1" new-session -d -s "$2" zsh -i -c "tmux wait-for -S $3"
-    tmux wait-for "$3"
-  ' bash "$tmux_conf" "$session" "$ready"
-  tmux kill-session -t "$session" >/dev/null 2>&1 || true
+    tmux -L "$1" -f "$2" new-session -d -s "$3" zsh -i -c "tmux -L $1 wait-for -S $4"
+    tmux -L "$1" wait-for "$4"
+  ' bash "$socket_name" "$tmux_conf" "$session" "$ready"
+  tmux -L "$socket_name" kill-session -t "$session" >/dev/null 2>&1 || true
 }
 
 bench_new_window() {
   local session="$session_prefix-window"
-  tmux has-session -t "$session" 2>/dev/null \
-    || tmux -f "$tmux_conf" new-session -d -s "$session" zsh -i -c 'sleep 3600'
+  tmux -L "$socket_name" has-session -t "$session" 2>/dev/null \
+    || tmux -L "$socket_name" -f "$tmux_conf" new-session -d -s "$session" zsh -i -c 'sleep 3600'
 
   local window="$session_prefix-$RANDOM-$RANDOM"
   local ready="$window-ready"
   time_ms bash -c '
-    tmux new-window -d -t "$1" -n "$2" zsh -i -c "tmux wait-for -S $3"
-    tmux wait-for "$3"
-  ' bash "$session" "$window" "$ready"
-  tmux kill-window -t "$session:$window" >/dev/null 2>&1 || true
+    tmux -L "$1" new-window -d -t "$2" -n "$3" zsh -i -c "tmux -L $1 wait-for -S $4"
+    tmux -L "$1" wait-for "$4"
+  ' bash "$socket_name" "$session" "$window" "$ready"
+  tmux -L "$socket_name" kill-window -t "$session:$window" >/dev/null 2>&1 || true
 }
 
 bench_new_window_prompt() {
   local session="$session_prefix-window-prompt"
-  tmux has-session -t "$session" 2>/dev/null \
-    || tmux -f "$tmux_conf" new-session -d -s "$session" zsh -i -c 'sleep 3600'
+  tmux -L "$socket_name" has-session -t "$session" 2>/dev/null \
+    || tmux -L "$socket_name" -f "$tmux_conf" new-session -d -s "$session" zsh -i -c 'sleep 3600'
 
   local window="$session_prefix-$RANDOM-$RANDOM"
   local ready="$window-ready"
   time_ms bash -c '
-    tmux new-window -d -t "$1" -n "$2" zsh -i -c "print -P \"\$PROMPT\" >/dev/null; tmux wait-for -S $3"
-    tmux wait-for "$3"
-  ' bash "$session" "$window" "$ready"
-  tmux kill-window -t "$session:$window" >/dev/null 2>&1 || true
-}
-
-bench_split_pane() {
-  local session="$session_prefix-pane"
-  tmux has-session -t "$session" 2>/dev/null \
-    || tmux -f "$tmux_conf" new-session -d -s "$session" zsh -i -c 'sleep 3600'
-
-  local pane_id
-  pane_id="$(tmux split-window -d -P -F '#{pane_id}' -t "$session" zsh -i -c exit)"
-  time_ms tmux wait-for -S "$pane_id"
+    tmux -L "$1" new-window -d -t "$2" -n "$3" zsh -i -c "print -P \"\$PROMPT\" >/dev/null; tmux -L $1 wait-for -S $4"
+    tmux -L "$1" wait-for "$4"
+  ' bash "$socket_name" "$session" "$window" "$ready"
+  tmux -L "$socket_name" kill-window -t "$session:$window" >/dev/null 2>&1 || true
 }
 
 bench_attach_existing() {
   local session="$session_prefix-attach"
-  tmux has-session -t "$session" 2>/dev/null \
-    || tmux -f "$tmux_conf" new-session -d -s "$session" zsh -i -c 'sleep 3600'
+  tmux -L "$socket_name" has-session -t "$session" 2>/dev/null \
+    || tmux -L "$socket_name" -f "$tmux_conf" new-session -d -s "$session" zsh -i -c 'sleep 3600'
 
-  time_ms tmux display-message -p -t "$session" '#S'
+  time_ms tmux -L "$socket_name" display-message -p -t "$session" '#S'
 }
 
 bench_zsh_interactive() {

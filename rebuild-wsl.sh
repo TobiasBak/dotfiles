@@ -8,8 +8,6 @@ BOOTSTRAP_SCRIPT="$REPO_DIR/scripts/bootstrap-developer-tools.sh"
 NIXOS_ONLY=false
 
 log() { printf '\033[0;36m[rebuild-wsl]\033[0m %s\n' "$*"; }
-warn() { printf '\033[0;33m[rebuild-wsl]\033[0m %s\n' "$*"; }
-
 usage() {
   cat <<'EOF'
 Usage: ./rebuild-wsl.sh [--nixos-only]
@@ -118,18 +116,20 @@ if [ -L "$STABLE_REPO_DIR" ]; then
     ln -s "$repo_resolved" "$STABLE_REPO_DIR"
     log "Linked $STABLE_REPO_DIR -> $repo_resolved"
   fi
-elif [ ! -e "$STABLE_REPO_DIR" ]; then
-  ln -s "$repo_resolved" "$STABLE_REPO_DIR"
-  log "Linked $STABLE_REPO_DIR -> $repo_resolved"
-elif [ "$stable_resolved" != "$repo_resolved" ]; then
-  echo "$STABLE_REPO_DIR exists and does not point at $REPO_DIR. Move it aside or fix the link before rebuilding." >&2
+elif [ -e "$STABLE_REPO_DIR" ]; then
+  echo "$STABLE_REPO_DIR exists and is not a symlink. Move it aside before rebuilding." >&2
   exit 1
 else
-  warn "$STABLE_REPO_DIR is not a symlink, but it resolves to this checkout."
+  ln -s "$repo_resolved" "$STABLE_REPO_DIR"
+  log "Linked $STABLE_REPO_DIR -> $repo_resolved"
 fi
 
-export NIX_CONFIG="${NIX_CONFIG:-}
-experimental-features = nix-command flakes"
+nix_config="${NIX_CONFIG:-}"
+if [ -n "$nix_config" ]; then
+  nix_config+=$'\n'
+fi
+nix_config+='experimental-features = nix-command flakes'
+export NIX_CONFIG="$nix_config"
 
 sudo_bin="/run/wrappers/bin/sudo"
 if [ ! -x "$sudo_bin" ]; then
@@ -141,8 +141,19 @@ if [ -z "$sudo_bin" ]; then
   exit 1
 fi
 
+log "Building the NixOS WSL system..."
+built_system="$(nix build --no-link --print-out-paths "$REPO_DIR/nixos#nixosConfigurations.wsl.config.system.build.toplevel")"
+
 log "Applying NixOS WSL flake..."
-"$sudo_bin" env "PATH=$PATH" nixos-rebuild switch --flake "$REPO_DIR/nixos#wsl"
+"$sudo_bin" env "PATH=$PATH" "NIX_CONFIG=$NIX_CONFIG" nixos-rebuild switch --flake "$REPO_DIR/nixos#wsl"
+
+current_system="$(readlink -f /run/current-system)"
+if [ "$current_system" != "$built_system" ]; then
+  echo "The active WSL system does not match the prebuilt toplevel." >&2
+  echo "Expected: $built_system" >&2
+  echo "Active:   $current_system" >&2
+  exit 1
+fi
 
 if [ "$NIXOS_ONLY" = true ]; then
   log "Skipping WSL user config links and agent tools (--nixos-only)."

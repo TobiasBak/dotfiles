@@ -8,8 +8,6 @@ Item {
     implicitWidth: timeLayout.implicitWidth
     implicitHeight: 24
 
-    property bool showCalendar: false
-
     RowLayout {
         id: timeLayout
         anchors.fill: parent
@@ -59,8 +57,8 @@ Item {
             right: 10
         }
         
-        width: 220
-        height: 260
+        implicitWidth: 220
+        implicitHeight: 260
         
         color: "transparent"
 

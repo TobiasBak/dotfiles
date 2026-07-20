@@ -91,37 +91,27 @@ if grep -q "Bootstrap placeholder" "$hardware_config"; then
   log "Copied generated hardware configuration for $host"
 fi
 
-normalize_efi_mount() {
-  local efi_device efi_fs_type
+check_efi_mount() {
+  local boot_fs_type
 
-  [ -n "$TARGET_HOST" ] || return
   if findmnt -n --mountpoint /boot/efi >/dev/null 2>&1; then
-    return
+    return 0
   fi
 
-  efi_fs_type="$(findmnt -n -o FSTYPE --mountpoint /boot 2>/dev/null || true)"
-  [ "$efi_fs_type" = "vfat" ] || return
-
-  if ! grep -q 'fileSystems\."/boot\(/efi\)\?"' "$hardware_config"; then
-    echo "The EFI partition is mounted at /boot, but $hardware_config has no matching filesystem entry." >&2
-    exit 1
+  boot_fs_type="$(findmnt -n -o FSTYPE --mountpoint /boot 2>/dev/null || true)"
+  if [ "$boot_fs_type" != "vfat" ]; then
+    return 0
   fi
 
-  efi_device="$(findmnt -n -o SOURCE --mountpoint /boot)"
-  log "Moving the EFI mount from /boot to /boot/efi for the native GRUB configuration..."
-  sudo umount /boot
-  sudo mkdir -p /boot/efi
-  if ! sudo mount "$efi_device" /boot/efi; then
-    sudo mount "$efi_device" /boot || true
-    echo "Could not mount $efi_device at /boot/efi; restored the /boot mount." >&2
-    exit 1
-  fi
-
-  sed -i 's|fileSystems\."/boot"|fileSystems."/boot/efi"|' "$hardware_config"
-  log "Mounted $efi_device at /boot/efi and updated the hardware configuration"
+  cat >&2 <<EOF
+The EFI partition is mounted at /boot, but the native GRUB configuration expects /boot/efi.
+Refusing to move a live EFI mount or edit hardware configuration automatically.
+Mount the EFI partition at /boot/efi, update $hardware_config to match, then rerun this script.
+EOF
+  exit 1
 }
 
-normalize_efi_mount
+check_efi_mount
 
 repo_resolved="$(readlink -f "$REPO_DIR")"
 stable_resolved="$(readlink -f "$STABLE_REPO_DIR" 2>/dev/null || true)"
@@ -131,12 +121,12 @@ if [ -L "$STABLE_REPO_DIR" ]; then
     ln -s "$repo_resolved" "$STABLE_REPO_DIR"
     log "Linked $STABLE_REPO_DIR -> $repo_resolved"
   fi
-elif [ ! -e "$STABLE_REPO_DIR" ]; then
+elif [ -e "$STABLE_REPO_DIR" ]; then
+  echo "$STABLE_REPO_DIR exists and is not a symlink. Move it aside before rebuilding." >&2
+  exit 1
+else
   ln -s "$repo_resolved" "$STABLE_REPO_DIR"
   log "Linked $STABLE_REPO_DIR -> $repo_resolved"
-elif [ "$stable_resolved" != "$repo_resolved" ]; then
-  echo "$STABLE_REPO_DIR exists and does not point at $REPO_DIR." >&2
-  exit 1
 fi
 
 nix_config="${NIX_CONFIG:-}"

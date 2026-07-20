@@ -6,6 +6,7 @@ import {
   registerAutoresearch,
   registerAutoresearchControl,
 } from "../configs/pi/extensions/autoresearch.ts";
+import { MAX_AUTORESEARCH_WORKERS } from "../configs/pi/extensions/autoresearch/supervisor.ts";
 
 function controlHarness(fleet) {
   const commands = new Map();
@@ -41,13 +42,20 @@ test("control command starts one disposable worker for on and has no compaction 
   assert.equal("compact" in harness.ctx, false);
 });
 
-test("control command accepts any positive safe worker count without a ceiling", async () => {
-  const fleet = fakeFleet();
-  const harness = controlHarness(fleet);
-  await harness.command.handler("20", harness.ctx);
-  assert.deepEqual(fleet.calls, [["start", 20]]);
-  await harness.command.handler(String(Number.MAX_SAFE_INTEGER), harness.ctx);
-  assert.deepEqual(fleet.calls.at(-1), ["start", Number.MAX_SAFE_INTEGER]);
+test("control command accepts the fleet maximum and rejects larger counts without side effects", async () => {
+  const validFleet = fakeFleet();
+  const valid = controlHarness(validFleet);
+  await valid.command.handler(String(MAX_AUTORESEARCH_WORKERS), valid.ctx);
+  assert.deepEqual(validFleet.calls, [["start", MAX_AUTORESEARCH_WORKERS]]);
+
+  const invalidFleet = fakeFleet();
+  const invalid = controlHarness(invalidFleet);
+  await invalid.command.handler(String(MAX_AUTORESEARCH_WORKERS + 1), invalid.ctx);
+  await invalid.command.handler(String(Number.MAX_SAFE_INTEGER), invalid.ctx);
+  assert.deepEqual(invalidFleet.calls, []);
+  assert.equal(invalidFleet.isActive(), false);
+  assert.equal(invalid.notifications.length, 2);
+  assert.match(invalid.notifications[0].message, new RegExp(`1-${MAX_AUTORESEARCH_WORKERS}`));
 });
 
 test("bare command is observational and never toggles a fleet", async () => {

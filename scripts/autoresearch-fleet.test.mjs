@@ -14,6 +14,7 @@ import {
   StaleWorkerError,
 } from "../configs/pi/extensions/autoresearch/state.ts";
 import {
+  MAX_AUTORESEARCH_WORKERS,
   parseAutoresearchFleetCount,
   resolvePiCliPath,
 } from "../configs/pi/extensions/autoresearch/supervisor.ts";
@@ -347,12 +348,23 @@ test("protocol v3 refuses to discard potentially live v2 process state", () => {
   }
 });
 
-test("worker count is the only load setting and has no arbitrary ceiling", () => {
-  for (const count of [1, 4, 20, 10_000]) assert.equal(parseAutoresearchFleetCount(` ${count} `), count);
-  for (const value of ["", "0", "-1", "1.5", "4x", "on", String(Number.MAX_SAFE_INTEGER + 1)]) {
+test("worker count parser enforces the documented fleet boundary", () => {
+  for (const count of [1, 4, MAX_AUTORESEARCH_WORKERS]) {
+    assert.equal(parseAutoresearchFleetCount(` ${count} `), count);
+  }
+  for (const value of [
+    "",
+    "0",
+    "-1",
+    "1.5",
+    "4x",
+    "on",
+    String(MAX_AUTORESEARCH_WORKERS + 1),
+    String(Number.MAX_SAFE_INTEGER + 1),
+  ]) {
     assert.equal(parseAutoresearchFleetCount(value), undefined, value);
   }
-  assert.equal(workerLanes("/repo", 20).length, 20);
+  assert.equal(workerLanes("/repo", MAX_AUTORESEARCH_WORKERS).length, MAX_AUTORESEARCH_WORKERS);
 });
 
 test("Pi CLI resolution requires an absolute installed path", () => {

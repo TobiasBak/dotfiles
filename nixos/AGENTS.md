@@ -4,9 +4,9 @@ Guidance for agents working under `nixos/`.
 
 ## Fast WSL rebuilds
 
-Use `../rebuild-wsl.sh --nixos-only` for WSL NixOS config/package changes when user config links, Codex/Pi agent npm installs, and skill links do not need refresh.
+Use `../rebuild-wsl.sh --nixos-only` when only the WSL NixOS configuration, including its embedded Home Manager configuration, needs to be applied. The flag skips only the mutable bootstrap work: user config link repair, Codex/Pi agent pnpm installs, and skill link refresh.
 
-Use full `../rebuild-wsl.sh` only when changing bootstrap/link behavior or when agent tools and skill links must be repaired.
+Use full `../rebuild-wsl.sh` when changing bootstrap/link behavior or when agent tools and skill links must be repaired.
 
 Before applying a WSL switch, build the exact toplevel:
 

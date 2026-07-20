@@ -101,7 +101,7 @@ class ActiveTaskRegistry {
 interface SubtaskGroupRecord {
   id: string;
   taskIds: string[];
-  controller?: AbortController;
+  controller?: AbortController | undefined;
   status: SubtaskGroupStatus;
   result?: BackgroundSubtaskDelivery;
   settled: Promise<void>;
@@ -228,7 +228,7 @@ export class SubtaskRuntimeState {
   private readonly activeTasks = new ActiveTaskRegistry();
   private readonly groups = new SubtaskGroupRegistry();
   private readonly temporaryPaths = new Set<string>();
-  private deliveryAdapter?: BackgroundSubtaskDeliveryAdapter;
+  private deliveryAdapter: BackgroundSubtaskDeliveryAdapter | undefined;
   private readonly pendingDeliveries: BackgroundSubtaskDelivery[] = [];
   private acceptingDeliveries = false;
 

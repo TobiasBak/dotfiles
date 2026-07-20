@@ -24,12 +24,12 @@ ensure_dotfiles_link() {
   stable_resolved="$(resolve_path "$STABLE_REPO_DIR")"
 
   if [ -L "$STABLE_REPO_DIR" ] && [ "$stable_resolved" = "$REAL_REPO_DIR" ]; then
-    return
+    return 0
   fi
 
   if [ -e "$STABLE_REPO_DIR" ] && [ ! -L "$STABLE_REPO_DIR" ]; then
-    warn "$STABLE_REPO_DIR exists and is not a symlink. Config links will use $REAL_REPO_DIR."
-    return
+    echo "$STABLE_REPO_DIR exists and is not a symlink. Move it aside before bootstrapping." >&2
+    return 1
   fi
 
   rm -f "$STABLE_REPO_DIR"
@@ -60,20 +60,6 @@ run_git_noninteractive() {
   fi
 }
 
-ensure_github_auth() {
-  require_command gh || return 1
-
-  if gh auth status --hostname github.com >/dev/null 2>&1; then
-    return 0
-  fi
-
-  log "GitHub auth is needed for private repos. Follow the GitHub CLI login prompts."
-  if ! gh auth login --hostname github.com --git-protocol https --web; then
-    warn "GitHub login did not complete."
-    return 1
-  fi
-}
-
 install_codex_cli() {
   local codex_path
   codex_path="$(command -v codex 2>/dev/null || true)"
@@ -86,24 +72,24 @@ install_codex_cli() {
     fi
   fi
 
-  require_command pnpm || return
+  require_command pnpm || return 0
   mkdir -p "$PNPM_BIN"
   log "Installing/updating Codex CLI..."
   if command pnpm add --global --ignore-scripts "@openai/codex@latest"; then
     log "Codex CLI ready: $(command -v codex 2>/dev/null || printf '%s' "$PNPM_BIN/codex")"
-    return
+    return 0
   fi
 
   if [ -n "$codex_path" ] && ! is_wsl_windows_path "$codex_path"; then
     warn "Codex update failed. Keeping existing native Codex: $codex_path"
-    return
+    return 0
   fi
 
   return 1
 }
 
 install_pi_cli() {
-  require_command pnpm || return
+  require_command pnpm || return 0
 
   mkdir -p "$PNPM_BIN"
   log "Installing/updating Pi coding agent..."
@@ -113,10 +99,10 @@ install_pi_cli() {
 install_pi_extension_dependencies() {
   local extension_dir="$REAL_REPO_DIR/configs/pi/extensions"
 
-  require_command pnpm || return
+  require_command pnpm || return 0
   if [ ! -f "$extension_dir/pnpm-lock.yaml" ]; then
     warn "Pi extension dependency lockfile not found: $extension_dir/pnpm-lock.yaml"
-    return 1
+    return 0
   fi
 
   log "Installing Pi extension runtime dependencies..."
@@ -145,7 +131,7 @@ remove_legacy_subagents() {
 }
 
 install_agent_skill_links() {
-  require_command git || return
+  require_command git || return 0
 
   local skills_repo="https://github.com/TobiasBak/skills.git"
   local skills_dir
@@ -155,26 +141,24 @@ install_agent_skill_links() {
   if [ -d "$skills_dir/.git" ]; then
     log "Updating skills repo at $skills_dir..."
     run_git_noninteractive -C "$skills_dir" pull --ff-only ||
-      { ensure_github_auth && git -C "$skills_dir" pull --ff-only; } ||
       warn "Could not update skills repo at $skills_dir. Continuing with the existing checkout."
   elif [ ! -e "$skills_dir" ]; then
     log "Cloning skills repo into $skills_dir..."
-    run_git_noninteractive clone "$skills_repo" "$skills_dir" ||
-      { ensure_github_auth && git clone "$skills_repo" "$skills_dir"; } || {
+    run_git_noninteractive clone "$skills_repo" "$skills_dir" || {
       warn "Could not clone skills repo into $skills_dir."
       if [ -d "$skills_dir" ] && [ ! -d "$skills_dir/.git" ]; then
         rm -rf "$skills_dir"
       fi
-      return
+      return 0
     }
   else
     warn "$skills_dir exists but is not a git repository. Skipping agent skill links."
-    return
+    return 0
   fi
 
   if [ ! -f "$skills_dir/scripts/install-links.sh" ]; then
     warn "Skills installer not found: $skills_dir/scripts/install-links.sh"
-    return
+    return 0
   fi
 
   log "Linking Pi skills..."
@@ -191,10 +175,10 @@ set_shell() {
 }
 
 if [ "$(id -u)" -eq 0 ]; then
-  warn "Run this as the user account, not root. Current HOME is $HOME."
+  echo "Run this as the user account, not root. Current HOME is $HOME." >&2
+  exit 1
 fi
 
-ensure_github_auth || warn "GitHub login did not complete. Continuing without authenticated Git access."
 ensure_dotfiles_link
 install_codex_cli
 install_pi_cli

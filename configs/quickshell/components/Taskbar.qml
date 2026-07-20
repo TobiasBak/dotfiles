@@ -1,169 +1,51 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls
-import Quickshell
 import Quickshell.Io
 
 RowLayout {
     id: root
     spacing: 8
 
+    required property var niriState
     property string outputName: ""
-    property var windows: []
-    property var displayItems: []
-    property var workspaceOutputMap: ({})
-
-    function updateWorkspaces(workspaces) {
-        if (!workspaces || !Array.isArray(workspaces)) return;
-        var map = {};
-        for (var i = 0; i < workspaces.length; i++) {
-            map[workspaces[i].id] = workspaces[i].output;
+    property var workspaceOutputMap: {
+        var map = {}
+        for (var i = 0; i < niriState.workspaces.length; i++) {
+            var workspace = niriState.workspaces[i]
+            map[workspace.id] = workspace.output
         }
-        root.workspaceOutputMap = map;
-        filterWindows();
+        return map
     }
+    property var displayItems: buildDisplayItems(niriState.windows, workspaceOutputMap, outputName)
 
-    property var allWindows: []
+    function buildDisplayItems(windows, outputMap, output) {
+        var filteredWindows = windows.filter(window => !output || outputMap[window.workspace_id] === output)
+        filteredWindows.sort((a, b) => {
+            var workspaceA = a.workspace_id || 0
+            var workspaceB = b.workspace_id || 0
+            if (workspaceA !== workspaceB) return workspaceA - workspaceB
+            if (a.is_focused !== b.is_focused) return a.is_focused ? -1 : 1
+            return a.id - b.id
+        })
 
-    function updateWindows(newWindows) {
-        if (!newWindows) return;
-        if (Array.isArray(newWindows)) {
-            root.allWindows = newWindows;
-        } else if (newWindows.windows) {
-            root.allWindows = newWindows.windows;
-        }
-        filterWindows();
-    }
-
-    function filterWindows() {
-        var filteredWindows;
-        if (!root.outputName) {
-            filteredWindows = root.allWindows.slice();
-        } else {
-            var map = root.workspaceOutputMap;
-            filteredWindows = root.allWindows.filter(function(w) {
-                return map[w.workspace_id] === root.outputName;
-            });
-        }
-
-        filteredWindows.sort(function(a, b) {
-            var workspaceA = a.workspace_id || 0;
-            var workspaceB = b.workspace_id || 0;
-
-            if (workspaceA !== workspaceB) {
-                return workspaceA - workspaceB;
-            }
-
-            if (a.is_focused !== b.is_focused) {
-                return a.is_focused ? -1 : 1;
-            }
-
-            return a.id - b.id;
-        });
-
-        root.windows = filteredWindows;
-
-        var items = [];
-        var lastWorkspaceId = null;
+        var items = []
+        var lastWorkspaceId = null
         for (var i = 0; i < filteredWindows.length; i++) {
-            var window = filteredWindows[i];
+            var window = filteredWindows[i]
             if (lastWorkspaceId !== null && window.workspace_id !== lastWorkspaceId) {
-                items.push({
-                    kind: "separator",
-                    workspace_id: window.workspace_id
-                });
+                items.push({ kind: "separator" })
             }
-
-            items.push({
-                kind: "window",
-                window: window
-            });
-
-            lastWorkspaceId = window.workspace_id;
+            items.push({ kind: "window", window: window })
+            lastWorkspaceId = window.workspace_id
         }
-
-        root.displayItems = items;
-    }
-
-    Timer {
-        id: retryTimer
-        interval: 2000
-        onTriggered: {
-            if (!initialFetch.running) initialFetch.running = true;
-            if (!niriEvents.running) niriEvents.running = true;
-        }
+        return items
     }
 
     Process {
-        id: workspaceFetch
-        command: ["niri", "msg", "--json", "workspaces"]
-        running: true
-        stdout: StdioCollector {
-            onStreamFinished: {
-                try {
-                    if (text.trim() !== "") {
-                        root.updateWorkspaces(JSON.parse(text));
-                    }
-                } catch (e) {
-                    console.log("Error parsing workspaces for taskbar: " + e);
-                }
-            }
-        }
-    }
-
-    Process {
-        id: initialFetch
-        command: ["niri", "msg", "--json", "windows"]
-        running: true
-        stdout: StdioCollector {
-            onStreamFinished: {
-                try {
-                    if (text.trim() !== "") {
-                        var parsed = JSON.parse(text);
-                        updateWindows(parsed);
-                    }
-                } catch (e) {
-                    console.log("Error parsing initial windows: " + e);
-                }
-            }
-        }
-        onExited: (exitCode) => {
-            if (exitCode !== 0) {
-                if (!retryTimer.running) retryTimer.start();
-            }
-        }
-    }
-
-    Process {
-        id: niriEvents
-        command: ["niri", "msg", "--json", "event-stream"]
-        running: true
-
-        stdout: SplitParser {
-            splitMarker: "\n"
-            onRead: (data) => {
-                if (!data || data.trim() === "") return;
-                try {
-                    var event = JSON.parse(data);
-                    if (event.WindowsChanged) {
-                        updateWindows(event.WindowsChanged.windows);
-                    } else if (event.WindowFocusChanged || event.WindowOpened || event.WindowClosed) {
-                        initialFetch.running = true;
-                    }
-                    if (event.WorkspacesChanged) {
-                        root.updateWorkspaces(event.WorkspacesChanged.workspaces);
-                    } else if (event.WorkspaceActivated) {
-                        workspaceFetch.running = true;
-                    }
-                } catch (e) {
-                    // Ignore partial/invalid JSON
-                }
-            }
-        }
-        onExited: (exitCode) => {
-            running = false;
-            if (!retryTimer.running) retryTimer.start();
-        }
+        id: focusProc
     }
 
     Repeater {
@@ -254,9 +136,8 @@ RowLayout {
                     hoverEnabled: true
                     cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                     onClicked: {
-                        var focusProc = Qt.createQmlObject('import Quickshell.Io; Process {}', root);
-                        focusProc.command = ["niri", "msg", "action", "focus-window", "--id", windowData.id.toString()];
-                        focusProc.running = true;
+                        focusProc.command = ["niri", "msg", "action", "focus-window", "--id", windowData.id.toString()]
+                        focusProc.running = true
                     }
                 }
 

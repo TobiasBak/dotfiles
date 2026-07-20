@@ -1,9 +1,15 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import "components"
 
 ShellRoot {
+    NiriState {
+        id: niriProvider
+    }
+
     // Clipboard copy indicator
     ClipboardPopup {}
 
@@ -49,6 +55,7 @@ ShellRoot {
                             spacing: 10
 
                             Taskbar {
+                                niriState: niriProvider
                                 outputName: mainBar.screen.name
                             }
                         }
@@ -56,6 +63,7 @@ ShellRoot {
                         // Absolute Center: Workspaces
                         Workspaces {
                             anchors.centerIn: parent
+                            niriState: niriProvider
                             outputName: mainBar.screen.name
                         }
 

@@ -104,7 +104,7 @@ Budget the campaign, not just one command:
 - maximum concurrent scarce scientific operations when the project itself enforces that limit
 - retry policy, backoff, cancellation, and cleanup
 
-`/autoresearch N` is the only extension operational load limit: `N` sets the number of simultaneously running researchers. Do not add an arbitrary worker cap to `program.md`, especially not a default cap of four. Project-level scientific budgets and validity rules remain legitimate, including limits on hypotheses, evidence attempts, external cost, devices, or concurrent measurements. Enforce those limits in project commands or infrastructure when correctness or safety depends on them. Account for correlated noise, shared caches, thermal effects, service quotas, database contention, and integration bandwidth. More workers do not create more independent evidence.
+`/autoresearch N` is the extension operational load limit: `N` sets the number of simultaneously running researchers and must be between 1 and 8. The extension cap bounds local worker processes; do not duplicate it in `program.md` or mistake it for a scientific concurrency budget. Project-level scientific budgets and validity rules remain legitimate, including smaller limits on hypotheses, evidence attempts, external cost, devices, or concurrent measurements. Enforce those limits in project commands or infrastructure when correctness or safety depends on them. Account for correlated noise, shared caches, thermal effects, service quotas, database contention, and integration bandwidth. More workers do not create more independent evidence.
 
 ### 6. Design shared and private memory
 
@@ -169,7 +169,7 @@ After drafting, review it against this checklist:
 - budgets, timeouts, crashes, invalid evidence, and stop conditions are explicit
 - evidence artifacts and plans are immutable and attributable
 - shared checkpoints are bounded, informational, and sufficient for observability and crash recovery
-- `/autoresearch N` is the only extension worker-load setting, while project commands enforce legitimate scientific and resource limits
+- `/autoresearch N` uses the extension's 1-8 worker bound, while project commands enforce legitimate scientific and resource limits
 - each worker completes one campaign, records a terminal outcome, and exits for replacement
 - Git/worktree synchronization cannot be mistaken for integration or evidence
 - knowledge promotion and terminal receipts have destinations

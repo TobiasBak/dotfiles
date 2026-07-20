@@ -1,7 +1,7 @@
 {
     // --- Theme & Appearance ---
-    "workbench.colorTheme": "One Dark Pro Darker",
-    "workbench.iconTheme": "material-icon-theme",
+    "workbench.colorTheme": "Dark Modern",
+    "workbench.iconTheme": "vs-seti",
     // --- Font Settings ---
     "editor.fontFamily": "'Hack Nerd Font', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
     "editor.fontSize": 14,
@@ -63,16 +63,11 @@
     "github.copilot.enable": {
         "*": true
     },
-    "github.copilot.editor.enableAutoCompletions": true,
-    "github.copilot.chat.enabled": false,
     "github.copilot.nextEditSuggestions.enabled": false,
     "github.copilot.chat.codeGeneration.useInstructionFiles": false,
     "chat.commandCenter.enabled": false,
     "github.copilot.editor.enableCodeActions": false,
     "workbench.statusBar.visible": true,
-    "github.copilot.advanced": {
-        "statusBarItem": false
-    },
     "chat.agent.enabled": false,
     "workbench.secondarySideBar.defaultVisibility": "hidden",
     "chat.viewSessions.enabled": false,

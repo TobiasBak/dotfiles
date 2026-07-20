@@ -13,14 +13,14 @@ import {
   shouldCompact,
 } from "../configs/pi/extensions/node_modules/@earendil-works/pi-coding-agent/dist/index.js";
 import {
-  Type,
   fauxAssistantMessage,
   fauxToolCall,
-} from "../configs/pi/extensions/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js";
+} from "../configs/pi/extensions/node_modules/@earendil-works/pi-ai/dist/index.js";
 import {
   registerFauxProvider,
   streamSimple,
-} from "../configs/pi/extensions/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/compat.js";
+} from "../configs/pi/extensions/node_modules/@earendil-works/pi-ai/dist/compat.js";
+import { Type } from "../configs/pi/extensions/node_modules/typebox/build/index.mjs";
 
 const settings = JSON.parse(
   readFileSync(new URL("../configs/pi/settings.json", import.meta.url), "utf8"),

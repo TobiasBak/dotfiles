@@ -92,7 +92,10 @@ in
 
   console.keyMap = "dk-latin1";
 
-  environment.sessionVariables.NIXOS_OZONE_WL = "1";
+  environment.sessionVariables = {
+    GTK_IM_MODULE = "simple";
+    NIXOS_OZONE_WL = "1";
+  };
 
   nixpkgs.config.allowUnfree = true;
 
@@ -137,7 +140,15 @@ in
     # Home Manager packages used by Niri key bindings.
     niri.enableDefaultPath = false;
 
-    quickshell = mkNiriService "Quickshell desktop shell" "${pkgs.quickshell}/bin/quickshell";
+    quickshell = (mkNiriService "Quickshell desktop shell" "${pkgs.quickshell}/bin/quickshell") // {
+      path = [
+        config.programs.niri.package
+        pkgs.bash
+        pkgs.python3
+        pkgs.wireplumber
+        pkgs.wl-clipboard
+      ];
+    };
     mako = mkNiriService "Mako notification daemon" "${pkgs.mako}/bin/mako";
     swaybg = mkNiriService "Desktop wallpaper" "${pkgs.swaybg}/bin/swaybg -i %h/Pictures/Wallpapers/wallpaper.jpg -m fill";
     polkit-gnome-authentication-agent = mkNiriService "Polkit authentication agent" "${pkgs.polkit_gnome}/libexec/polkit-gnome-authentication-agent-1";

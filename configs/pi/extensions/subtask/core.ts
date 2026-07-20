@@ -94,16 +94,16 @@ export interface ObservedChangeSnippet {
 
 export interface ObservedFileChange {
   path: string;
-  edit?: ObservedEditStats;
-  write?: ObservedWriteStats;
+  edit?: ObservedEditStats | undefined;
+  write?: ObservedWriteStats | undefined;
   snippets: ObservedChangeSnippet[];
 }
 
 export interface ObservedChanges {
   files: ObservedFileChange[];
   omittedOperations: number;
-  changedPaths?: string[];
-  capturedOperations?: number;
+  changedPaths?: string[] | undefined;
+  capturedOperations?: number | undefined;
 }
 
 export interface CapturedFileChange {
@@ -116,8 +116,8 @@ export interface ChildResult {
   output: string;
   stderr: string;
   exitCode: number;
-  stopReason?: string;
-  errorMessage?: string;
+  stopReason?: string | undefined;
+  errorMessage?: string | undefined;
   usage: SubtaskUsage;
   observedChanges: ObservedChanges;
   capturedChanges: CapturedFileChange[];
@@ -128,7 +128,7 @@ export interface SubtaskGroupResultItem {
   status: SubtaskStatus;
   output: string;
   observedChanges: ObservedChanges;
-  capturedChanges?: CapturedFileChange[];
+  capturedChanges?: CapturedFileChange[] | undefined;
 }
 
 export interface FormattedSubtaskGroupResult {
@@ -147,16 +147,16 @@ export type SubtaskStatus = "queued" | "running" | "completed" | "failed" | "can
 
 export interface SubtaskStatusItem {
   id: string;
-  groupId?: string;
+  groupId?: string | undefined;
   task: string;
   status: SubtaskStatus;
-  model?: string;
-  thinking?: string;
-  elapsedMs?: number;
-  contextTokens?: number;
-  contextWindow?: number;
-  cost?: number;
-  toolCalls?: number;
+  model?: string | undefined;
+  thinking?: string | undefined;
+  elapsedMs?: number | undefined;
+  contextTokens?: number | undefined;
+  contextWindow?: number | undefined;
+  cost?: number | undefined;
+  toolCalls?: number | undefined;
 }
 
 export interface SubtaskStatusRow {
@@ -165,10 +165,10 @@ export interface SubtaskStatusRow {
   marker: string;
   label: string;
   duration: string;
-  model?: string;
-  cost?: string;
-  context?: string;
-  tools?: string;
+  model?: string | undefined;
+  cost?: string | undefined;
+  context?: string | undefined;
+  tools?: string | undefined;
   summary: string;
   metadata: string[];
   status: SubtaskStatus;
@@ -184,7 +184,7 @@ export type SubtaskWidgetSegmentRole =
 
 export interface SubtaskWidgetLine {
   kind: "group" | "status" | "detail";
-  status?: SubtaskStatus;
+  status?: SubtaskStatus | undefined;
   segments: Array<{ role: SubtaskWidgetSegmentRole; text: string }>;
 }
 
@@ -199,8 +199,8 @@ export interface ChildProgress {
 export interface RunChildOptions {
   invocation: ChildInvocation;
   cwd: string;
-  signal?: AbortSignal;
-  onProgress?: (progress: ChildProgress) => void;
+  signal?: AbortSignal | undefined;
+  onProgress?: ((progress: ChildProgress) => void) | undefined;
 }
 
 export interface MutableWidgetComponent {
@@ -258,7 +258,7 @@ export function registerMutableWidget<TValue, TTheme>(options: {
 export interface BatchExecutionModeOptions<TResult> {
   wait: boolean;
   completion: Promise<TResult>;
-  callerSignal?: AbortSignal;
+  callerSignal?: AbortSignal | undefined;
   detach(): void;
   deliverSuccess(result: TResult): void;
   deliverFailure(error: unknown): void;
@@ -286,7 +286,8 @@ export async function executeBatchMode<TResult>(
     await deliverCompletion();
     return;
   }
-  if (options.callerSignal.aborted) {
+  const callerSignal = options.callerSignal;
+  if (callerSignal.aborted) {
     detach();
     return;
   }
@@ -296,7 +297,7 @@ export async function executeBatchMode<TResult>(
     const finish = (callback: () => void) => {
       if (settled) return;
       settled = true;
-      options.callerSignal?.removeEventListener("abort", onAbort);
+      callerSignal.removeEventListener("abort", onAbort);
       callback();
     };
     const deliver = (callback: () => void) => {
@@ -316,7 +317,7 @@ export async function executeBatchMode<TResult>(
       });
     };
 
-    options.callerSignal.addEventListener("abort", onAbort, { once: true });
+    callerSignal.addEventListener("abort", onAbort, { once: true });
     void options.completion.then(
       (result) => deliver(() => options.deliverSuccess(result)),
       (error) => deliver(() => options.deliverFailure(error)),
@@ -469,8 +470,8 @@ export function formatSubtaskStatusRows(items: SubtaskStatusItem[]): SubtaskStat
 
 function groupSubtaskStatusItems(
   items: SubtaskStatusItem[],
-): Array<{ id?: string; items: SubtaskStatusItem[] }> {
-  const groups = new Map<string, { id?: string; items: SubtaskStatusItem[] }>();
+): Array<{ id?: string | undefined; items: SubtaskStatusItem[] }> {
+  const groups = new Map<string, { id?: string | undefined; items: SubtaskStatusItem[] }>();
   for (const item of items) {
     const key = item.groupId ?? "";
     const group = groups.get(key) ?? { id: item.groupId, items: [] };
@@ -627,7 +628,7 @@ export function buildChildArgs(options: {
   model: SubtaskModel;
   thinking: SubtaskThinkingLevel;
   tools: string[];
-  sessionFile?: string;
+  sessionFile?: string | undefined;
 }): string[] {
   const args = [
     "--mode",
@@ -943,7 +944,7 @@ export function formatObservedChanges(
 interface ChildOutputLimits {
   maxBytes: number;
   maxLines: number;
-  marker?: string;
+  marker?: string | undefined;
 }
 
 function completeChildOutput(
@@ -1127,10 +1128,10 @@ export async function runChild(options: RunChildOptions): Promise<ChildResult> {
   const capturedChanges: CapturedFileChange[] = [];
   const pendingFileCalls = new Map<
     string,
-    | { tool: "edit"; path?: string }
+    | { tool: "edit"; path?: string | undefined }
     | {
         tool: "write";
-        path?: string;
+        path?: string | undefined;
         content: string;
         bytes: number;
         lines: number;
@@ -1327,7 +1328,11 @@ export async function runChild(options: RunChildOptions): Promise<ChildResult> {
 
 export function truncateResult(
   output: string,
-  limits: { maxBytes?: number; maxLines?: number; marker?: string } = {},
+  limits: {
+    maxBytes?: number | undefined;
+    maxLines?: number | undefined;
+    marker?: string | undefined;
+  } = {},
 ): {
   content: string;
   truncated: boolean;

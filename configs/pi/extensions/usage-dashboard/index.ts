@@ -130,6 +130,65 @@ for(const id of ['search','range','source','hierarchy'])$(id).addEventListener(i
 </script>
 </body></html>`;
 
+const SCAN_CONCURRENCY = 16;
+const JSONL_CACHE_LIMIT = 2_048;
+const DASHBOARD_SCAN_CACHE_MS = 5_000;
+
+interface JsonlSnapshot {
+  mtimeMs: number;
+  size: number;
+  records: JsonRecord[];
+}
+
+const jsonlCache = new Map<string, JsonlSnapshot>();
+
+async function mapBounded<T, R>(
+  values: readonly T[],
+  mapper: (value: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(SCAN_CONCURRENCY, values.length) }, async () => {
+      while (next < values.length) {
+        const index = next++;
+        results[index] = await mapper(values[index]!);
+      }
+    }),
+  );
+  return results;
+}
+
+async function readJsonl(file: string): Promise<JsonlSnapshot> {
+  const metadata = await stat(file);
+  const cached = jsonlCache.get(file);
+  if (cached && cached.mtimeMs === metadata.mtimeMs && cached.size === metadata.size) {
+    jsonlCache.delete(file);
+    jsonlCache.set(file, cached);
+    return cached;
+  }
+
+  const raw = await readFile(file, "utf8");
+  const records: JsonRecord[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      records.push(JSON.parse(line));
+    } catch {
+      // Active writers can expose a partial final line until the next scan.
+    }
+  }
+
+  const snapshot = { mtimeMs: metadata.mtimeMs, size: metadata.size, records };
+  jsonlCache.set(file, snapshot);
+  while (jsonlCache.size > JSONL_CACHE_LIMIT) {
+    const oldest = jsonlCache.keys().next().value;
+    if (oldest === undefined) break;
+    jsonlCache.delete(oldest);
+  }
+  return snapshot;
+}
+
 function number(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
@@ -147,20 +206,26 @@ function textFromContent(content: unknown): string {
 
 async function findJsonlFiles(root: string, exactName?: string): Promise<string[]> {
   const files: string[] = [];
-  async function visit(dir: string): Promise<void> {
-    let entries;
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    await Promise.all(entries.map(async (entry) => {
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) await visit(path);
-      else if (entry.isFile() && entry.name.endsWith(".jsonl") && (!exactName || entry.name === exactName)) files.push(path);
+  const pending = [root];
+  while (pending.length > 0) {
+    const batch = pending.splice(0, SCAN_CONCURRENCY);
+    const listings = await Promise.all(batch.map(async (dir) => {
+      try {
+        return await readdir(dir, { withFileTypes: true });
+      } catch {
+        return [];
+      }
     }));
+    for (let index = 0; index < batch.length; index += 1) {
+      for (const entry of listings[index] ?? []) {
+        const path = join(batch[index]!, entry.name);
+        if (entry.isDirectory()) pending.push(path);
+        else if (entry.isFile() && entry.name.endsWith(".jsonl") && (!exactName || entry.name === exactName)) {
+          files.push(path);
+        }
+      }
+    }
   }
-  await visit(root);
   return files;
 }
 
@@ -222,21 +287,13 @@ function usageSummary(entries: JsonRecord[], excludedIds = new Set<string>()): P
 }
 
 async function parseSession(file: string): Promise<{ row: SessionRow; entries: JsonRecord[] } | undefined> {
-  let raw: string;
+  let snapshot: JsonlSnapshot;
   try {
-    raw = await readFile(file, "utf8");
+    snapshot = await readJsonl(file);
   } catch {
     return undefined;
   }
-  const records: JsonRecord[] = [];
-  for (const line of raw.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      records.push(JSON.parse(line));
-    } catch {
-      // Active sessions can briefly expose a partial final line. Ignore it until next scan.
-    }
-  }
+  const records = snapshot.records;
   const header = records.find((record) => record.type === "session") as SessionHeader | undefined;
   if (!header) return undefined;
   const entries = records.filter((record) => record.type !== "session");
@@ -244,10 +301,7 @@ async function parseSession(file: string): Promise<{ row: SessionRow; entries: J
   const sessionInfo = entries.filter((entry) => entry.type === "session_info" && typeof entry.name === "string").at(-1);
   const firstUser = entries.find((entry) => entry.type === "message" && entry.message?.role === "user");
   const label = sessionInfo?.name?.trim() || textFromContent(firstUser?.message?.content) || `Session ${String(header.id ?? "unknown").slice(0, 8)}`;
-  let fileMtime = new Date().toISOString();
-  try {
-    fileMtime = (await stat(file)).mtime.toISOString();
-  } catch {}
+  const fileMtime = new Date(snapshot.mtimeMs).toISOString();
   const timestamps = records.map((record) => record.timestamp).filter((value): value is string => typeof value === "string");
 
   return {
@@ -304,15 +358,14 @@ function codexUsageSummary(records: JsonRecord[], pricing: ModelPricing): Pick<S
   const models = new Set<string>();
   const modelIds = new Set<string>();
   let calls = 0;
-  let currentModel: string | undefined;
   let previousTotal: JsonRecord | undefined;
 
   for (const record of records) {
     if (record.type === "turn_context" && typeof record.payload?.model === "string") {
-      currentModel = record.payload.model;
-      modelIds.add(currentModel);
+      const model = record.payload.model as string;
+      modelIds.add(model);
       const effort = typeof record.payload.effort === "string" ? `:${record.payload.effort}` : "";
-      models.add(`openai-codex/${currentModel}${effort}`);
+      models.add(`openai-codex/${model}${effort}`);
     }
     const info = record.type === "event_msg" && record.payload?.type === "token_count"
       ? record.payload.info
@@ -331,28 +384,20 @@ function codexUsageSummary(records: JsonRecord[], pricing: ModelPricing): Pick<S
     addCodexUsage(usage, { input, cacheRead, reasoning, output });
   }
 
-  const rates = modelIds.size === 1 ? pricing.get([...modelIds][0]) : undefined;
+  const rates = modelIds.size === 1 ? pricing.get([...modelIds][0]!) : undefined;
   const costTracked = calls > 0 && Boolean(rates);
   const apiCost = rates ? priceCodexMetrics({ input, cacheRead, reasoning, output }, rates) : 0;
   return { models: [...models], calls, input, cacheRead, cacheWrite, reasoning, output, apiCost, costTracked, tokenCostsTracked: costTracked };
 }
 
 async function parseCodexSession(file: string, pricing: ModelPricing): Promise<{ row: SessionRow; entries: JsonRecord[] } | undefined> {
-  let raw: string;
+  let snapshot: JsonlSnapshot;
   try {
-    raw = await readFile(file, "utf8");
+    snapshot = await readJsonl(file);
   } catch {
     return undefined;
   }
-  const records: JsonRecord[] = [];
-  for (const line of raw.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      records.push(JSON.parse(line));
-    } catch {
-      // Active sessions can briefly expose a partial final line. Ignore it until next scan.
-    }
-  }
+  const records = snapshot.records;
   const metadata = records.find((record) => record.type === "session_meta")?.payload;
   if (!metadata || typeof metadata !== "object") return undefined;
 
@@ -368,10 +413,7 @@ async function parseCodexSession(file: string, pricing: ModelPricing): Promise<{
     : typeof spawn?.agent_path === "string"
       ? spawn.agent_path.split("/").filter(Boolean).at(-1)
       : undefined;
-  let fileMtime = new Date().toISOString();
-  try {
-    fileMtime = (await stat(file)).mtime.toISOString();
-  } catch {}
+  const fileMtime = new Date(snapshot.mtimeMs).toISOString();
   const timestamps = records.map((record) => record.timestamp).filter((value): value is string => typeof value === "string");
 
   return {
@@ -393,21 +435,13 @@ async function parseCodexSession(file: string, pricing: ModelPricing): Promise<{
 }
 
 async function parseCodexEvents(file: string, pricing: ModelPricing): Promise<{ row: SessionRow; entries: JsonRecord[] } | undefined> {
-  let raw: string;
+  let snapshot: JsonlSnapshot;
   try {
-    raw = await readFile(file, "utf8");
+    snapshot = await readJsonl(file);
   } catch {
     return undefined;
   }
-  const records: JsonRecord[] = [];
-  for (const line of raw.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      records.push(JSON.parse(line));
-    } catch {
-      // The benchmark may still be appending the final event. Ignore it until next scan.
-    }
-  }
+  const records = snapshot.records;
   const threadId = records.find((record) => record.type === "thread.started")?.thread_id;
   if (typeof threadId !== "string") return undefined;
 
@@ -432,10 +466,7 @@ async function parseCodexEvents(file: string, pricing: ModelPricing): Promise<{ 
     addCodexUsage(record.usage, { input, cacheRead, reasoning, output });
   }
   const apiCost = rates ? priceCodexMetrics({ input, cacheRead, reasoning, output }, rates) : 0;
-  let fileMtime = new Date().toISOString();
-  try {
-    fileMtime = (await stat(file)).mtime.toISOString();
-  } catch {}
+  const fileMtime = new Date(snapshot.mtimeMs).toISOString();
   const runId = typeof manifest.run_id === "string" ? manifest.run_id : `Codex session ${threadId.slice(0, 8)}`;
   const thinking = typeof manifest.thinking === "string" ? `:${manifest.thinking}` : "";
   const manifestCost = manifest.agent_usage?.estimated_api_cost_usd;
@@ -497,9 +528,6 @@ function childLinks(entries: JsonRecord[]): Array<{ file: string; agent?: string
 
 function emptyTotals(): DashboardData["totals"] {
   return {
-    parentSessionId: undefined,
-    parentSessionFile: undefined,
-    agent: undefined,
     calls: 0,
     input: { tokens: 0, cost: 0 },
     cacheRead: { tokens: 0, cost: 0 },
@@ -519,7 +547,7 @@ export async function scanSessions(
   const piRoot = sessionRoot ?? join(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"), "sessions");
   const codexRoot = codexSessionRoot ?? join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions");
   const [piFiles, codexFiles] = await Promise.all([findJsonlFiles(piRoot), findJsonlFiles(codexRoot)]);
-  const piParsed = (await Promise.all(piFiles.map(parseSession))).filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const piParsed = (await mapBounded(piFiles, parseSession)).filter((item): item is NonNullable<typeof item> => Boolean(item));
   const discoveredResultsRoots = new Set(benchmarkResultsRoots.map((root) => resolve(root)));
   if (process.env.SWE_BENCHMARK_RESULTS_DIR) discoveredResultsRoots.add(resolve(process.env.SWE_BENCHMARK_RESULTS_DIR));
   for (const item of piParsed) {
@@ -527,14 +555,16 @@ export async function scanSessions(
     discoveredResultsRoots.add(resolve(item.row.cwd, "setup", "results"));
     discoveredResultsRoots.add(resolve(item.row.cwd, "results"));
   }
-  const codexEventFiles = (await Promise.all(
-    [...discoveredResultsRoots].map((root) => findJsonlFiles(root, "codex-events.jsonl")),
+  const codexEventFiles = (await mapBounded(
+    [...discoveredResultsRoots],
+    (root) => findJsonlFiles(root, "codex-events.jsonl"),
   )).flat();
-  const parsed = (await Promise.all([
-    ...piParsed,
-    ...codexFiles.map((file) => parseCodexSession(file, pricing)),
-    ...codexEventFiles.map((file) => parseCodexEvents(file, pricing)),
-  ])).filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const [codexParsed, eventParsed] = await Promise.all([
+    mapBounded(codexFiles, (file) => parseCodexSession(file, pricing)),
+    mapBounded(codexEventFiles, (file) => parseCodexEvents(file, pricing)),
+  ]);
+  const parsed = [...piParsed, ...codexParsed, ...eventParsed]
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
   // Sessions may be copied into several artifact locations. Source-prefixed session id is canonical.
   const byId = new Map<string, typeof parsed[number]>();
   for (const item of parsed) {
@@ -585,6 +615,24 @@ export async function scanSessions(
 let server: Server | undefined;
 let dashboardUrl: string | undefined;
 let dashboardToken: string | undefined;
+let dashboardScanPromise: Promise<DashboardData> | undefined;
+let dashboardScanCache: { expiresAt: number; data: DashboardData } | undefined;
+
+function scanDashboard(pricing: ModelPricing): Promise<DashboardData> {
+  const now = Date.now();
+  if (dashboardScanCache && dashboardScanCache.expiresAt > now) {
+    return Promise.resolve(dashboardScanCache.data);
+  }
+  dashboardScanPromise ??= scanSessions(undefined, undefined, [], pricing)
+    .then((data) => {
+      dashboardScanCache = { expiresAt: Date.now() + DASHBOARD_SCAN_CACHE_MS, data };
+      return data;
+    })
+    .finally(() => {
+      dashboardScanPromise = undefined;
+    });
+  return dashboardScanPromise;
+}
 
 const dashboardRegistry = join(
   process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"),
@@ -615,6 +663,7 @@ async function removeOwnRegistry(token: string | undefined): Promise<void> {
 }
 
 async function closeDashboard(): Promise<void> {
+  dashboardScanCache = undefined;
   const activeServer = server;
   const activeToken = dashboardToken;
   server = undefined;
@@ -629,6 +678,7 @@ async function closeDashboard(): Promise<void> {
 async function startDashboard(pricing: ModelPricing): Promise<string> {
   if (server?.listening && dashboardUrl) return dashboardUrl;
   await stopPreviousDashboard();
+  dashboardScanCache = undefined;
   dashboardToken = randomUUID();
   server = createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://localhost");
@@ -650,7 +700,7 @@ async function startDashboard(pricing: ModelPricing): Promise<string> {
       response.writeHead(405).end("Method not allowed");
     } else if (url.pathname === "/api/sessions") {
       try {
-        const data = await scanSessions(undefined, undefined, [], pricing);
+        const data = await scanDashboard(pricing);
         response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
         response.end(JSON.stringify(data));
       } catch (error) {

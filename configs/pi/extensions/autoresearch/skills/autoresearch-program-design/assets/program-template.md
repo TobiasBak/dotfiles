@@ -133,7 +133,7 @@ Machine-readable result schema/path: `[PATH OR LINK TO CONTRACT]`
 | Evidence attempts | [value] | 1 attempt | n/a |
 | Scarce scientific operations | [value] | [value] | [project-enforced value if required] |
 
-- Extension worker load: chosen only by `/autoresearch N`; do not declare another worker cap here
+- Extension worker load: chosen only by `/autoresearch N` within its 1-8 bound; do not declare another worker cap here
 - Maximum hypotheses/candidates/evidence attempts: [scientifically justified values]
 - Retry/backoff policy: [PROJECT-SPECIFIC]
 - Cancellation/cleanup command: `[COMMAND]`
@@ -172,7 +172,7 @@ Private worker memory: [scratch/logs not shared unless promoted]
 
 ## 8. Project-enforced scientific and process limits
 
-`/autoresearch N` is the only extension operational load limit. Project-level limits remain valid when they protect scientific validity, cost, scarce resources, or process safety. Define how project commands enforce [evidence-attempt cap, device/API concurrency, cost/rate limit, timeout, cleanup, or other applicable rule]. These controls evaluate the operation itself, not worker identity, ownership, generation, or admission.
+`/autoresearch N` is the extension operational load limit and accepts 1 through 8 workers. Project-level limits remain valid when they protect scientific validity, cost, scarce resources, or process safety. Define how project commands enforce [evidence-attempt cap, device/API concurrency, cost/rate limit, timeout, cleanup, or other applicable rule]. These controls evaluate the operation itself, not worker identity, ownership, generation, or admission.
 
 Enforcement and recovery command/code path: `[PROJECT-SPECIFIC]`
 
@@ -253,7 +253,7 @@ At stop, cancel or reconcile external jobs, write terminal receipts, checkpoint 
 - [ ] Benchmark self-tests/calibration passed where applicable.
 - [ ] Canonical `program.md` is a regular, nonsymlink, non-empty file.
 - [ ] Canonical checkout is clean and reviewed changes are committed.
-- [ ] `/autoresearch N` is the only extension worker-load setting; any scientific/resource concurrency limit is project-enforced and justified.
+- [ ] `/autoresearch N` stays within the extension's 1-8 worker bound; any scientific/resource concurrency limit is project-enforced and justified.
 - [ ] Workers complete one full campaign, checkpoint a terminal outcome, and exit for replacement.
 - [ ] Checkpoints and intents are informational and cannot be mistaken for ownership or authorization.
 - [ ] Artifact, receipt, reconciliation, and stop procedures are executable.

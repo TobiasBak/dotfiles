@@ -276,7 +276,7 @@ Never pool or directly rank results from incompatible epochs. If comparison is n
 
 ## 14. Scientific budgets and scarce-resource safety
 
-`/autoresearch N` is the extension's only operational load limit. The benchmark must not depend on worker claims, locks, approval/admission, fencing identities, or evidence-capacity reservations.
+`/autoresearch N` is the extension's operational load limit and accepts 1 through 8 workers. The benchmark must not depend on worker claims, locks, approval/admission, fencing identities, or evidence-capacity reservations.
 
 Project-level controls remain necessary when they define scientific validity or protect scarce resources. The evidence entrypoint should fail closed when a predeclared evidence-attempt budget, external cost/rate limit, device/process concurrency limit, timeout, or immutable plan identity is violated. Enforce these controls against the operation and underlying resource, not against a worker identity or purported ownership.
 

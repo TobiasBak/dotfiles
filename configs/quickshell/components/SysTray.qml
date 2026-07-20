@@ -7,7 +7,7 @@ PopupButton {
     id: sysTray
 
     icon: "󰀻"
-    popupWidth: Math.max(trayColumn.width + 32, 150)
+    popupWidth: 220
     popupRightMargin: 45
     popupPadding: 12
 

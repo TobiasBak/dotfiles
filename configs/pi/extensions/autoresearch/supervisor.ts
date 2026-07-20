@@ -30,7 +30,6 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 
-import { beginActivityDock, endActivityDock } from "../activity-dock.ts";
 import {
   ensureAutoresearchIgnored,
   ensureWorkerLane,
@@ -73,6 +72,7 @@ import {
 } from "./effect-runtime.ts";
 
 export const AUTORESEARCH_FLEET_WIDGET_ID = "autoresearch-fleet";
+export const MAX_AUTORESEARCH_WORKERS = 8;
 const DEFAULT_RPC_TIMEOUT_MS = 15_000;
 const DEFAULT_RECYCLE_BACKOFF_MS = 1_000;
 const MAX_RECYCLE_BACKOFF_MS = 5_000;
@@ -192,7 +192,7 @@ export function parseAutoresearchFleetCount(args: string): number | undefined {
   const trimmed = args.trim();
   if (!/^\d+$/.test(trimmed)) return undefined;
   const count = Number(trimmed);
-  if (!Number.isSafeInteger(count) || count < 1) return undefined;
+  if (!Number.isSafeInteger(count) || count < 1 || count > MAX_AUTORESEARCH_WORKERS) return undefined;
   return count;
 }
 
@@ -567,6 +567,12 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
   }
 
   start(count: number, ctx: ExtensionContext): Promise<boolean> {
+    if (!Number.isSafeInteger(count) || count < 1 || count > MAX_AUTORESEARCH_WORKERS) {
+      if (ctx.hasUI) {
+        ctx.ui.notify(`Autoresearch fleet size must be between 1 and ${MAX_AUTORESEARCH_WORKERS}.`, "warning");
+      }
+      return Promise.resolve(false);
+    }
     return this.controller.request<boolean>((reply) => ({ _tag: "Start", count, ctx, reply }));
   }
   status(ctx: ExtensionContext): Promise<boolean> {
@@ -690,6 +696,9 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
 
   private async launch(count: number, ctx: ExtensionContext, operation: number): Promise<void> {
     this.assertOperation(operation);
+    if (!Number.isSafeInteger(count) || count < 1 || count > MAX_AUTORESEARCH_WORKERS) {
+      throw new Error(`Autoresearch fleet size must be between 1 and ${MAX_AUTORESEARCH_WORKERS}`);
+    }
     const inspect = this.options.inspectRepo ?? ((cwd: string) => inspectRepository(cwd, this.options.run));
     const repository = inspect(ctx.cwd);
     const program = readCanonicalProgram(repository.canonicalRoot);
@@ -1484,12 +1493,7 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
     this.dashboardRequestRender = () => {};
     this.dashboardWidgetRegistered = false;
     const ctx = this.currentCtx;
-    if (!ctx) return;
-    try {
-      ctx.ui.setWidget(AUTORESEARCH_FLEET_WIDGET_ID, undefined);
-    } finally {
-      endActivityDock(this.pi, ctx, AUTORESEARCH_FLEET_WIDGET_ID);
-    }
+    if (ctx) ctx.ui.setWidget(AUTORESEARCH_FLEET_WIDGET_ID, undefined);
   }
 
   private updateDashboardWidget(state: DashboardRenderState): void {
@@ -1503,7 +1507,6 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
     }
     if (!this.dashboardWidgetRegistered) {
       this.dashboardWidgetRegistered = true;
-      beginActivityDock(this.pi, ctx, AUTORESEARCH_FLEET_WIDGET_ID);
       try {
         ctx.ui.setWidget(AUTORESEARCH_FLEET_WIDGET_ID, (tui, theme) => {
           this.dashboardRequestRender = () => tui.requestRender();
@@ -1517,7 +1520,6 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
         }, { placement: "aboveEditor" });
       } catch (error) {
         this.dashboardWidgetRegistered = false;
-        endActivityDock(this.pi, ctx, AUTORESEARCH_FLEET_WIDGET_ID);
         throw error;
       }
       return;

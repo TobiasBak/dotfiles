@@ -1,6 +1,7 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick
 import QtQuick.Layouts
-import Quickshell
 import Quickshell.Io
 
 Item {
@@ -8,81 +9,21 @@ Item {
     width: pill.width
     height: 30
 
+    required property var niriState
     property string outputName: ""
-    property var workspaceData: []
-    property int focusedWorkspaceIdx: 1
-    property var workspaceIdMap: ({})
-
-    function updateFromWorkspaces(workspaces) {
-        if (!workspaces || !Array.isArray(workspaces)) return;
-        var outputWs = workspaces.filter(w => w.output === root.outputName);
-        root.workspaceData = outputWs;
-        var idMap = {};
-        for (var i = 0; i < outputWs.length; i++) {
-            idMap[outputWs[i].idx] = outputWs[i].id;
-            if (outputWs[i].is_active) {
-                root.focusedWorkspaceIdx = outputWs[i].idx;
-            }
+    property var outputWorkspaces: niriState.workspaces.filter(workspace => workspace.output === outputName)
+    property int focusedWorkspaceIdx: {
+        for (var i = 0; i < outputWorkspaces.length; i++) {
+            if (outputWorkspaces[i].is_active) return outputWorkspaces[i].idx
         }
-        root.workspaceIdMap = idMap;
+        return 0
     }
 
-    Timer {
-        id: retryTimer
-        interval: 2000
-        onTriggered: {
-            if (!initialFetch.running) initialFetch.running = true;
-            if (!niriEvents.running) niriEvents.running = true;
+    function workspaceId(index) {
+        for (var i = 0; i < outputWorkspaces.length; i++) {
+            if (outputWorkspaces[i].idx === index) return outputWorkspaces[i].id
         }
-    }
-
-    // Initial fetch
-    Process {
-        id: initialFetch
-        command: ["niri", "msg", "--json", "workspaces"]
-        running: true
-        stdout: StdioCollector {
-            onStreamFinished: {
-                try {
-                    if (text.trim() !== "") {
-                        var workspaces = JSON.parse(text);
-                        root.updateFromWorkspaces(workspaces);
-                    }
-                } catch (e) {
-                    console.log("Error parsing workspaces: " + e);
-                }
-            }
-        }
-        onExited: (exitCode) => {
-            if (exitCode !== 0) {
-                if (!retryTimer.running) retryTimer.start();
-            }
-        }
-    }
-
-    Process {
-        id: niriEvents
-        command: ["niri", "msg", "--json", "event-stream"]
-        running: true
-
-        stdout: SplitParser {
-            splitMarker: "\n"
-            onRead: (data) => {
-                if (!data || data.trim() === "") return;
-                try {
-                    var event = JSON.parse(data);
-                    if (event.WorkspacesChanged) {
-                        root.updateFromWorkspaces(event.WorkspacesChanged.workspaces);
-                    } else if (event.WorkspaceActivated) {
-                        initialFetch.running = true;
-                    }
-                } catch (e) {}
-            }
-        }
-        onExited: (exitCode) => {
-            running = false;
-            if (!retryTimer.running) retryTimer.start();
-        }
+        return undefined
     }
 
     Process {
@@ -100,19 +41,17 @@ Item {
         border.width: 1
 
         Rectangle {
-            id: highlight
             height: 22
             width: 28
             radius: height / 2
             color: "#7aa2f7"
             y: 3
             x: 6 + (root.focusedWorkspaceIdx - 1) * 32
-            
+            visible: root.focusedWorkspaceIdx >= 1 && root.focusedWorkspaceIdx <= 4
+
             Behavior on x {
                 NumberAnimation { duration: 150; easing.type: Easing.OutQuint }
             }
-            
-            visible: root.focusedWorkspaceIdx >= 1 && root.focusedWorkspaceIdx <= 4
         }
 
         RowLayout {
@@ -126,6 +65,7 @@ Item {
                 model: [1, 2, 3, 4]
 
                 Item {
+                    required property int modelData
                     Layout.preferredWidth: 28
                     Layout.preferredHeight: 28
 
@@ -135,7 +75,7 @@ Item {
                         color: modelData === root.focusedWorkspaceIdx ? "#1a1b26" : "#7aa2f7"
                         font.bold: modelData === root.focusedWorkspaceIdx
                         font.pixelSize: 12
-                        
+
                         Behavior on color {
                             ColorAnimation { duration: 150 }
                         }
@@ -145,13 +85,11 @@ Item {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
-                            var wsId = root.workspaceIdMap[modelData];
-                            if (wsId !== undefined) {
-                                switchProc.command = ["niri", "msg", "action", "focus-workspace", "--id", wsId.toString()];
-                            } else {
-                                switchProc.command = ["niri", "msg", "action", "focus-workspace", modelData.toString()];
-                            }
-                            switchProc.running = true;
+                            var id = root.workspaceId(modelData)
+                            switchProc.command = id !== undefined
+                                ? ["niri", "msg", "action", "focus-workspace", "--id", id.toString()]
+                                : ["niri", "msg", "action", "focus-workspace", modelData.toString()]
+                            switchProc.running = true
                         }
                     }
                 }

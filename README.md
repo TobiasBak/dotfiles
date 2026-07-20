@@ -11,7 +11,8 @@ This repository contains configuration files for Windows, native NixOS developer
 - `assets/`: Shared non-configuration assets such as wallpapers.
 - `nixos/`: Flake-based NixOS host configs for WSL, native developer machines, and servers.
 - `windows/`: Windows setup scripts.
-- `.env`: Environment-specific variables (not tracked by Git if sensitive).
+- `scripts/`: Shared bootstrap, benchmark, and extension test scripts.
+- `docs/`: Historical research notes and supporting documentation.
 
 ## Usage
 
@@ -23,19 +24,27 @@ Run the root rebuild script from Windows PowerShell:
 powershell -ExecutionPolicy Bypass -File .\rebuild-windows.ps1
 ```
 
-This elevates when needed, applies the winget configuration, installs WezTerm,
-installs or repairs NixOS WSL, refreshes Windows host config links, and verifies
-links. Dev shells, agent CLIs, and agent skills are refreshed inside NixOS WSL.
+This elevates when needed, applies the winget configuration, installs Windows
+host tools, creates the Windows config links, and installs or updates NixOS WSL
+when its recorded repository revision is stale. The WSL bootstrap also refreshes
+mutable agent CLIs and skill links when it runs. Commit and push the revision
+before running this command because WSL checks out that commit from the configured
+Git remote.
 
 ### NixOS WSL
 
-Windows setup creates a stable `%USERPROFILE%\.dotfiles` link for Windows config targets. It also installs the latest NixOS-WSL `.wsl` release, applies the repo flake host `nixos#wsl`, creates the `tobias` WSL user, and links Linux configs through:
+Windows setup creates `%USERPROFILE%\.dotfiles` as a link to the Windows
+checkout used to run the configuration. It installs the latest NixOS-WSL `.wsl`
+release, applies `nixos#wsl`, creates the `tobias` user, and clones the same Git
+revision inside WSL at `~/code/dotfiles`. Linux config links use:
 
 ```text
-~/.dotfiles -> <actual dotfiles checkout>
+~/.dotfiles -> ~/code/dotfiles
 ```
 
-That stable path means config symlinks do not need to know whether the real checkout lives in `~/code/dotfiles`, somewhere under `/mnt/c`, or another machine-specific path.
+The Windows and Linux links are separate. The automated installer uses the
+fixed Linux checkout above rather than running from the Windows checkout under
+`/mnt/c`.
 
 Inside NixOS WSL, refresh the system profile and Home Manager user config with:
 
@@ -60,10 +69,9 @@ After installation, rebuild the current native host with:
 
 On the first rebuild from a generic NixOS installation, select the target
 explicitly. The script copies the generated hardware configuration when the
-repo still contains its placeholder, moves a graphical installer's VFAT EFI
-mount from `/boot` to `/boot/efi` when needed, enables the Nix features needed
-for the first flake build, applies the declared hostname, and bootstraps
-developer tools when requested:
+repo still contains its placeholder, enables the Nix features needed for the
+first flake build, applies the declared hostname, and bootstraps developer tools
+when requested:
 
 ```bash
 ./rebuild-nixos.sh pc --bootstrap
@@ -71,6 +79,12 @@ developer tools when requested:
 
 Use `./rebuild-nixos.sh --bootstrap` on later rebuilds when Pi, Codex, and
 agent skill links also need to be refreshed.
+
+The native GRUB configuration expects the EFI system partition at
+`/boot/efi`. If a graphical installer mounted a VFAT EFI partition at `/boot`,
+move it and update the generated hardware configuration manually before
+rebuilding. The script fails closed rather than unmounting or rewriting a live
+EFI setup.
 
 ### NixOS servers
 

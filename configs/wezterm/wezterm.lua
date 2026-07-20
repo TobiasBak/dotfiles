@@ -47,7 +47,7 @@ fi
 
 export SHELL="$shell"
 if command -v tmux >/dev/null 2>&1 && [ -t 0 ]; then
-  exec tmux new-session -A -s main "$shell -l"
+  exec tmux new-session -A -s main
 fi
 
 exec "$shell" -l

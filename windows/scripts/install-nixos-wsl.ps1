@@ -5,6 +5,7 @@ param(
     [ValidatePattern('^[a-z_][a-z0-9_-]*[$]?$')]
     [string]$LinuxUser = "tobias",
     [string]$InstallerUrl = "https://github.com/nix-community/NixOS-WSL/releases/latest/download/nixos.wsl",
+    [string]$NixpkgsRef = "github:NixOS/nixpkgs/nixos-26.05",
     [string]$RepoRoot = [System.IO.Path]::GetFullPath((Resolve-Path (Join-Path $PSScriptRoot "..\..")).ProviderPath)
 )
 
@@ -12,6 +13,31 @@ $ErrorActionPreference = "Stop"
 # This script checks native exit codes explicitly. DSC hosts can otherwise
 # promote expected non-zero wsl/git exits before the script handles them.
 $PSNativeCommandUseErrorActionPreference = $false
+
+function Get-RepoRevision {
+    $git = Get-Command git.exe -ErrorAction SilentlyContinue
+    if (-not $git) {
+        throw "git.exe is required to determine the dotfiles revision."
+    }
+
+    $revision = (& $git.Source -C $RepoRoot rev-parse HEAD 2>$null | Select-Object -First 1)
+    if ($LASTEXITCODE -ne 0 -or $revision -notmatch '^[0-9a-fA-F]{40,64}$') {
+        throw "Could not determine the Git revision for $RepoRoot."
+    }
+
+    return $revision.Trim().ToLowerInvariant()
+}
+
+function Test-WslReady {
+    try {
+        $ErrorActionPreference = "Continue"
+        $PSNativeCommandUseErrorActionPreference = $false
+        & wsl --list --quiet *> $null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
+}
 
 function Get-WslDistroNames {
     $output = (& wsl --list --quiet 2>$null) -replace "`0", ""
@@ -68,21 +94,27 @@ function Test-WslBash {
 }
 
 function Get-NixOsWslState {
-    $installed = Test-WslDistro $DistroName
-    $defaultDistro = Get-DefaultWslDistro
+    $desiredRevision = Get-RepoRevision
+    $wslReady = Test-WslReady
+    $installed = $wslReady -and (Test-WslDistro $DistroName)
+    $defaultDistro = if ($wslReady) { Get-DefaultWslDistro } else { $null }
     $linuxUserExists = $false
     $systemConfigured = $false
     $userBootstrapped = $false
 
     if ($installed) {
         $linuxUserExists = Test-WslLinuxUser
-        $systemConfigured = $linuxUserExists -and (Test-WslBash -User "root" -Script "test -f /etc/dotfiles-nixos-wsl-system-ok")
+        $systemStateTest = 'test "$(cat /etc/dotfiles-nixos-wsl-system-ok 2>/dev/null)" = ''{0}''' -f $desiredRevision
+        $systemConfigured = $linuxUserExists -and (Test-WslBash -User "root" -Script $systemStateTest)
         if ($linuxUserExists) {
-            $userBootstrapped = Test-WslBash -User $LinuxUser -Script 'test -f ~/.dotfiles-nixos-wsl-shell-ok && test -f ~/code/dotfiles/windows/scripts/bootstrap-nixos-wsl.sh && test "$(readlink -f ~/.dotfiles 2>/dev/null)" = "$(readlink -f ~/code/dotfiles 2>/dev/null)"'
+            $userStateTest = 'test "$(cat ~/.dotfiles-nixos-wsl-shell-ok 2>/dev/null)" = ''{0}'' && test "$(git -C ~/code/dotfiles rev-parse HEAD 2>/dev/null)" = ''{0}'' && test -f ~/code/dotfiles/windows/scripts/bootstrap-nixos-wsl.sh && test "$(readlink -f ~/.dotfiles 2>/dev/null)" = "$(readlink -f ~/code/dotfiles 2>/dev/null)"' -f $desiredRevision
+            $userBootstrapped = Test-WslBash -User $LinuxUser -Script $userStateTest
         }
     }
 
     return @{
+        wslReady = $wslReady
+        revision = $desiredRevision
         distro = $DistroName
         installed = $installed
         defaultDistro = $defaultDistro
@@ -160,6 +192,17 @@ function Install-NixOsWslDistro {
 
     New-Item -ItemType Directory -Force -Path $installLocation | Out-Null
     Invoke-CheckedNative -FilePath "wsl" -Arguments @("--import", $DistroName, $installLocation, $installerPath, "--version", "2") -StepName "wsl --import $DistroName"
+}
+
+function Wait-NixOsWslDistroReady {
+    for ($attempt = 1; $attempt -le 30; $attempt++) {
+        if (Test-WslBash -User "root" -Script "test -r /etc/os-release && command -v bash >/dev/null") {
+            return
+        }
+        Start-Sleep -Seconds 2
+    }
+
+    throw "$DistroName was installed but did not become ready within 60 seconds. Run 'wsl --shutdown', verify 'wsl -d $DistroName -u root', and rerun setup."
 }
 
 function Set-NixOsAsDefaultWslDistro {
@@ -249,14 +292,19 @@ function Invoke-WslBashScript {
 
 function Install-NixOsSystemConfig {
     $remoteUrl = Get-OriginRemoteUrl
+    $revision = Get-RepoRevision
     $systemScript = @'
 set -euo pipefail
 
-export NIX_CONFIG="${NIX_CONFIG:-}
-experimental-features = nix-command flakes"
+nix_config="${NIX_CONFIG:-}"
+if [ -n "$nix_config" ]; then
+  nix_config+=$'\n'
+fi
+nix_config+='experimental-features = nix-command flakes'
+export NIX_CONFIG="$nix_config"
 
 repo="/root/dotfiles"
-nixpkgs_ref="github:NixOS/nixpkgs/nixos-26.05"
+nixpkgs_ref="$DOTFILES_NIXPKGS_REF"
 rm -f /etc/dotfiles-nixos-wsl-system-ok
 
 run_git() {
@@ -276,69 +324,39 @@ run_with_git() {
 }
 
 rm -rf "$repo"
-run_git clone "$DOTFILES_REMOTE" "$repo"
+run_git clone --no-checkout "$DOTFILES_REMOTE" "$repo"
+run_git -C "$repo" checkout --detach "$DOTFILES_REVISION"
+test "$(run_git -C "$repo" rev-parse HEAD)" = "$DOTFILES_REVISION"
 test -f "$repo/nixos/flake.nix"
 test -f "$repo/nixos/hosts/wsl/configuration.nix"
 
-built_system="$(run_with_git nix --extra-experimental-features "nix-command flakes" build --no-link --print-out-paths "$repo/nixos#nixosConfigurations.wsl.config.system.build.toplevel")"
-switch_status=0
-run_with_git nixos-rebuild switch --flake "$repo/nixos#wsl" || switch_status=$?
+built_system="$(run_with_git nix build --no-link --print-out-paths "$repo/nixos#nixosConfigurations.wsl.config.system.build.toplevel")"
+run_with_git nixos-rebuild switch --flake "$repo/nixos#wsl"
 current_system="$(readlink -f /run/current-system)"
 
-if [ "$current_system" = "$built_system" ] && getent passwd "$DOTFILES_LINUX_USER" >/dev/null; then
-  touch /etc/dotfiles-nixos-wsl-system-ok
-  exit 0
-fi
-
-exit "$switch_status"
+test "$current_system" = "$built_system"
+getent passwd "$DOTFILES_LINUX_USER" >/dev/null
+printf '%s\n' "$DOTFILES_REVISION" >/etc/dotfiles-nixos-wsl-system-ok
 '@
 
-    Write-Host "Applying NixOS WSL system config from $remoteUrl..." -ForegroundColor Yellow
-    try {
-        Invoke-WslBashScript -User "root" -Script $systemScript -Environment @{
-            DOTFILES_REMOTE = $remoteUrl
-            DOTFILES_LINUX_USER = $LinuxUser
-        } -StepName "NixOS WSL system configuration"
-    } catch {
-        if (Repair-NixOsSystemMarkerAfterSwitch) {
-            Write-Warning "NixOS WSL switch reported an error, but the system and user are present. Continuing after writing the setup marker."
-            return
-        }
-
-        throw
-    }
-}
-
-function Repair-NixOsSystemMarkerAfterSwitch {
-    $repairScript = @"
-set -euo pipefail
-
-if getent passwd '$LinuxUser' >/dev/null &&
-   test -L /run/current-system &&
-   readlink -f /run/current-system | grep -q '/nixos-system-nixos-wsl-'; then
-  touch /etc/dotfiles-nixos-wsl-system-ok
-  exit 0
-fi
-
-exit 1
-"@
-
-    try {
-        Invoke-WslBashScript -User "root" -Script $repairScript -StepName "NixOS WSL post-switch marker repair"
-        return $true
-    } catch {
-        return $false
-    }
+    Write-Host "Applying NixOS WSL system config from $remoteUrl at $revision..." -ForegroundColor Yellow
+    Invoke-WslBashScript -User "root" -Script $systemScript -Environment @{
+        DOTFILES_REMOTE = $remoteUrl
+        DOTFILES_REVISION = $revision
+        DOTFILES_LINUX_USER = $LinuxUser
+        DOTFILES_NIXPKGS_REF = $NixpkgsRef
+    } -StepName "NixOS WSL system configuration"
 }
 
 function Install-NixOsUserBootstrap {
     $remoteUrl = Get-OriginRemoteUrl
+    $revision = Get-RepoRevision
     $userScript = @'
 set -euo pipefail
 
 target="$HOME/code/dotfiles"
 stable="$HOME/.dotfiles"
-nixpkgs_ref="github:NixOS/nixpkgs/nixos-26.05"
+nixpkgs_ref="$DOTFILES_NIXPKGS_REF"
 
 run_git() {
   if command -v git >/dev/null 2>&1; then
@@ -353,7 +371,11 @@ resolve_path() {
 }
 
 if [ -d "$target/.git" ]; then
-  run_git -C "$target" pull --ff-only || echo "Could not fast-forward $target; continuing with the existing checkout." >&2
+  current_revision="$(run_git -C "$target" rev-parse HEAD)"
+  if [ "$current_revision" != "$DOTFILES_REVISION" ]; then
+    run_git -C "$target" fetch origin "$DOTFILES_REVISION"
+    run_git -C "$target" merge --ff-only "$DOTFILES_REVISION"
+  fi
 elif [ ! -e "$target" ]; then
   mkdir -p "$(dirname "$target")"
   run_git clone "$DOTFILES_REMOTE" "$target"
@@ -362,6 +384,7 @@ else
   exit 1
 fi
 
+test "$(run_git -C "$target" rev-parse HEAD)" = "$DOTFILES_REVISION"
 target_resolved="$(resolve_path "$target")"
 stable_resolved="$(resolve_path "$stable")"
 
@@ -392,15 +415,24 @@ bootstrap="$target_resolved/windows/scripts/bootstrap-nixos-wsl.sh"
 test -f "$bootstrap"
 chmod +x "$bootstrap"
 "$bootstrap"
-touch "$HOME/.dotfiles-nixos-wsl-shell-ok"
+printf '%s\n' "$DOTFILES_REVISION" >"$HOME/.dotfiles-nixos-wsl-shell-ok"
 '@
 
-    Write-Host "Bootstrapping $LinuxUser home in $DistroName..." -ForegroundColor Yellow
-    Invoke-WslBashScript -User $LinuxUser -Script $userScript -Environment @{ DOTFILES_REMOTE = $remoteUrl } -StepName "NixOS WSL user bootstrap"
+    Write-Host "Bootstrapping $LinuxUser home in $DistroName at $revision..." -ForegroundColor Yellow
+    Invoke-WslBashScript -User $LinuxUser -Script $userScript -Environment @{
+        DOTFILES_REMOTE = $remoteUrl
+        DOTFILES_REVISION = $revision
+        DOTFILES_NIXPKGS_REF = $NixpkgsRef
+    } -StepName "NixOS WSL user bootstrap"
 }
 
 function Set-NixOsWslInstall {
+    if (-not (Test-WslReady)) {
+        throw "WSL is not ready. Restart Windows, verify that 'wsl --list --quiet' succeeds, and rerun setup."
+    }
+
     Install-NixOsWslDistro
+    Wait-NixOsWslDistroReady
     Set-NixOsAsDefaultWslDistro
 
     $state = Get-NixOsWslState

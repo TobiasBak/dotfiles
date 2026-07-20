@@ -121,6 +121,72 @@ cy() {
   command codex --dangerously-bypass-approvals-and-sandbox "$@"
 }
 
+# Lazy-load Node tooling once. Keep npm and npx as permanent policy wrappers;
+# removing them during initialization would unblock every call after the first.
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+_load_nvm() {
+  [[ -n "${_NVM_LAZY_LOADED:-}" ]] && return 0
+
+  unfunction node pnpm pi 2>/dev/null
+  if [[ -r /usr/share/nvm/init-nvm.sh ]]; then
+    source /usr/share/nvm/init-nvm.sh
+  elif [[ -r "$NVM_DIR/nvm.sh" ]]; then
+    source "$NVM_DIR/nvm.sh"
+  elif command -v node >/dev/null 2>&1; then
+    typeset -g _NVM_LAZY_LOADED=1
+    rehash
+    return 0
+  else
+    print -u2 "nvm init script not found and no system node is available."
+    return 1
+  fi
+
+  local nvm_node
+  nvm_node="$(nvm which current 2>/dev/null)"
+  if [[ -n "$nvm_node" && -x "$nvm_node" ]]; then
+    local nvm_bin
+    nvm_bin="$(dirname "$nvm_node")"
+    path=("$nvm_bin" ${path:#$nvm_bin})
+    export PATH
+    rehash
+  fi
+  typeset -g _NVM_LAZY_LOADED=1
+}
+
+node() {
+  _load_nvm || return
+  command node "$@"
+}
+
+npm() {
+  _load_nvm
+  print -u2 "npm is blocked in this shell. Use pnpm instead."
+  print -u2 "If you really need npm once, run: command npm $*"
+  return 1
+}
+
+npx() {
+  _load_nvm
+  print -u2 "npx is blocked in this shell. Use pnpm dlx instead."
+  print -u2 "If you really need npx once, run: command npx $*"
+  return 1
+}
+
+pnpm() {
+  _load_nvm || return
+  command pnpm "$@"
+}
+
+pi() {
+  _load_nvm || return
+  command pi "$@"
+}
+
+export PNPM_HOME="$HOME/.local/share/pnpm"
+export PNPM_BIN="$PNPM_HOME/bin"
+path=("$PNPM_BIN" ${path:#$PNPM_BIN})
+export PATH
+
 if [[ -n "${ZSH_TMUX_FAST:-}" ]]; then
   _c_cyan=$'\e[38;2;151;243;249m'
   _c_pink=$'\e[38;2;255;121;198m'
@@ -139,68 +205,6 @@ if [[ -n "${ZSH_TMUX_FAST:-}" ]]; then
   else
     alias ls='ls --color=auto'
   fi
-
-  # nvm
-  export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
-  _load_nvm() {
-    unfunction node npm npx pnpm pi 2>/dev/null
-    if [[ -r /usr/share/nvm/init-nvm.sh ]]; then
-      source /usr/share/nvm/init-nvm.sh
-    elif [[ -r "$NVM_DIR/nvm.sh" ]]; then
-      source "$NVM_DIR/nvm.sh"
-    elif command -v node >/dev/null 2>&1; then
-      rehash
-      return 0
-    else
-      print -u2 "nvm init script not found and no system node is available."
-      return 1
-    fi
-
-    local nvm_node
-    nvm_node="$(nvm which current 2>/dev/null)"
-    if [[ -n "$nvm_node" && -x "$nvm_node" ]]; then
-      local nvm_bin
-      nvm_bin="$(dirname "$nvm_node")"
-      path=("$nvm_bin" ${path:#$nvm_bin})
-      export PATH
-      rehash
-    fi
-  }
-
-  node() {
-    _load_nvm
-    command node "$@"
-  }
-
-  npm() {
-    _load_nvm
-    print -u2 "npm is blocked in this shell. Use pnpm instead."
-    print -u2 "If you really need npm once, run: command npm $*"
-    return 1
-  }
-
-  npx() {
-    _load_nvm
-    print -u2 "npx is blocked in this shell. Use pnpm dlx instead."
-    print -u2 "If you really need npx once, run: command npx $*"
-    return 1
-  }
-
-  pnpm() {
-    _load_nvm
-    command pnpm "$@"
-  }
-
-  pi() {
-    _load_nvm
-    command pi "$@"
-  }
-
-  # pnpm
-  export PNPM_HOME="$HOME/.local/share/pnpm"
-  export PNPM_BIN="$PNPM_HOME/bin"
-  path=("$PNPM_BIN" ${path:#$PNPM_BIN})
-  export PATH
 
   autoload -Uz compinit
   compinit -C -d "${ZDOTDIR:-$HOME}/.zcompdump-fast-${ZSH_VERSION}"
@@ -350,62 +354,6 @@ else
   alias ls='ls --color=auto'
 fi
 
-# nvm
-export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
-_load_nvm() {
-  unfunction node npm npx pnpm pi 2>/dev/null
-  if [[ -r /usr/share/nvm/init-nvm.sh ]]; then
-    source /usr/share/nvm/init-nvm.sh
-  elif [[ -r "$NVM_DIR/nvm.sh" ]]; then
-    source "$NVM_DIR/nvm.sh"
-  elif command -v node >/dev/null 2>&1; then
-    rehash
-    return 0
-  else
-    print -u2 "nvm init script not found and no system node is available."
-    return 1
-  fi
-
-  local nvm_node
-  nvm_node="$(nvm which current 2>/dev/null)"
-  if [[ -n "$nvm_node" && -x "$nvm_node" ]]; then
-    local nvm_bin
-    nvm_bin="$(dirname "$nvm_node")"
-    path=("$nvm_bin" ${path:#$nvm_bin})
-    export PATH
-    rehash
-  fi
-}
-
-node() {
-  _load_nvm
-  command node "$@"
-}
-
-npm() {
-  _load_nvm
-  print -u2 "npm is blocked in this shell. Use pnpm instead."
-  print -u2 "If you really need npm once, run: command npm $*"
-  return 1
-}
-
-npx() {
-  _load_nvm
-  print -u2 "npx is blocked in this shell. Use pnpm dlx instead."
-  print -u2 "If you really need npx once, run: command npx $*"
-  return 1
-}
-
-pnpm() {
-  _load_nvm
-  command pnpm "$@"
-}
-
-pi() {
-  _load_nvm
-  command pi "$@"
-}
-
 # Syntax highlighting (must be sourced after Oh My Zsh)
 if source /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh 2>/dev/null ||
    source /run/current-system/sw/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh 2>/dev/null ||
@@ -419,10 +367,3 @@ if source /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting
   ZSH_HIGHLIGHT_STYLES[default]='none'
   ZSH_HIGHLIGHT_STYLES[unknown-token]='fg=#ff5555'
 fi
-
-# pnpm
-export PNPM_HOME="$HOME/.local/share/pnpm"
-export PNPM_BIN="$PNPM_HOME/bin"
-path=("$PNPM_BIN" ${path:#$PNPM_BIN})
-export PATH
-# pnpm end

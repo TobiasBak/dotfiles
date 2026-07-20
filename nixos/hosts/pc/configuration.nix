@@ -1,6 +1,12 @@
 { config, ... }:
 
 {
+  nixpkgs.overlays = [
+    (_final: previous: {
+      btop = previous.btop.override { cudaSupport = true; };
+    })
+  ];
+
   imports = [
     ../../modules/developer.nix
     ../../modules/desktop-niri.nix

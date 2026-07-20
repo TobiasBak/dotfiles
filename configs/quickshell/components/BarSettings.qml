@@ -12,12 +12,12 @@ PopupButton {
     property string outputName: ""
     property real barScale: 1.0
 
-    property string settingsPath: "/home/tobias/.config/quickshell/bar-scales.json"
+    readonly property string settingsPath: Quickshell.statePath("bar-scales.json")
 
     // Read saved scale on startup
     Process {
         id: readSettings
-        command: ["bash", "-c", "cat '" + settingsPath + "' 2>/dev/null || echo '{}'"]
+        command: ["bash", "-c", "if [[ -r \"$1\" ]]; then < \"$1\"; else printf '{}'; fi", "bash", barSettings.settingsPath]
         running: true
         stdout: StdioCollector {
             onStreamFinished: {
@@ -64,7 +64,7 @@ PopupButton {
         }
 
         Text {
-            text: outputName
+            text: barSettings.outputName
             font.pixelSize: 11
             color: "#565f89"
         }

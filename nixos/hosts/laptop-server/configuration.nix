@@ -18,7 +18,7 @@
   services.xrdp = {
     enable = true;
     defaultWindowManager = "xfce4-session";
-    openFirewall = true;
+    openFirewall = false;
   };
 
   services.samba = {
@@ -52,8 +52,7 @@
     openFirewall = true;
   };
 
-  networking.firewall.allowedTCPPorts = [ 22 3389 ];
-  networking.firewall.interfaces.tailscale0.allowedTCPPorts = [ 445 3389 ];
+  networking.firewall.interfaces.tailscale0.allowedTCPPorts = [ 3389 ];
 
   systemd.tmpfiles.rules = [
     "d /srv/nas 0755 tobias users -"
@@ -64,7 +63,10 @@
   users.users.tobias = {
     isNormalUser = true;
     description = "tobias";
-    extraGroups = [ "wheel" "networkmanager" ];
+    extraGroups = [
+      "wheel"
+      "networkmanager"
+    ];
     openssh.authorizedKeys.keys = [
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFEvr2qCdxh7peyDqmauJKmLiql3e77uo8+IrkmSwRDe tobias@windows"
     ];
@@ -75,7 +77,7 @@
       users = [ "tobias" ];
       commands = [
         {
-          command = "/run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/dotfiles-nixos";
+          command = "/run/current-system/sw/bin/systemd-run --unit=nixos-switch-laptop-server --collect --service-type=exec /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/dotfiles-nixos#laptop-server";
           options = [ "NOPASSWD" ];
         }
       ];

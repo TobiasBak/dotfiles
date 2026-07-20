@@ -4,7 +4,11 @@
   "type": "module",
   "scripts": {
     "check": "tsc --noEmit",
-    "test:autoresearch": "cd ../../.. && node --test scripts/activity-dock.test.mjs scripts/autoresearch-extension.test.mjs scripts/autoresearch-fleet.test.mjs scripts/autoresearch-integration.test.mjs"
+    "test": "cd ../../.. && node --test scripts/activity-dock.test.mjs scripts/autoresearch-extension.test.mjs scripts/autoresearch-fleet.test.mjs scripts/autoresearch-integration.test.mjs scripts/pi-compaction.test.mjs scripts/subtask-extension.test.mjs",
+    "test:activity": "cd ../../.. && node --test scripts/activity-dock.test.mjs",
+    "test:autoresearch": "cd ../../.. && node --test scripts/autoresearch-extension.test.mjs scripts/autoresearch-fleet.test.mjs scripts/autoresearch-integration.test.mjs",
+    "test:compaction": "cd ../../.. && node --test scripts/pi-compaction.test.mjs",
+    "test:subtask": "cd ../../.. && node --test scripts/subtask-extension.test.mjs"
   },
   "dependencies": {
     "effect": "3.22.0"
@@ -15,6 +19,7 @@
     "@earendil-works/pi-coding-agent": "0.80.10",
     "@earendil-works/pi-tui": "0.80.10",
     "@types/node": "22.20.1",
+    "typebox": "1.1.38",
     "typescript": "7.0.2"
   }
 }

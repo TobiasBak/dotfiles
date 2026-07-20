@@ -378,27 +378,55 @@ test("supports no tools while preserving the forked child contract", () => {
   assert.equal(args.includes("--append-system-prompt"), false);
 });
 
-test("extension keeps fork and wait guidance with their parameters", () => {
-  const source = readFileSync(
-    new URL("../configs/pi/extensions/subtask/index.ts", import.meta.url),
-    "utf8",
-  );
+test("extension registration exposes fork, wait, and child prompt contracts behaviorally", () => {
+  const handlers = new Map();
+  const tools = new Map();
+  let activeTools = [];
+  const pi = {
+    on(event, handler) { handlers.set(event, handler); },
+    registerTool(tool) { tools.set(tool.name, tool); },
+    getActiveTools() { return activeTools; },
+    setActiveTools(next) { activeTools = next; },
+    sendMessage() {},
+  };
 
-  assert.match(source, /wait: Type\.Optional\(\s*Type\.Boolean/);
-  assert.match(source, /appendSubtaskChildSystemPrompt\(event\.systemPrompt\)/);
-  assert.match(source, /through the current user message, excluding the current assistant turn/);
-  assert.match(source, /name: SUBTASKS_WAIT_TOOL_NAME/);
-  assert.match(source, /runtime\.waitForGroups\(params\.groupIds, signal\)/);
-  assert.doesNotMatch(source, /async: Type\.Optional\(\s*Type\.Boolean/);
-  assert.match(source, /promptGuidelines: SUBTASKS_TOOL_PROMPT_GUIDELINES/);
-  assert.doesNotMatch(source, /tools:\s*Type\.Array/);
-  assert.match(source, /const childTools = getSelectableToolNames\(pi\)/);
-  assert.match(source, /tools: childTools/);
-  assert.match(source, /default: true/);
-  assert.match(source, /retained for subtasks_wait retrieval/);
-  assert.doesNotMatch(source, /Results were delivered automatically/);
-  assert.doesNotMatch(source, /steer queue/);
-  assert.match(source, /deliverAs: "steer", triggerTurn: true/);
+  const previousChild = process.env.PI_SUBTASK_CHILD;
+  delete process.env.PI_SUBTASK_CHILD;
+  try {
+    createSubtasksExtension()(pi);
+    handlers.get("session_start")({ reason: "startup" }, {});
+  } finally {
+    if (previousChild === undefined) delete process.env.PI_SUBTASK_CHILD;
+    else process.env.PI_SUBTASK_CHILD = previousChild;
+  }
+
+  const subtasks = tools.get(SUBTASKS_TOOL_NAME);
+  const wait = tools.get(SUBTASKS_WAIT_TOOL_NAME);
+  assert.ok(subtasks);
+  assert.ok(wait);
+  assert.deepEqual(subtasks.promptGuidelines, SUBTASKS_TOOL_PROMPT_GUIDELINES);
+  assert.equal(subtasks.parameters.properties.wait.type, "boolean");
+  assert.equal(subtasks.parameters.properties.wait.default, true);
+  assert.equal("async" in subtasks.parameters.properties, false);
+  assert.equal("tools" in subtasks.parameters.properties, false);
+  const taskSchema = subtasks.parameters.properties.tasks.items;
+  assert.equal(taskSchema.properties.fork.type, "boolean");
+  assert.match(taskSchema.properties.fork.description, /current user message, excluding the current assistant turn/);
+  assert.match(subtasks.parameters.properties.wait.description, /retained for subtasks_wait retrieval/);
+  assert.equal(wait.parameters.properties.groupIds.type, "array");
+
+  const childHandlers = new Map();
+  process.env.PI_SUBTASK_CHILD = "1";
+  try {
+    createSubtasksExtension()({
+      on(event, handler) { childHandlers.set(event, handler); },
+    });
+  } finally {
+    if (previousChild === undefined) delete process.env.PI_SUBTASK_CHILD;
+    else process.env.PI_SUBTASK_CHILD = previousChild;
+  }
+  const result = childHandlers.get("before_agent_start")({ systemPrompt: "base prompt" });
+  assert.equal(result.systemPrompt, appendSubtaskChildSystemPrompt("base prompt"));
 });
 
 test("defaults Pi steering delivery to all queued messages", () => {

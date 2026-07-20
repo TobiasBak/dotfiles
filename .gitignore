@@ -26,10 +26,3 @@ nixos/**/wireless*.nix
 nixos/**/wpa_supplicant*.conf
 nixos/**/hashed-password*.nix
 nixos/**/password*.nix
-
-# Quickshell runtime data
-arch-linux/.config/quickshell/bar-scales.json
-
-# Discord runtime data
-arch-linux/.config/discord/*
-!arch-linux/.config/discord/settings.json

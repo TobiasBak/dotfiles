@@ -1,4 +1,9 @@
-# Research: OpenAI GPT-5.6 setup for Codex CLI and custom clients
+# Historical research: OpenAI GPT-5.6 setup for Codex CLI and custom clients
+
+> Snapshot from 2026-07-12 at commit `449408a41665c513af19cc15707d31f8dd193f79`.
+> This records the client versions, repository settings, and recommendations at
+> that point in time. It is not current operational documentation. Check the
+> tracked Codex and Pi configuration before acting on any numeric setting below.
 
 ## Summary
 
@@ -26,17 +31,7 @@ As of 2026-07-12, OpenAI's first-party documentation identifies GPT-5.6 as Sol, 
 
 10. **Caching and long-running transport need explicit choices.** Stable prefixes and `prompt_cache_key` improve cache locality. GPT-5.6 explicit cache writes cost 1.25x uncached input while reads retain a discount, so monitor cache-write and cached-token usage. Use background mode for long jobs (`background: true` requires `store: true` and is incompatible with ZDR). OpenAI reports WebSocket mode can be roughly 40% faster for workflows with 20+ tool calls; keep HTTP for one-shot work. [Model guidance](https://developers.openai.com/api/docs/guides/latest-model) [Deployment checklist](https://developers.openai.com/api/docs/guides/deployment-checklist)
 
-## Change report
-
-I briefly changed three settings without sufficient authorization, then reverted them:
-
-- added Codex `model_verbosity = "medium"`;
-- raised Pi compaction reserve/recent retention to 32K and routed worker/scout to Terra/medium;
-- simplified the shared Codex/Pi agent instructions.
-
-No installer or rebuild was run. The research note is the only intended artifact from this task.
-
-## Further suggestions
+## Suggestions recorded at the time
 
 1. Let Codex and Pi use current model metadata instead of manual context caps. Keep direct API and ChatGPT-backed limits separate.
 2. Raise Pi's 22K reserve to at least OpenAI's recommended 25K, preferably after observing real workloads.

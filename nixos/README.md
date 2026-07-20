@@ -14,27 +14,27 @@ This directory contains flake-based NixOS host configs.
 
 Every bare-metal NixOS host must run the configuration from this repo. Do not
 make lasting edits directly in `/etc/nixos/configuration.nix`. Change files
-under `nixos/`, copy or pull the repo on the target, then rebuild from the
-flake. For example:
+under `nixos/`, copy or pull the repo on the target, build the host toplevel,
+and use the host-specific flow below. Remote servers use the detached
+activation documented under [Remote server operation](#remote-server-operation).
+If an emergency edit is made on a host, copy it back into this repo
+immediately. `/etc/nixos` is not the source of truth.
 
-```bash
-cd /path/to/dotfiles/nixos
-nix build .#nixosConfigurations.laptop-server.config.system.build.toplevel
-sudo nixos-rebuild switch --flake .#laptop-server
-```
-
-If emergency changes are made on the laptop, immediately copy them back into
-this repo and rebuild from the flake. `/etc/nixos` is not the source of truth.
-
-Each bare-metal host keeps its generated hardware config in its own host
-directory. For example:
+Each installed bare-metal host keeps its generated hardware configuration in
+its own host directory. For example:
 
 ```bash
 cp /etc/nixos/hardware-configuration.nix \
   /path/to/dotfiles/nixos/hosts/laptop-server/hardware-configuration.nix
 ```
 
-Never reuse a generated hardware configuration between machines.
+Never reuse a generated hardware configuration between machines. The standard
+generated-file header may say to edit `/etc/nixos/configuration.nix`; in this
+repo that means: do not hand-edit the generated hardware file for ordinary
+machine configuration. Put those changes in the host's `configuration.nix`.
+If detected disks or hardware change, regenerate the file and copy it into the
+host directory instead. Do not make `/etc/nixos/configuration.nix` the lasting
+copy.
 
 ## Install flow
 
@@ -57,11 +57,11 @@ Keep Linux config links pointed through `~/.dotfiles` where possible. That
 lets each machine place the real Git checkout wherever it wants without
 rewriting every symlink.
 
-The developer hosts import Home Manager for user-level configuration. Shared
+The developer hosts import Home Manager as part of their NixOS systems. Shared
 home state lives in `home/tobias/common.nix`, while the WSL and native desktop
 modules add only their platform-specific state. The bootstrap remains
-responsible for cloning repositories and updating tools that are not packaged
-by Nix.
+responsible for cloning repositories, repairing mutable links, and updating
+tools that are not packaged by Nix.
 
 Manual Windows-side repair:
 
@@ -74,6 +74,16 @@ Manual in-distro rebuild:
 ```bash
 ~/.dotfiles/rebuild-wsl.sh
 ```
+
+For a NixOS or Home Manager-only change, skip the mutable bootstrap work:
+
+```bash
+~/.dotfiles/rebuild-wsl.sh --nixos-only
+```
+
+`--nixos-only` still applies the embedded Home Manager configuration. It skips
+only user config link repair, mutable Codex/Pi installs, and skill link
+refresh.
 
 After changing flake inputs, update and commit the lock file from a machine
 with Nix installed:
@@ -89,11 +99,13 @@ The native developer hosts share the same base developer and Home Manager
 configuration as WSL, then add native Niri desktop support. WSL integration,
 Windows command wrappers, and `wslview` remain isolated to the WSL host.
 
-Both native host directories initially contain a clearly marked bootstrap
-`hardware-configuration.nix`. It records the host structure in the flake but
-intentionally omits the root filesystem, so a full host build fails safely.
-Replace it with the configuration generated on the target machine before
-building or installing.
+The `pc` host contains the generated hardware configuration for its existing
+machine. The `laptop` host intentionally retains a clearly marked bootstrap
+`hardware-configuration.nix` because its flake output is needed by the
+first-install flow. That placeholder omits the root filesystem, so a full
+`laptop` toplevel build and a flake-wide check cannot succeed until it is
+replaced on the target. This is the expected safe limitation. Do not add a
+guessed or fake filesystem just to make evaluation pass.
 
 #### Replace Arch while preserving Windows
 
@@ -151,7 +163,8 @@ host=pc
 # host=laptop
 ```
 
-Generate the target hardware configuration and replace the bootstrap file:
+Generate the target hardware configuration and replace the chosen host's
+machine-specific file:
 
 ```bash
 nixos-generate-config --root /mnt
@@ -163,8 +176,8 @@ Review the generated filesystems before proceeding. They must contain the
 correct root and EFI devices and must not declare Windows filesystems for
 formatting.
 
-Refuse to continue if the bootstrap placeholder is still present, then build
-before installing:
+For `laptop`, refuse to continue if the bootstrap placeholder is still
+present. Then build before installing:
 
 ```bash
 cd /mnt/home/tobias/code/dotfiles/nixos
@@ -206,9 +219,21 @@ lspci -nnk | grep -A3 -E 'VGA|3D|Display'
 nvidia-smi
 ```
 
-### Server / Bare Metal
+### Servers / bare metal
 
-From the NixOS installer:
+The two server hosts have different roles and expected checkout paths:
+
+| Host | Expected flake directory | Services | NAS storage |
+| --- | --- | --- | --- |
+| `laptop-server` | `/home/tobias/dotfiles-nixos` | XFCE, xrdp, Samba, SSH, Tailscale | `/srv/nas` on the system disk |
+| `tobias-serv01` | `/home/tobias/code/dotfiles/nixos` | Docker, Samba, SSH, Tailscale | Dedicated ext4 disk mounted at `/srv/nas`; share data in `/srv/nas/files` |
+
+The paths are part of each host's exact passwordless activation rule. If a
+checkout moves, update that host's configuration and this documentation
+together.
+
+From the NixOS installer, adapt the devices and mount points to the target's
+actual partitioning:
 
 ```bash
 sudo -i
@@ -219,134 +244,164 @@ mount /dev/disk/by-label/boot /mnt/boot
 nixos-generate-config --root /mnt
 ```
 
-Use `nmtui` to join Wi-Fi before partitioning or installing. The `laptop-server` config enables NetworkManager, so after the installed system boots you can also run:
+Use `nmtui` to join Wi-Fi before partitioning or installing. Both servers use
+NetworkManager. After boot, it remains available as `sudo nmtui`.
+
+Copy the repository to the expected path, choose exactly one host, and copy the
+target's newly generated hardware configuration over that host's committed
+machine-specific file. The committed server hardware files describe the
+existing physical machines; they are not generic placeholders.
 
 ```bash
-sudo nmtui
+host=laptop-server
+repo=/mnt/home/tobias/dotfiles-nixos
+
+# For tobias-serv01 instead:
+# host=tobias-serv01
+# repo=/mnt/home/tobias/code/dotfiles/nixos
+
+cp /mnt/etc/nixos/hardware-configuration.nix \
+  "$repo/hosts/$host/hardware-configuration.nix"
+nix build --no-link \
+  "$repo#nixosConfigurations.$host.config.system.build.toplevel"
+nixos-install --flake "$repo#$host"
 ```
 
-Copy this repo onto the installed system, then replace the placeholder hardware file:
+The authorized keys already declared in both server configurations are real
+public keys, not placeholders. Before installation, confirm that at least one
+corresponding private key is available to the operator. Add the intended
+operator's public key if necessary, and remove obsolete keys only after new
+access has been verified.
 
-```bash
-cp /mnt/etc/nixos/hardware-configuration.nix /mnt/path/to/dotfiles/nixos/hosts/laptop-server/hardware-configuration.nix
-```
-
-Before the first rebuild, edit `hosts/laptop-server/configuration.nix` and replace the placeholder SSH key.
-
-Install with:
-
-```bash
-nixos-install --flake /mnt/path/to/dotfiles/nixos#laptop-server
-```
-
-After booting, join Tailscale without Tailscale SSH if you want normal OpenSSH key auth:
+After booting, join Tailscale without enabling Tailscale SSH, then verify normal
+OpenSSH key authentication from another Tailscale device:
 
 ```bash
 sudo tailscale up --ssh=false
-```
-
-Verify SSH from another Tailscale device:
-
-```bash
 ssh tobias@laptop-server
+# or: ssh tobias@tobias-serv01
 ```
 
-Use Windows Remote Desktop over Tailscale by connecting to `laptop-server` or the laptop's Tailscale IP. The config enables xrdp.
+Only `laptop-server` provides xrdp. Its port 3389 firewall opening is limited to
+the `tailscale0` interface, so connect Windows Remote Desktop to
+`laptop-server` or its Tailscale IP, not its LAN address.
 
 ## Remote server operation
 
 ### Prefer normal OpenSSH over Tailscale
 
-Tailscale MagicDNS can still be used with normal OpenSSH:
+Tailscale MagicDNS can be used with normal OpenSSH for either host:
 
 ```bash
 ssh tobias@laptop-server
+ssh tobias@tobias-serv01
 ```
 
-Keep `services.openssh.enable = true` and declare `users.users.<user>.openssh.authorizedKeys.keys` in NixOS config. Disable Tailscale SSH with:
+Keep `services.openssh.enable = true` and declare
+`users.users.<user>.openssh.authorizedKeys.keys` in NixOS configuration. Keep
+Tailscale SSH disabled with `sudo tailscale up --ssh=false`. Tailscale SSH may
+require browser reauthentication based on tailnet ACLs; normal OpenSSH over the
+Tailscale IP uses the declared SSH keys.
+
+### Detached remote activation
+
+Never run a plain interactive `nixos-rebuild switch` over SSH. An activation
+may restart NetworkManager, the firewall, tailscaled, or sshd. If the session
+drops, an interactive command can be interrupted.
+
+Build first as the normal user, using the path and host that match the target:
 
 ```bash
-sudo tailscale up --ssh=false
+# laptop-server
+cd /home/tobias/dotfiles-nixos
+nix build --no-link \
+  .#nixosConfigurations.laptop-server.config.system.build.toplevel
+
+# tobias-serv01
+cd /home/tobias/code/dotfiles/nixos
+nix build --no-link \
+  .#nixosConfigurations.tobias-serv01.config.system.build.toplevel
 ```
 
-Reason: Tailscale SSH may require browser re-auth/checks based on tailnet ACLs. Normal OpenSSH over the Tailscale IP uses SSH keys and avoids frequent Tailscale login prompts.
-
-### Remote rebuild safety
-
-Avoid plain interactive `nixos-rebuild switch` over SSH when changing any of these:
-
-- NetworkManager/networking
-- firewall rules
-- SSH/OpenSSH
-- Tailscale
-- hostname
-- remote desktop/NAS services needed for access
-
-A switch may restart NetworkManager, firewall, tailscaled, or sshd. If the SSH session dies, the activation can be interrupted or leave you without remote access until local reboot.
-
-Safer flake patterns:
+After the build succeeds, use the matching exact detached activation:
 
 ```bash
-cd /path/to/dotfiles/nixos
-nix build .#nixosConfigurations.laptop-server.config.system.build.toplevel
+# laptop-server
+sudo /run/current-system/sw/bin/systemd-run \
+  --unit=nixos-switch-laptop-server --collect --service-type=exec \
+  /run/current-system/sw/bin/nixos-rebuild switch \
+  --flake /home/tobias/dotfiles-nixos#laptop-server
+
+# tobias-serv01
+sudo /run/current-system/sw/bin/systemd-run \
+  --unit=nixos-switch-tobias-serv01 --collect --service-type=exec \
+  /run/current-system/sw/bin/nixos-rebuild switch \
+  --flake /home/tobias/code/dotfiles/nixos#tobias-serv01
 ```
 
-Then either apply on next boot:
+The transient service continues if SSH disconnects. Check `systemctl status`
+while it is running and use the journal after completion. Because `--collect`
+unloads the finished unit, it may no longer appear in `systemctl status`.
 
 ```bash
-sudo nixos-rebuild boot --flake .#laptop-server
-sudo reboot
+systemctl status nixos-switch-laptop-server.service
+journalctl -u nixos-switch-laptop-server.service
+# Substitute nixos-switch-tobias-serv01 on tobias-serv01.
 ```
 
-or run the switch detached under systemd so it keeps running after SSH drops:
-
-```bash
-sudo systemd-run --unit=nixos-switch --collect --same-dir \
-  nixos-rebuild switch --flake .#laptop-server
-```
-
-For risky changes, keep local console/keyboard access available.
+Each server grants `tobias` passwordless sudo only for its exact
+`systemd-run` invocation. Normal sudo still requires a password. Do not add
+arguments or change the path or unit name. For risky networking, SSH,
+Tailscale, firewall, remote desktop, or NAS changes, keep local console access
+available.
 
 ### Remote update from Windows
 
-From this repo on Windows:
+`laptop-server` uses a standalone copy of the `nixos` directory:
 
 ```powershell
 scp -r .\nixos\* tobias@laptop-server:~/dotfiles-nixos/
-ssh tobias@laptop-server "cd ~/dotfiles-nixos && nix build .#nixosConfigurations.laptop-server.config.system.build.toplevel"
-ssh tobias@laptop-server "sudo /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/dotfiles-nixos"
+ssh tobias@laptop-server "cd /home/tobias/dotfiles-nixos && nix build --no-link .#nixosConfigurations.laptop-server.config.system.build.toplevel"
+ssh tobias@laptop-server "sudo /run/current-system/sw/bin/systemd-run --unit=nixos-switch-laptop-server --collect --service-type=exec /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/dotfiles-nixos#laptop-server"
 ```
 
-Use the last command only after the build succeeds. The config grants `tobias`
-passwordless sudo for that exact rebuild command, while normal sudo still
-requires a password.
+`tobias-serv01` uses the full dotfiles checkout. Update that checkout through
+its normal Git workflow, then build and activate it:
 
-### NAS access: split LAN and remote paths
-
-For home use, prefer LAN SMB path:
-
-```text
-\\192.168.86.209\nas
+```powershell
+ssh tobias@tobias-serv01 "cd /home/tobias/code/dotfiles/nixos && nix build --no-link .#nixosConfigurations.tobias-serv01.config.system.build.toplevel"
+ssh tobias@tobias-serv01 "sudo /run/current-system/sw/bin/systemd-run --unit=nixos-switch-tobias-serv01 --collect --service-type=exec /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/code/dotfiles/nixos#tobias-serv01"
 ```
 
-For remote use, prefer Tailscale MagicDNS:
+Run the activation command only after its matching build succeeds.
 
-```text
-\\laptop-server\nas
-```
+### NAS access: LAN and Tailscale paths
 
-Samba `hosts allow` should include both Tailscale and home LAN ranges, for example:
+Both Samba configurations allow the Tailscale range, the home LAN, and
+localhost at the application layer. `services.samba.openFirewall` provides the
+SMB firewall ports, so separate `tailscale0` port 445 rules are unnecessary.
+Prefer a LAN address while at home so access does not depend on Tailscale DNS
+or relay health.
+
+| Host | LAN SMB path | Tailscale MagicDNS path | Server directory |
+| --- | --- | --- | --- |
+| `laptop-server` | `\\<laptop-server-LAN-IP>\nas` | `\\laptop-server\nas` | `/srv/nas` |
+| `tobias-serv01` | `\\192.168.86.209\nas` | `\\tobias-serv01\nas` | `/srv/nas/files` |
+
+If `192.168.86.209` is reassigned, use the current LAN address and update this
+documentation. The allow list in both host configurations is:
 
 ```nix
 "hosts allow" = "100.64.0.0/10 192.168.86.0/24 127.0.0.1";
 "hosts deny" = "0.0.0.0/0";
 ```
 
-Reason: local NAS should not depend on Tailscale DERP/control-plane/DNS health while at home.
-
 ## Notes
 
-- Tailscale is enabled, but the machine is not automatically joined to a tailnet. Run `tailscale up --ssh=false` after boot or add an auth-key based flow later.
-- `hardware-configuration.nix` is intentionally machine-specific. Do not reuse it across laptops without regenerating it.
-- Automatic system upgrades are not enabled by default because the final flake path depends on where you keep this repo on the installed machine.
-- Public internet exposure should be added deliberately with Tailscale Funnel, a reverse proxy, or router port forwarding only after the private setup is working.
+- Tailscale is enabled, but hosts are not automatically joined to a tailnet.
+  Run `tailscale up --ssh=false` after boot or add an auth-key flow later.
+- Every `hardware-configuration.nix` is machine-specific. Regenerate it for a
+  different machine rather than reusing or inventing filesystem entries.
+- Automatic system upgrades are not enabled because each installed server must
+  use its documented flake path.
+- Add public internet exposure only deliberately, after private access works.

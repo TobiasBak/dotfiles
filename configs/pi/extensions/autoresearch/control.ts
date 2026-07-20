@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import {
+  MAX_AUTORESEARCH_WORKERS,
   parseAutoresearchFleetCount,
   type FleetCommandHandler,
   type SupervisorOptions,
@@ -54,7 +55,7 @@ export function registerAutoresearchControl(
       } else if (action === "status") {
         if (!(await fleet.status(ctx)) && ctx.hasUI) ctx.ui.notify("Autoresearch is off.", "info");
       } else if (ctx.hasUI) {
-        ctx.ui.notify("Usage: /autoresearch [N|on|off|status], where N is any positive safe integer", "warning");
+        ctx.ui.notify(`Usage: /autoresearch [N|on|off|status], where N is 1-${MAX_AUTORESEARCH_WORKERS}`, "warning");
       }
     },
   });

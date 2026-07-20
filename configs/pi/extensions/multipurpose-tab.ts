@@ -6,15 +6,15 @@ import { Editor, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
  * app-level follow-up action that queues the current message.
  */
 export class MultipurposeTabEditor extends CustomEditor {
-  private readonly keybindings: KeybindingsManager;
+  private readonly appKeybindings: KeybindingsManager;
 
   constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) {
     super(tui, theme, keybindings);
-    this.keybindings = keybindings;
+    this.appKeybindings = keybindings;
   }
 
   override handleInput(data: string): void {
-    if (this.isShowingAutocomplete() && this.keybindings.matches(data, "tui.input.tab")) {
+    if (this.isShowingAutocomplete() && this.appKeybindings.matches(data, "tui.input.tab")) {
       // CustomEditor handles app actions before Editor autocomplete. Call the
       // base editor directly so a visible completion wins over follow-up.
       Editor.prototype.handleInput.call(this, data);
@@ -25,9 +25,21 @@ export class MultipurposeTabEditor extends CustomEditor {
   }
 }
 
-export default function (_pi: ExtensionAPI) {
-  _pi.on("session_start", (_event, ctx) => {
+export default function (pi: ExtensionAPI) {
+  pi.on("session_start", (_event, ctx) => {
     if (ctx.mode !== "tui") return;
+
+    // An arbitrary custom editor cannot safely be retrofitted with
+    // CustomEditor's autocomplete internals. Preserve it instead of silently
+    // replacing another extension's editor.
+    if (ctx.ui.getEditorComponent()) {
+      ctx.ui.notify(
+        "Multipurpose Tab was not installed because another custom editor is already active.",
+        "warning",
+      );
+      return;
+    }
+
     ctx.ui.setEditorComponent((tui, theme, keybindings) =>
       new MultipurposeTabEditor(tui, theme, keybindings),
     );

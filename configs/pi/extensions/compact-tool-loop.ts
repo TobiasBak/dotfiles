@@ -1,6 +1,3 @@
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -8,15 +5,17 @@ import { streamSimple } from "@earendil-works/pi-ai/compat";
 import {
 	buildSessionContext,
 	type CompactionEntry,
-	compact as exportedCompact,
 	type ExtensionAPI,
 	type ExtensionContext,
-	getPackageDir,
 	type SessionEntry,
-	VERSION,
 } from "@earendil-works/pi-coding-agent";
 
-const PINNED_PI_VERSION = "0.80.10";
+import {
+	loadInternalCompactionModule,
+	PI_COMPACTION_COMPATIBILITY,
+	type CompactionResult,
+} from "./compact-tool-loop/compat.ts";
+
 const MARKER_TYPE = "compact-tool-loop.shadow-compaction";
 const MARKER_VERSION = 1;
 const SETTINGS = {
@@ -25,13 +24,9 @@ const SETTINGS = {
 	keepRecentTokens: 20_000,
 } as const;
 
-type CoreCompact = typeof exportedCompact;
-type CompactionPreparation = Parameters<CoreCompact>[0];
-type CompactionResult = Awaited<ReturnType<CoreCompact>>;
-
 interface ShadowMarkerData {
 	version: typeof MARKER_VERSION;
-	piVersion: typeof PINNED_PI_VERSION;
+	piVersion: typeof PI_COMPACTION_COMPATIBILITY.piVersion;
 	compaction: CompactionResult;
 }
 
@@ -39,41 +34,6 @@ interface ActiveMarker {
 	entry: Extract<SessionEntry, { type: "custom" }>;
 	data: ShadowMarkerData;
 	index: number;
-}
-
-interface InternalCompactionModule {
-	prepareCompaction(entries: SessionEntry[], settings: typeof SETTINGS): CompactionPreparation | undefined;
-	compact: CoreCompact;
-}
-
-let internalModulePromise: Promise<InternalCompactionModule | undefined> | undefined;
-
-async function loadInternalCompactionModule(): Promise<InternalCompactionModule | undefined> {
-	internalModulePromise ??= (async () => {
-		try {
-			if (VERSION !== PINNED_PI_VERSION) return undefined;
-			const packageDir = getPackageDir();
-			const manifest = JSON.parse(await readFile(resolve(packageDir, "package.json"), "utf8")) as {
-				main?: unknown;
-				version?: unknown;
-			};
-			if (manifest.version !== PINNED_PI_VERSION || typeof manifest.main !== "string") return undefined;
-
-			const rootUrl = pathToFileURL(resolve(packageDir, manifest.main)).href;
-			const root = (await import(rootUrl)) as { VERSION?: unknown };
-			if (root.VERSION !== PINNED_PI_VERSION) return undefined;
-
-			const moduleUrl = new URL("./core/compaction/compaction.js", rootUrl);
-			const internal = (await import(moduleUrl.href)) as Partial<InternalCompactionModule>;
-			if (typeof internal.prepareCompaction !== "function" || typeof internal.compact !== "function") {
-				return undefined;
-			}
-			return internal as InternalCompactionModule;
-		} catch {
-			return undefined;
-		}
-	})();
-	return internalModulePromise;
 }
 
 function isCompactionResult(value: unknown, precedingIds: Set<string>): value is CompactionResult {
@@ -104,7 +64,7 @@ function getActiveMarker(branch: SessionEntry[]): ActiveMarker | undefined {
 			const data = entry.data as Partial<ShadowMarkerData> | undefined;
 			if (
 				data?.version === MARKER_VERSION &&
-				data.piVersion === PINNED_PI_VERSION &&
+				data.piVersion === PI_COMPACTION_COMPATIBILITY.piVersion &&
 				isCompactionResult(data.compaction, precedingIds)
 			) {
 				active = { entry, data: data as ShadowMarkerData, index };
@@ -161,12 +121,17 @@ async function generateShadowCompaction(
 	ctx: ExtensionContext,
 	branch: SessionEntry[],
 	marker: ActiveMarker | undefined,
+	warnCompatibilityFailure: (reason: string) => void,
 ): Promise<CompactionResult | undefined> {
 	const model = ctx.model;
 	if (!model) return undefined;
 
-	const internal = await loadInternalCompactionModule();
-	if (!internal) return undefined;
+	const compatibility = await loadInternalCompactionModule();
+	if (!compatibility.ok) {
+		warnCompatibilityFailure(compatibility.reason);
+		return undefined;
+	}
+	const internal = compatibility.module;
 
 	const preparationBranch = marker ? branchWithShadowCompaction(branch, marker) : branch.map((entry) => structuredClone(entry));
 	const preparation = internal.prepareCompaction(preparationBranch, SETTINGS);
@@ -201,6 +166,16 @@ async function generateShadowCompaction(
 }
 
 export default function compactToolLoop(pi: ExtensionAPI): void {
+	let compatibilityWarningShown = false;
+	const warnCompatibilityFailure = (ctx: ExtensionContext, reason: string): void => {
+		if (compatibilityWarningShown || !ctx.hasUI) return;
+		compatibilityWarningShown = true;
+		ctx.ui.notify(
+			`Shadow compaction is disabled: ${reason}. Update compact-tool-loop/compat.ts after verifying Pi's compaction internals.`,
+			"warning",
+		);
+	};
+
 	pi.on("context", async (event, ctx) => {
 		const initialBranch = ctx.sessionManager.getBranch();
 		if (!rawContextMatchesEvent(initialBranch, event.messages)) return;
@@ -217,13 +192,18 @@ export default function compactToolLoop(pi: ExtensionAPI): void {
 			usage.tokens > usage.contextWindow - SETTINGS.reserveTokens
 		) {
 			const leafId = ctx.sessionManager.getLeafId();
-			const result = await generateShadowCompaction(ctx, initialBranch, marker);
+			const result = await generateShadowCompaction(
+				ctx,
+				initialBranch,
+				marker,
+				(reason) => warnCompatibilityFailure(ctx, reason),
+			);
 			if (result && ctx.sessionManager.getLeafId() === leafId) {
 				const currentBranch = ctx.sessionManager.getBranch();
 				if (rawContextMatchesEvent(currentBranch, event.messages)) {
 					pi.appendEntry<ShadowMarkerData>(MARKER_TYPE, {
 						version: MARKER_VERSION,
-						piVersion: PINNED_PI_VERSION,
+						piVersion: PI_COMPACTION_COMPATIBILITY.piVersion,
 						compaction: result,
 					});
 					const markedBranch = ctx.sessionManager.getBranch();
