@@ -1650,7 +1650,7 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
     const fleet = store.snapshot(root, { recent: 1 }).fleet;
     const expectedHead = String(fleet?.canonical_head ?? "");
     const integrationBase = String(pending.integration_base_head ?? "");
-    if (!expectedHead || integrationBase !== expectedHead) throw new Error(`${workerId} blocked integration base no longer matches fleet state`);
+    if (!expectedHead || !integrationBase) throw new Error(`${workerId} blocked integration lacks canonical identity`);
     const terminalHead = String(pending.terminal_head ?? "");
     const lane = this.lanes.get(workerId);
     if (!lane) throw new Error(`Missing worker lane: ${workerId}`);
@@ -1662,8 +1662,20 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
     const actual = inspect(root);
     if (actual.branch !== String(fleet?.canonical_branch ?? "")) throw new Error("Canonical branch changed before integration retry");
     if (actual.dirty) throw new Error("Canonical checkout is dirty before integration retry");
-    if (actual.head === expectedHead) throw new Error("Canonical HEAD no longer reflects the blocked advance");
     const isAncestor = this.options.isAncestor ?? isGitAncestor;
+    if (!isAncestor(root, integrationBase, expectedHead, this.options.run)) {
+      throw new Error(`${workerId} blocked integration base is not an ancestor of canonical HEAD`);
+    }
+    if (actual.head === expectedHead) {
+      if (!integrationError.startsWith("Canonical HEAD changed from expected ")) {
+        throw new Error(`${workerId} blocked integration has no verified canonical advance to retry`);
+      }
+      store.retryBlockedIntegrationAtCanonicalHead(
+        root, workerId, this.generation, Number(pending.id), expectedHead, (this.options.now ?? Date.now)(),
+      );
+      await this.enqueueTerminalIntegration(workerId);
+      return { retriedIntegration: true, previousIntegrationBase: integrationBase, observedCanonicalHead: actual.head };
+    }
     if (!isAncestor(root, expectedHead, actual.head, this.options.run)) {
       throw new Error(`Canonical HEAD ${actual.head} is not a fast-forward descendant of expected ${expectedHead}`);
     }

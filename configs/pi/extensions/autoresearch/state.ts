@@ -705,6 +705,36 @@ export class FleetStore {
     });
   }
 
+  retryBlockedIntegrationAtCanonicalHead(
+    canonicalRoot: string,
+    workerId: string,
+    generation: number,
+    intentId: number,
+    canonicalHead: string,
+    now = Date.now(),
+  ): void {
+    this.transaction(() => {
+      const fleet = this.db.prepare(`
+        SELECT canonical_head FROM fleets_v3
+        WHERE canonical_root=? AND generation=? AND canonical_head=? AND integration_error IS NULL AND status='active'
+      `).get(canonicalRoot, generation, canonicalHead);
+      if (!fleet) throw new StaleWorkerError("Canonical state changed before blocked integration retry");
+      const intent = this.db.prepare(`
+        UPDATE intents_v3 SET integration_phase='ref_created',integration_base_head=NULL,integration_result_head=NULL,
+          integration_error=NULL,integration_updated_at=?
+        WHERE id=? AND canonical_root=? AND worker_id=? AND integration_phase='blocked' AND integration_ref IS NOT NULL
+      `).run(now, intentId, canonicalRoot, workerId);
+      if (Number(intent.changes) !== 1) throw new StaleWorkerError(`Blocked integration state changed for ${workerId}`);
+      const worker = this.db.prepare(`
+        UPDATE workers_v3 SET status='paused',summary='Retrying terminal integration at the current canonical head.',
+          error=NULL,last_seen=?
+        WHERE canonical_root=? AND worker_id=? AND generation=? AND process_state='stopped'
+      `).run(now, canonicalRoot, workerId, generation);
+      if (Number(worker.changes) !== 1) throw new StaleWorkerError(`${workerId} is not stopped for blocked integration retry`);
+      this.addEventUnsafe(canonicalRoot, workerId, generation, "terminal_integration_retry", canonicalHead, now);
+    });
+  }
+
   adoptBlockedCanonicalIntegration(
     canonicalRoot: string,
     workerId: string,

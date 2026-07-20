@@ -1295,13 +1295,60 @@ test("sync retries a blocked terminal integration after a verified canonical fas
   }
 });
 
+test("sync retries a blocked integration after another integration advanced persisted canonical state", async () => {
+  let currentHead = "canonical-old";
+  let integrationCalls = 0;
+  const fixture = createSupervisorFixture({
+    inspectRepo: () => ({ canonicalRoot: fixture.root, commonDir: join(fixture.root, ".git"), branch: "main", head: currentHead, dirty: false }),
+    laneState: () => ({ head: "terminal-head", dirty: false }),
+    isAncestor: (_root, ancestor) => ancestor !== "terminal-head",
+    integrateTerminal: ({ expectedHead }) => {
+      integrationCalls += 1;
+      if (integrationCalls === 1) throw new Error(`Canonical HEAD changed from expected ${expectedHead} to canonical-new`);
+      assert.equal(expectedHead, "canonical-new");
+      return { resultHead: "merge-result", alreadyIntegrated: false };
+    },
+  });
+  let worker;
+  let observer;
+  try {
+    await fixture.harness.emit("session_start", { reason: "startup" });
+    await fixture.harness.commands.get("autoresearch").handler("1", fixture.harness.ctx);
+    await waitFor(() => fixture.records.prompts.length === 1);
+    const first = fixture.records.clients[0];
+    worker = new FleetStore(first.options.env.AUTORESEARCH_FLEET_DB, identityFor(first));
+    worker.publishIntent({ question: "Concurrent terminal campaign", experiment: "Retry after peer integration", reason: "Exercise serialized retry", baselineHead: "baseline-head" });
+    worker.finishCampaign({ outcome: "accepted", summary: "Terminal result", terminalHead: "terminal-head" });
+    first.emit({ type: "agent_settled" });
+
+    observer = new FleetStore(join(fixture.root, ".autoresearch", "fleet.sqlite"));
+    await waitFor(() => observer.snapshot(fixture.root).intents[0].integration_phase === "blocked");
+    observer.db.prepare("UPDATE fleets_v3 SET canonical_head=? WHERE canonical_root=?").run("canonical-new", fixture.root);
+    currentHead = "canonical-new";
+    const result = await fixture.harness.tools.get("autoresearch_control").execute("sync", { action: "sync", target: "w1" });
+    assert.equal(result.details.synced[0].retriedIntegration, true);
+    await waitFor(() => observer.snapshot(fixture.root).intents[0].integration_phase === "complete");
+    await waitFor(() => fixture.records.clients.length === 2);
+    const snapshot = observer.snapshot(fixture.root);
+    assert.equal(snapshot.fleet.canonical_head, "merge-result");
+    assert.equal(snapshot.fleet.frontier_version, 1);
+    assert.equal(snapshot.intents[0].integration_error, null);
+    assert.equal(integrationCalls, 2);
+  } finally {
+    observer?.close();
+    worker?.close();
+    await fixture.harness.emit("session_shutdown", { reason: "quit" });
+    rmSync(fixture.dir, { recursive: true, force: true });
+  }
+});
+
 test("sync adopts a verified manual resolution of a blocked terminal merge", async () => {
   let currentHead = "canonical-old";
   let integrationCalls = 0;
   const fixture = createSupervisorFixture({
     inspectRepo: () => ({ canonicalRoot: fixture.root, commonDir: join(fixture.root, ".git"), branch: "main", head: currentHead, dirty: false }),
     laneState: () => ({ head: "terminal-head", dirty: false }),
-    isAncestor: (_root, ancestor, descendant) => descendant === "manual-merge" && ["canonical-old", "terminal-head"].includes(ancestor),
+    isAncestor: (_root, ancestor, descendant) => ancestor === descendant || (descendant === "manual-merge" && ["canonical-old", "terminal-head"].includes(ancestor)),
     integrateTerminal: () => {
       integrationCalls += 1;
       throw new Error("synthetic merge conflict");
