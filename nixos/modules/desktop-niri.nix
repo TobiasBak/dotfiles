@@ -57,6 +57,16 @@ in
       wireplumber.enable = true;
     };
 
+    openssh = {
+      enable = true;
+      openFirewall = true;
+      settings = {
+        KbdInteractiveAuthentication = false;
+        PasswordAuthentication = false;
+        PermitRootLogin = "no";
+      };
+    };
+
     gvfs.enable = true;
     udisks2.enable = true;
     fwupd.enable = true;
@@ -69,11 +79,16 @@ in
   };
 
   virtualisation.docker.enable = true;
-  users.users.tobias.extraGroups = [
-    "docker"
-    "networkmanager"
-    "video"
-  ];
+  users.users.tobias = {
+    extraGroups = [
+      "docker"
+      "networkmanager"
+      "video"
+    ];
+    openssh.authorizedKeys.keys = [
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDcfYHFOxRxSQzxA9AixpvoJTW5xF16LVvIgkkBiEl5F tobias-nixos-wsl"
+    ];
+  };
 
   console.keyMap = "dk-latin1";
 
