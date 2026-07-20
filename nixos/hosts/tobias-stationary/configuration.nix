@@ -7,7 +7,7 @@
     ./hardware-configuration.nix
   ];
 
-  networking.hostName = "tobias-stationary";
+  networking.hostName = "pc";
 
   services.xserver.videoDrivers = [ "nvidia" ];
   hardware.nvidia = {

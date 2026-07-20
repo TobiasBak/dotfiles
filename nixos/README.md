@@ -5,8 +5,8 @@ This directory contains flake-based NixOS host configs.
 ## Hosts
 
 - `wsl`: NixOS-WSL developer environment used as the default Windows WSL distro.
-- `tobias-stationary`: native Niri/Quickshell developer workstation with NVIDIA graphics and Docker.
-- `tobias-laptop`: native Niri/Quickshell developer laptop with integrated graphics, laptop power management, and Docker.
+- `pc`: native Niri/Quickshell developer workstation with NVIDIA graphics and Docker.
+- `laptop`: native Niri/Quickshell developer laptop with integrated graphics, laptop power management, and Docker.
 - `laptop-server`: lightweight laptop server with XFCE, xrdp, SSH, Tailscale, firewall, garbage collection, and laptop sleep disabled.
 - `tobias-serv01`: NixOS file server with Docker, Samba, SSH, and Tailscale.
 
@@ -144,11 +144,15 @@ git clone https://github.com/TobiasBak/dotfiles.git /mnt/home/tobias/code/dotfil
 ln -s /home/tobias/code/dotfiles /mnt/home/tobias/.dotfiles
 ```
 
-Choose exactly one host name:
+Choose exactly one host and its configuration directory:
 
 ```bash
-host=tobias-stationary
-# host=tobias-laptop
+host=pc
+host_dir=tobias-stationary
+
+# For the laptop instead:
+# host=laptop
+# host_dir=tobias-laptop
 ```
 
 Generate the target hardware configuration and replace the bootstrap file:
@@ -156,7 +160,7 @@ Generate the target hardware configuration and replace the bootstrap file:
 ```bash
 nixos-generate-config --root /mnt
 cp /mnt/etc/nixos/hardware-configuration.nix \
-  "/mnt/home/tobias/code/dotfiles/nixos/hosts/$host/hardware-configuration.nix"
+  "/mnt/home/tobias/code/dotfiles/nixos/hosts/$host_dir/hardware-configuration.nix"
 ```
 
 Review the generated filesystems before proceeding. They must contain the
@@ -168,7 +172,7 @@ before installing:
 
 ```bash
 cd /mnt/home/tobias/code/dotfiles/nixos
-if grep -q "Bootstrap placeholder" "hosts/$host/hardware-configuration.nix"; then
+if grep -q "Bootstrap placeholder" "hosts/$host_dir/hardware-configuration.nix"; then
   echo "Hardware configuration was not replaced" >&2
   exit 1
 fi
@@ -191,7 +195,7 @@ mutable Pi/Codex tools and skill links:
 ~/.dotfiles/rebuild-nixos.sh --bootstrap
 ```
 
-Add host-specific output blocks to `hosts/<host>/niri.kdl` only after checking
+Add host-specific output blocks to `hosts/<host-directory>/niri.kdl` only after checking
 the identifiers reported by:
 
 ```bash

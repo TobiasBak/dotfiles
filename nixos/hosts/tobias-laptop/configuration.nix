@@ -7,7 +7,7 @@
     ./hardware-configuration.nix
   ];
 
-  networking.hostName = "tobias-laptop";
+  networking.hostName = "laptop";
 
   hardware.bluetooth = {
     enable = true;

@@ -41,11 +41,11 @@
           ./hosts/wsl/configuration.nix
         ];
 
-        tobias-stationary = mkDeveloperSystem [
+        pc = mkDeveloperSystem [
           ./hosts/tobias-stationary/configuration.nix
         ];
 
-        tobias-laptop = mkDeveloperSystem [
+        laptop = mkDeveloperSystem [
           ./hosts/tobias-laptop/configuration.nix
         ];
 

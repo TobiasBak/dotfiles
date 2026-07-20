@@ -17,8 +17,8 @@ Builds and switches a native developer host. When host is omitted, the
 current hostname is used. Pass a host during first setup from generic NixOS.
 
 Hosts:
-  tobias-stationary
-  tobias-laptop
+  pc
+  laptop
 
 Options:
   --bootstrap  Refresh mutable Pi/Codex tools and skill links after switching.
@@ -29,7 +29,7 @@ EOF
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --bootstrap) BOOTSTRAP=true ;;
-    tobias-stationary | tobias-laptop)
+    pc | laptop)
       if [ -n "$TARGET_HOST" ]; then
         echo "Specify only one host." >&2
         exit 2
@@ -67,15 +67,16 @@ fi
 current_host="$(hostname)"
 host="${TARGET_HOST:-$current_host}"
 case "$host" in
-  tobias-stationary | tobias-laptop) ;;
+  pc) host_dir="tobias-stationary" ;;
+  laptop) host_dir="tobias-laptop" ;;
   *)
     echo "Unsupported native NixOS hostname: $host" >&2
-    echo "For first setup, pass tobias-stationary or tobias-laptop explicitly." >&2
+    echo "For first setup, pass pc or laptop explicitly." >&2
     exit 1
     ;;
 esac
 
-hardware_config="$REPO_DIR/nixos/hosts/$host/hardware-configuration.nix"
+hardware_config="$REPO_DIR/nixos/hosts/$host_dir/hardware-configuration.nix"
 if grep -q "Bootstrap placeholder" "$hardware_config"; then
   generated_hardware_config="/etc/nixos/hardware-configuration.nix"
   if [ -z "$TARGET_HOST" ] || [ ! -f "$generated_hardware_config" ]; then

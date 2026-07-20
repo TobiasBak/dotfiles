@@ -47,8 +47,8 @@ Inside NixOS WSL, refresh the system profile and Home Manager user config with:
 
 The native developer hosts are:
 
-- `tobias-stationary`: NVIDIA desktop workstation.
-- `tobias-laptop`: integrated-graphics laptop.
+- `pc`: NVIDIA desktop workstation.
+- `laptop`: integrated-graphics laptop.
 
 Both use Niri, Quickshell, Home Manager, Docker, and the shared developer
 profile. See `nixos/README.md` for the Arch replacement and installation flow.
@@ -66,7 +66,7 @@ for the first flake build, applies the declared hostname, and bootstraps
 developer tools when requested:
 
 ```bash
-./rebuild-nixos.sh tobias-stationary --bootstrap
+./rebuild-nixos.sh pc --bootstrap
 ```
 
 Use `./rebuild-nixos.sh --bootstrap` on later rebuilds when Pi, Codex, and
