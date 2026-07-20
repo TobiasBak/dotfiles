@@ -58,8 +58,18 @@ After installation, rebuild the current native host with:
 ./rebuild-nixos.sh
 ```
 
-Use `./rebuild-nixos.sh --bootstrap` when Pi, Codex, and agent skill links also
-need to be refreshed.
+On the first rebuild from a generic NixOS installation, select the target
+explicitly. The script copies the generated hardware configuration when the
+repo still contains its placeholder, enables the Nix features needed for the
+first flake build, applies the declared hostname, and bootstraps developer
+tools when requested:
+
+```bash
+./rebuild-nixos.sh tobias-stationary --bootstrap
+```
+
+Use `./rebuild-nixos.sh --bootstrap` on later rebuilds when Pi, Codex, and
+agent skill links also need to be refreshed.
 
 ### NixOS servers
 

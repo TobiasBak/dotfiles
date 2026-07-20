@@ -5,14 +5,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_DIR="$SCRIPT_DIR"
 STABLE_REPO_DIR="$HOME/.dotfiles"
 BOOTSTRAP=false
+TARGET_HOST=""
 
 log() { printf '\033[0;36m[rebuild-nixos]\033[0m %s\n' "$*"; }
 
 usage() {
   cat <<'EOF'
-Usage: ./rebuild-nixos.sh [--bootstrap]
+Usage: ./rebuild-nixos.sh [host] [--bootstrap]
 
-Builds and switches the native NixOS host matching the current hostname.
+Builds and switches a native developer host. When host is omitted, the
+current hostname is used. Pass a host during first setup from generic NixOS.
+
+Hosts:
+  tobias-stationary
+  tobias-laptop
 
 Options:
   --bootstrap  Refresh mutable Pi/Codex tools and skill links after switching.
@@ -23,6 +29,13 @@ EOF
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --bootstrap) BOOTSTRAP=true ;;
+    tobias-stationary | tobias-laptop)
+      if [ -n "$TARGET_HOST" ]; then
+        echo "Specify only one host." >&2
+        exit 2
+      fi
+      TARGET_HOST="$1"
+      ;;
     -h | --help)
       usage
       exit 0
@@ -51,20 +64,31 @@ if [ "$(id -u)" -eq 0 ]; then
   exit 1
 fi
 
-host="$(hostname)"
+current_host="$(hostname)"
+host="${TARGET_HOST:-$current_host}"
 case "$host" in
   tobias-stationary | tobias-laptop) ;;
   *)
     echo "Unsupported native NixOS hostname: $host" >&2
+    echo "For first setup, pass tobias-stationary or tobias-laptop explicitly." >&2
     exit 1
     ;;
 esac
 
 hardware_config="$REPO_DIR/nixos/hosts/$host/hardware-configuration.nix"
 if grep -q "Bootstrap placeholder" "$hardware_config"; then
-  echo "Refusing to rebuild with the placeholder hardware configuration: $hardware_config" >&2
-  echo "Replace it with the generated configuration from this machine first." >&2
-  exit 1
+  generated_hardware_config="/etc/nixos/hardware-configuration.nix"
+  if [ -z "$TARGET_HOST" ] || [ ! -f "$generated_hardware_config" ]; then
+    echo "Refusing to rebuild with the placeholder hardware configuration: $hardware_config" >&2
+    echo "Pass the target host explicitly on a generic NixOS installation." >&2
+    exit 1
+  fi
+  if grep -q "Bootstrap placeholder" "$generated_hardware_config"; then
+    echo "Generated hardware configuration is also a placeholder: $generated_hardware_config" >&2
+    exit 1
+  fi
+  cp "$generated_hardware_config" "$hardware_config"
+  log "Copied generated hardware configuration for $host"
 fi
 
 repo_resolved="$(readlink -f "$REPO_DIR")"
@@ -83,11 +107,22 @@ elif [ "$stable_resolved" != "$repo_resolved" ]; then
   exit 1
 fi
 
+nix_config="${NIX_CONFIG:-}"
+if [ -n "$nix_config" ]; then
+  nix_config+=$'\n'
+fi
+nix_config+='experimental-features = nix-command flakes'
+
 log "Building $host..."
-nix build --no-link "$REPO_DIR/nixos#nixosConfigurations.$host.config.system.build.toplevel"
+NIX_CONFIG="$nix_config" nix build --no-link "$REPO_DIR/nixos#nixosConfigurations.$host.config.system.build.toplevel"
 
 log "Switching $host..."
-sudo nixos-rebuild switch --flake "$REPO_DIR/nixos#$host"
+sudo env "NIX_CONFIG=$nix_config" nixos-rebuild switch --flake "$REPO_DIR/nixos#$host"
+
+if [ "$current_host" != "$host" ]; then
+  sudo hostname "$host"
+  log "Updated runtime hostname to $host"
+fi
 
 if [ "$BOOTSTRAP" = true ]; then
   log "Refreshing developer tools and skill links..."
