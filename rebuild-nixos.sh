@@ -91,6 +91,38 @@ if grep -q "Bootstrap placeholder" "$hardware_config"; then
   log "Copied generated hardware configuration for $host"
 fi
 
+normalize_efi_mount() {
+  local efi_device efi_fs_type
+
+  [ -n "$TARGET_HOST" ] || return
+  if findmnt -n /boot/efi >/dev/null 2>&1; then
+    return
+  fi
+
+  efi_fs_type="$(findmnt -n -o FSTYPE /boot 2>/dev/null || true)"
+  [ "$efi_fs_type" = "vfat" ] || return
+
+  if ! grep -q 'fileSystems\."/boot\(/efi\)\?"' "$hardware_config"; then
+    echo "The EFI partition is mounted at /boot, but $hardware_config has no matching filesystem entry." >&2
+    exit 1
+  fi
+
+  efi_device="$(findmnt -n -o SOURCE /boot)"
+  log "Moving the EFI mount from /boot to /boot/efi for the native GRUB configuration..."
+  sudo umount /boot
+  sudo mkdir -p /boot/efi
+  if ! sudo mount "$efi_device" /boot/efi; then
+    sudo mount "$efi_device" /boot || true
+    echo "Could not mount $efi_device at /boot/efi; restored the /boot mount." >&2
+    exit 1
+  fi
+
+  sed -i 's|fileSystems\."/boot"|fileSystems."/boot/efi"|' "$hardware_config"
+  log "Mounted $efi_device at /boot/efi and updated the hardware configuration"
+}
+
+normalize_efi_mount
+
 repo_resolved="$(readlink -f "$REPO_DIR")"
 stable_resolved="$(readlink -f "$STABLE_REPO_DIR" 2>/dev/null || true)"
 if [ -L "$STABLE_REPO_DIR" ]; then

@@ -60,9 +60,10 @@ After installation, rebuild the current native host with:
 
 On the first rebuild from a generic NixOS installation, select the target
 explicitly. The script copies the generated hardware configuration when the
-repo still contains its placeholder, enables the Nix features needed for the
-first flake build, applies the declared hostname, and bootstraps developer
-tools when requested:
+repo still contains its placeholder, moves a graphical installer's VFAT EFI
+mount from `/boot` to `/boot/efi` when needed, enables the Nix features needed
+for the first flake build, applies the declared hostname, and bootstraps
+developer tools when requested:
 
 ```bash
 ./rebuild-nixos.sh tobias-stationary --bootstrap
