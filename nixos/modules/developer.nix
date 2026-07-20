@@ -30,6 +30,7 @@ in
   environment.sessionVariables.ZSH = "${pkgs.oh-my-zsh}/share/oh-my-zsh";
 
   home-manager = {
+    backupFileExtension = "pre-home-manager";
     useGlobalPkgs = true;
     useUserPackages = true;
     users.tobias.imports = [ ../home/tobias/common.nix ];
