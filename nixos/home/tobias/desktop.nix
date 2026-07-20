@@ -22,7 +22,6 @@ in
     ".config/htop" = linkFromDotfiles "configs/htop";
     ".config/mako" = linkFromDotfiles "configs/mako";
     ".config/quickshell" = linkFromDotfiles "configs/quickshell";
-    ".config/wezterm" = linkFromDotfiles "configs/wezterm";
     ".config/Code/User" = linkFromDotfiles "configs/Code/User";
     ".config/discord/settings.json" = linkFromDotfiles "configs/discord/settings.json";
 

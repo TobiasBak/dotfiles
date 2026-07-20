@@ -38,7 +38,6 @@
   };
 
   environment.systemPackages = with pkgs; [
-    btop
     htop
     tailscale
   ];

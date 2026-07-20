@@ -1,13 +1,14 @@
 command = zsh
 working-directory = home
 window-inherit-working-directory = false
+window-inherit-font-size = false
 tab-inherit-working-directory = false
 split-inherit-working-directory = false
 
 font-family = JetBrainsMono Nerd Font
-font-size = 11
+font-size = 10
 
-theme = "Flexoki Dark"
+theme = "Rose Pine Moon"
 
 mouse-hide-while-typing = true
 copy-on-select = clipboard

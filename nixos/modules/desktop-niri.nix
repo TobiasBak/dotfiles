@@ -127,7 +127,6 @@ in
     swaylock
     vscode
     wayland-utils
-    wezterm
     wireplumber
     wl-clipboard
     xwayland-satellite

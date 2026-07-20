@@ -66,11 +66,6 @@ animations {
 }
 
 window-rule {
-    match app-id=r#"^org\.wezfurlong\.wezterm$"#
-    default-column-width {}
-}
-
-window-rule {
     geometry-corner-radius 8
     clip-to-geometry true
 }
