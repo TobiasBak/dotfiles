@@ -21,6 +21,7 @@ const STATUS_PRESENTATION: Record<string, { marker: string; label: string }> = {
   launching: { marker: "○", label: "launching" },
   running: { marker: "●", label: "running" },
   idle: { marker: "○", label: "idle" },
+  parked: { marker: "◇", label: "parked" },
   paused: { marker: "■", label: "paused" },
   blocked: { marker: "!", label: "blocked" },
   failed: { marker: "×", label: "failed" },
@@ -97,12 +98,13 @@ export function fleetDashboardWidgetLines(
   const markers = `${options.canonicalDirty ? " dirty" : ""}${options.canonicalChanged ? " head-changed" : ""}${options.protocolChanged ? " protocol-change" : ""}`;
   const workerCount = snapshot.workers.length;
   const completedCampaigns = Math.max(0, Math.floor(finiteNumber(snapshot.fleet?.completed_campaigns)));
+  const frontier = Math.max(0, Math.floor(finiteNumber(snapshot.fleet?.frontier_version)));
   const lines: FleetWidgetLine[] = [{
     kind: "group",
     segments: [
       { role: "frame", text: "┌─ " },
       { role: "group", text: "autoresearch" },
-      { role: "metadata", text: ` · ${fleetStatus} · ${workerCount} worker${workerCount === 1 ? "" : "s"} · ${completedCampaigns} campaign${completedCampaigns === 1 ? "" : "s"} completed · canonical ${canonical}${markers}` },
+      { role: "metadata", text: ` · ${fleetStatus} · ${workerCount} worker${workerCount === 1 ? "" : "s"} · ${completedCampaigns} campaign${completedCampaigns === 1 ? "" : "s"} completed · frontier ${frontier} · canonical ${canonical}${markers}` },
     ],
   }];
 
@@ -156,12 +158,15 @@ export function fleetDashboardLines(snapshot: FleetSnapshot, options: FleetDashb
 }
 
 export function compactFleetContext(snapshot: FleetSnapshot): string {
+  const recentOutcomes = snapshot.intents.filter((intent) => intent.status !== "active" && typeof intent.outcome === "string").slice(0, 5)
+    .map((intent) => `${text(intent.worker_id)}:${text(intent.outcome)}`).join(", ");
   const rows = snapshot.workers.map((worker) => {
     const intent = activeIntent(snapshot, worker.worker_id);
     return `- ${text(worker.worker_id)} ${shortSessionId(worker.session_id)}: ${text(worker.status)}; process=${text(worker.process_state)}; intent=${clip(intent?.question, 140)}; experiment=${clip(intent?.experiment, 160)}; stage=${text(worker.stage)}; tool=${text(worker.current_tool)}; summary=${clip(worker.summary, 180)}; error=${clip(worker.error, 180)}`;
   });
   return [
-    `[autoresearch fleet snapshot; informational operational state, not Git truth; generation ${String(snapshot.fleet?.generation ?? "?")}]`,
+    `[autoresearch fleet snapshot; informational operational state, not Git truth; generation ${String(snapshot.fleet?.generation ?? "?")}; frontier ${String(snapshot.fleet?.frontier_version ?? 0)}]`,
+    recentOutcomes ? `Recent outcomes: ${recentOutcomes}` : "Recent outcomes: none",
     ...rows,
   ].join("\n");
 }
@@ -171,13 +176,16 @@ export function compactWorkerContext(snapshot: FleetSnapshot, workerId: string):
     .filter((intent) => intent.status === "active")
     .map((intent) => `${text(intent.worker_id)}: ${clip(intent.question, 120)} -> ${clip(intent.experiment, 140)}`);
   const own = snapshot.intents.find((intent) => intent.worker_id === workerId && intent.status === "active");
+  const recentOutcomes = snapshot.intents.filter((intent) => intent.status !== "active" && typeof intent.outcome === "string").slice(0, 5)
+    .map((intent) => `${text(intent.worker_id)}:${text(intent.outcome)}`).join(", ");
   return [
-    `[autoresearch shared state for ${workerId}; informational, non-exclusive, and not Git truth]`,
+    `[autoresearch shared state for ${workerId}; informational, non-exclusive, and not Git truth; frontier ${String(snapshot.fleet?.frontier_version ?? 0)}]`,
     own
       ? `Your active intent: ${text(own.question)}; experiment=${text(own.experiment)}; reason=${text(own.reason)}`
       : "You have no active intent. Read durable research and choose a valuable direction before publishing one.",
     intentions.length > 0 ? `Active worker intentions: ${intentions.join(" | ")}` : "Active worker intentions: none.",
-    "Avoid obvious duplication when useful, but overlap is allowed and can provide replication.",
+    recentOutcomes ? `Recent outcomes: ${recentOutcomes}` : "Recent outcomes: none.",
+    "Choose a different mechanism from active intents by default. Overlap is allowed only when independent replication or a materially different evidence path answers a specific uncertainty; justify that overlap explicitly in the intent reason.",
   ].join("\n");
 }
 

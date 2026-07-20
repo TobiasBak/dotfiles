@@ -5,7 +5,7 @@ description: Design or review a project-specific autoresearch program, program.m
 
 # Autoresearch Program Design
 
-Build a reviewable research contract with the human. Do not blindly generate `program.md`, infer preferences that materially affect cost or risk, or launch autoresearch workers as part of setup.
+Build a reviewable enduring research contract. Collaborate with the human on consequential cost, secrets, destructive actions, external access, migrations, unsafe operations, and any other authority the project reserves. Do not blindly generate `program.md`, infer preferences that materially affect cost or risk, or launch autoresearch workers as part of setup.
 
 Use progressive disclosure:
 
@@ -16,9 +16,19 @@ Use progressive disclosure:
 
 ## Outcome
 
-Produce a `program.md` that a human can review and commit. It must distinguish settled facts, proposed defaults, and unresolved project-specific decisions. A program is ready only when its commands are executable, claims are falsifiable, evidence gates are explicit, resources are bounded, worker integration is safe, and terminal outcomes are unambiguous.
+Produce an enduring `program.md` that can govern continuous project-level research while bounded executable epoch contracts remain separately immutable. It must distinguish settled facts, proposed defaults, and unresolved project-specific decisions. A program is ready only when its authority is explicit, commands are executable where required, claims are falsifiable, evidence gates are explicit, resources are bounded, worker integration is safe, and terminal outcomes are unambiguous.
 
-Do not launch `/autoresearch N` until the human has reviewed the program and the canonical checkout satisfies the extension's clean-checkout requirement.
+Do not launch `/autoresearch N` until the program's declared approval and validation policy is satisfied and the canonical checkout satisfies the extension's clean-checkout requirement. Human review is required only where that policy or a consequential boundary requires it.
+
+## Enduring mission and executable epochs
+
+Treat `program.md` as the enduring project-level meta-program. It remains active through research, design, implementation, evaluator or harness construction, prerequisite work, and evidence. A bounded mechanism family or executable evidence epoch is a child of that mission, not a replacement for it.
+
+Keep each executable epoch contract separate from `program.md`. An immutable lifecycle index or other project mechanism selects the active contract by its exact identity. The contract must bind the comparator or champion, checkpoint, tokenizer or preprocessing, case set, evaluator, environment, budget, artifact namespace, and gates. If no epoch is active, model and evidence launches fail closed; meta-research, design, implementation, prerequisite, evaluator, and harness work continues.
+
+Human approval is project-selectable. Require it for consequential cost, secrets, destructive actions, external access, migrations, or other declared risks, but do not make it mandatory for every safe successor activation. A successor epoch may activate autonomously only when its immutable comparator, checkpoint, tokenizer, case set, evaluator, environment, budget, artifact, and gate identities are concrete; prerequisite and harness tests pass; no placeholders remain; inactive launches fail closed; the lifecycle update is committed atomically; and prior evidence is untouched.
+
+At a bounded family or epoch limit, stop that child activity and return to the project mission. The next legal move may be an architecture pivot, prerequisite implementation, evaluator or harness construction, successor epoch design or activation, or another project-level move. Stop or park the fleet only at genuine project-level exhaustion or user stop.
 
 ## Collaborative workflow
 
@@ -66,21 +76,21 @@ For every central claim, specify:
 7. **Evidence stage**: which command and cases can support the claim.
 8. **Scope limit**: what the result does not establish.
 
-Name terminal outcomes in advance. Typical outcomes are:
+Name terminal outcomes in advance. These outcomes describe a bounded campaign contribution, not the end of the enduring project mission:
 
-- **accepted**: candidate passes all validity gates and the predeclared promotion rule
-- **rejected**: valid evidence does not beat the champion or violates a gate
-- **inconclusive**: evidence is valid but insufficient to decide within budget
-- **external-blocked**: required input, access, environment, or human decision is unavailable after every useful legal action was tried
-- **exhausted**: campaign budget or hypothesis space is consumed without acceptance
+- **accepted**: every applicable program gate passes and the commit delivers either a validated Pareto/model frontier advance or a validated search-capability advance that makes a previously impossible legal campaign executable, such as a tested representation primitive, direct runtime kernel, evaluator, harness, prerequisite, or safely activated successor epoch. Merely drafting docs, changing Git, closing an epoch, or performing an audit is not accepted; audits and design-only work are inconclusive unless they deliver a validated capability.
+- **rejected**: tested failure while useful legal project-level moves remain
+- **inconclusive**: valid evidence, audit, or design/build work is insufficient to decide and does not yet deliver a validated capability
+- **external-blocked**: a specific required input, access path, environment, prerequisite, or human decision is unavailable after every useful legal workaround was tried; this is never global project exhaustion
+- **exhausted**: no useful legal project-level move remains across model, representation, architecture, runtime, evaluation, data permitted by the mission, tooling or prerequisites, and safe successor epochs, or continuation is permanently impossible under external constraints with no legal workaround. Only this outcome can justify parking the fleet.
 
-Unsafe, invalid, crashed, missing, or malformed evidence is not itself a sixth fleet outcome. Define whether it makes the campaign `rejected`, `inconclusive`, or `exhausted`, or whether a genuinely unavailable external prerequisite makes it `external-blocked`.
+Exhaustion of a mechanism family, campaign budget, or executable evidence epoch is not `exhausted`. It triggers a return to the meta-program for a legal pivot, prerequisite implementation, evaluator or harness construction, successor epoch design or activation, or another project-level move. Do not convert a bounded closure into fleet parking.
 
-A timeout, crash, missing result, malformed result, benchmark drift, or leaked holdout is not silently converted into a poor score. Define whether it invalidates a replicate, rejects a candidate, or stops the campaign.
+Unsafe, invalid, crashed, missing, or malformed evidence is not itself another fleet outcome. Define whether it makes the bounded campaign `rejected` or `inconclusive`, or whether a specific unavailable prerequisite makes it `external-blocked`. A timeout, crash, missing result, malformed result, benchmark drift, or leaked holdout is not silently converted into a poor score.
 
 ### 4. Choose campaign stages
 
-Use the cheapest stage capable of rejecting a bad hypothesis, then escalate only survivors. A common sequence is:
+Use the cheapest stage capable of rejecting a bad hypothesis, then escalate only survivors. Stages and evidence epochs are bounded execution units inside the enduring mission. A common sequence is:
 
 1. **Orientation and calibration**: verify commands, benchmark self-tests, baseline variance, and artifact paths.
 2. **Development loop**: rapid deterministic tests and visible development cases.
@@ -141,11 +151,11 @@ The extension never changes an active lane. After a worker records a terminal ca
 
 ### 8. Define disposable autonomous researcher operation
 
-Each worker is an autonomous researcher, not a task consumer. It observes the program, repository, and shared checkpoints; chooses a useful campaign within the reviewed scope; records a non-exclusive intent; and executes one full campaign from orientation through a scientific terminal outcome. It then writes a terminal checkpoint, leaves recoverable artifacts and Git state, and exits. The extension replaces exited workers while `/autoresearch N` remains active.
+Each worker is an autonomous researcher, not a task consumer. It observes the enduring meta-program, the selected epoch when one exists, repository state, and shared checkpoints; chooses a useful bounded campaign or project-level move; records a non-exclusive intent; and executes through a scientific terminal outcome. It then writes a terminal checkpoint, leaves recoverable artifacts and Git state, and exits. The extension replaces exited workers while `/autoresearch N` remains active, so a campaign or epoch limit returns work to the project mission rather than parking a lane.
 
 There is no task dispatcher, claim protocol, lock, lease, approval or admission step, fencing token, evidence-capacity reservation, or compaction-driven handoff. Intents are informational and may overlap. A worker should use observed intents and findings to avoid waste, but must tolerate duplicate work and independently verify evidence it relies on.
 
-Checkpoints support observability and crash recovery only. On restart, a worker may continue a recoverable campaign or begin another useful campaign based on the durable state. A continuation command or launch receipt describes process state but does not confer ownership. Project commands remain responsible for scientific budgets, benchmark validity, cost controls, scarce-resource safety, process cleanup, and immutable evidence artifacts.
+Checkpoints support observability and crash recovery only. On restart, a worker may continue a recoverable campaign or begin another useful campaign based on the durable state. A continuation command or launch receipt describes process state but does not confer ownership. Project commands remain responsible for scientific budgets, benchmark validity, cost controls, scarce-resource safety, process cleanup, immutable evidence artifacts, and fail-closed inactive epoch launches.
 
 ### 9. Review, then write
 
@@ -170,7 +180,10 @@ After drafting, review it against this checklist:
 - evidence artifacts and plans are immutable and attributable
 - shared checkpoints are bounded, informational, and sufficient for observability and crash recovery
 - `/autoresearch N` uses the extension's 1-8 worker bound, while project commands enforce legitimate scientific and resource limits
-- each worker completes one campaign, records a terminal outcome, and exits for replacement
+- `program.md` remains an enduring meta-program while immutable epoch contracts are selected separately
+- no active epoch fails closed for model/evidence launches while meta-research continues
+- each worker completes one bounded campaign, records a terminal outcome, and exits for the next project-level move
+- family or epoch exhaustion cannot park a lane by itself
 - Git/worktree synchronization cannot be mistaken for integration or evidence
 - knowledge promotion and terminal receipts have destinations
 - all project-specific decisions are resolved or visibly block launch

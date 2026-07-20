@@ -202,6 +202,156 @@ test("worker tool activity timestamps start once and clear on end, settlement, a
   }
 });
 
+test("genuine project-level exhaustion parks without replacement, and all genuinely exhausted lanes exhaust the fleet", () => {
+  const fleet = createFleet(2);
+  const w1 = workerStore(fleet, 0);
+  const w2 = workerStore(fleet, 1);
+  try {
+    fleet.parent.db.prepare("UPDATE fleets_v3 SET canonical_head=? WHERE canonical_root=?").run("canonical-head", fleet.root);
+    const finish = (worker, workerId, outcome, base, terminal, result, now) => {
+      const { intentId } = worker.publishIntent({ question: `${workerId} question`, experiment: "complete campaign", reason: "terminal lifecycle", baselineHead: base }, now);
+      worker.finishCampaign({ outcome, summary: `${outcome} result`, terminalHead: terminal }, now + 1);
+      fleet.parent.markIntegrationRef(fleet.root, workerId, fleet.generation, intentId, `refs/autoresearch/${workerId}/${now}`, now + 2);
+      fleet.parent.beginIntegration(fleet.root, workerId, fleet.generation, intentId, base, now + 3);
+      fleet.parent.completeCanonicalIntegration(fleet.root, workerId, fleet.generation, intentId, base, result, now + 4);
+      return fleet.parent.completeLaneReset(fleet.root, workerId, fleet.generation, intentId, now + 5);
+    };
+    const first = finish(w1, "w1", "exhausted", "canonical-head", "terminal-1", "canonical-project-exhausted", 110);
+    assert.equal(first.disposition, "park");
+    assert.equal(fleet.parent.snapshot(fleet.root).workers.find((worker) => worker.worker_id === "w1").status, "parked");
+    assert.equal(fleet.parent.snapshot(fleet.root).fleet.status, "active");
+    const second = finish(w2, "w2", "exhausted", "canonical-project-exhausted", "terminal-2", "canonical-project-exhausted-2", 120);
+    assert.equal(second.disposition, "fleet-exhausted");
+    const snapshot = fleet.parent.snapshot(fleet.root);
+    assert.equal(snapshot.fleet.status, "exhausted");
+    assert.ok(snapshot.workers.every((worker) => worker.status === "parked" && worker.process_state === "stopped"));
+  } finally {
+    w2.close();
+    w1.close();
+    fleet.parent.close();
+    rmSync(fleet.dir, { recursive: true, force: true });
+  }
+});
+
+test("a manually stopped lane prevents genuine project-level fleet exhaustion", () => {
+  const fleet = createFleet(2);
+  const w1 = workerStore(fleet, 0);
+  try {
+    fleet.parent.db.prepare("UPDATE fleets_v3 SET canonical_head=? WHERE canonical_root=?").run("base", fleet.root);
+    fleet.parent.parentUpdateWorker(fleet.root, "w2", { status: "stopped", processState: "stopped" }, 109, fleet.generation);
+    const { intentId } = w1.publishIntent({
+      question: "Is project-level search exhausted?",
+      experiment: "Close every legal project-level move",
+      reason: "Exercise scientific exhaustion with an operator-stopped peer",
+      baselineHead: "base",
+    }, 110);
+    w1.finishCampaign({ outcome: "exhausted", summary: "No useful legal project-level move remains", terminalHead: "terminal" }, 111);
+    fleet.parent.markIntegrationRef(fleet.root, "w1", fleet.generation, intentId, "refs/exhausted", 112);
+    fleet.parent.beginIntegration(fleet.root, "w1", fleet.generation, intentId, "base", 113);
+    fleet.parent.completeCanonicalIntegration(fleet.root, "w1", fleet.generation, intentId, "base", "result", 114);
+    const transition = fleet.parent.completeLaneReset(fleet.root, "w1", fleet.generation, intentId, 115);
+    assert.equal(transition.disposition, "park");
+    assert.equal(fleet.parent.snapshot(fleet.root).fleet.status, "active");
+  } finally {
+    w1.close();
+    fleet.parent.close();
+    rmSync(fleet.dir, { recursive: true, force: true });
+  }
+});
+
+test("frontier acceptance wakes parked lanes and makes stale project-level exhaustion replaceable", () => {
+  const fleet = createFleet(2);
+  const w1 = workerStore(fleet, 0);
+  const w2 = workerStore(fleet, 1);
+  try {
+    fleet.parent.db.prepare("UPDATE fleets_v3 SET canonical_head=? WHERE canonical_root=?").run("base", fleet.root);
+    const exhausted = w1.publishIntent({ question: "w1 project-exhausted", experiment: "no legal project-level move", reason: "frontier race", baselineHead: "base" }, 110);
+    w1.finishCampaign({ outcome: "exhausted", summary: "No useful legal project-level move remains", terminalHead: "terminal-project-exhausted" }, 111);
+    fleet.parent.markIntegrationRef(fleet.root, "w1", fleet.generation, exhausted.intentId, "refs/a", 112);
+    fleet.parent.beginIntegration(fleet.root, "w1", fleet.generation, exhausted.intentId, "base", 113);
+    fleet.parent.completeCanonicalIntegration(fleet.root, "w1", fleet.generation, exhausted.intentId, "base", "head-1", 114);
+    assert.equal(fleet.parent.completeLaneReset(fleet.root, "w1", fleet.generation, exhausted.intentId, 115).disposition, "park");
+
+    const accepted = w2.publishIntent({ question: "w2 accepted", experiment: "promotion gate", reason: "advance frontier", baselineHead: "head-1" }, 120);
+    assert.equal(fleet.parent.snapshot(fleet.root, { workerId: "w2" }).intents[0].started_frontier_version, 0);
+    w2.finishCampaign({ outcome: "accepted", summary: "All validity and promotion gates passed", terminalHead: "terminal-accepted" }, 121);
+    fleet.parent.markIntegrationRef(fleet.root, "w2", fleet.generation, accepted.intentId, "refs/b", 122);
+    fleet.parent.beginIntegration(fleet.root, "w2", fleet.generation, accepted.intentId, "head-1", 123);
+    const integration = fleet.parent.completeCanonicalIntegration(fleet.root, "w2", fleet.generation, accepted.intentId, "head-1", "head-2", 124);
+    assert.equal(integration.frontierAdvanced, true);
+    const transition = fleet.parent.completeLaneReset(fleet.root, "w2", fleet.generation, accepted.intentId, 125);
+    assert.equal(transition.disposition, "replace");
+    assert.deepEqual(transition.reactivatedWorkerIds, ["w1"]);
+    assert.equal(fleet.parent.snapshot(fleet.root).fleet.frontier_version, 1);
+    assert.equal(fleet.parent.snapshot(fleet.root, { workerId: "w1" }).workers[0].status, "queued");
+  } finally {
+    w2.close();
+    w1.close();
+    fleet.parent.close();
+    rmSync(fleet.dir, { recursive: true, force: true });
+  }
+});
+
+test("acceptance-first makes an older project-exhausted campaign stale instead of parking it", () => {
+  const fleet = createFleet(2);
+  const w1 = workerStore(fleet, 0);
+  const w2 = workerStore(fleet, 1);
+  try {
+    fleet.parent.db.prepare("UPDATE fleets_v3 SET canonical_head=? WHERE canonical_root=?").run("base", fleet.root);
+    const exhausted = w1.publishIntent({ question: "old project exhaustion", experiment: "exhaust legal project-level moves", reason: "race", baselineHead: "base" }, 110);
+    w1.finishCampaign({ outcome: "exhausted", summary: "No useful legal project-level move remains", terminalHead: "terminal-project-exhausted" }, 111);
+    fleet.parent.markIntegrationRef(fleet.root, "w1", fleet.generation, exhausted.intentId, "refs/exhausted", 112);
+
+    const accepted = w2.publishIntent({ question: "frontier advance", experiment: "promotion", reason: "race", baselineHead: "base" }, 113);
+    w2.finishCampaign({ outcome: "accepted", summary: "Promotion gates passed", terminalHead: "terminal-accepted" }, 114);
+    fleet.parent.markIntegrationRef(fleet.root, "w2", fleet.generation, accepted.intentId, "refs/accepted", 115);
+    fleet.parent.beginIntegration(fleet.root, "w2", fleet.generation, accepted.intentId, "base", 116);
+    fleet.parent.completeCanonicalIntegration(fleet.root, "w2", fleet.generation, accepted.intentId, "base", "head-1", 117);
+    fleet.parent.completeLaneReset(fleet.root, "w2", fleet.generation, accepted.intentId, 118);
+
+    fleet.parent.beginIntegration(fleet.root, "w1", fleet.generation, exhausted.intentId, "head-1", 119);
+    fleet.parent.completeCanonicalIntegration(fleet.root, "w1", fleet.generation, exhausted.intentId, "head-1", "head-2", 120);
+    assert.equal(fleet.parent.completeLaneReset(fleet.root, "w1", fleet.generation, exhausted.intentId, 121).disposition, "replace");
+    assert.equal(fleet.parent.snapshot(fleet.root).fleet.frontier_version, 1);
+  } finally {
+    w2.close();
+    w1.close();
+    fleet.parent.close();
+    rmSync(fleet.dir, { recursive: true, force: true });
+  }
+});
+
+test("inconclusive campaigns replace without advancing, and failed accepted integration does not wake genuinely exhausted lanes", () => {
+  const fleet = createFleet(2);
+  const w1 = workerStore(fleet, 0);
+  const w2 = workerStore(fleet, 1);
+  try {
+    fleet.parent.db.prepare("UPDATE fleets_v3 SET canonical_head=? WHERE canonical_root=?").run("base", fleet.root);
+    const inconclusive = w1.publishIntent({ question: "audit", experiment: "read-only audit", reason: "descriptive", baselineHead: "base" }, 110);
+    w1.finishCampaign({ outcome: "inconclusive", summary: "Evidence remains undecided", terminalHead: "terminal-audit" }, 111);
+    fleet.parent.markIntegrationRef(fleet.root, "w1", fleet.generation, inconclusive.intentId, "refs/audit", 112);
+    fleet.parent.beginIntegration(fleet.root, "w1", fleet.generation, inconclusive.intentId, "base", 113);
+    fleet.parent.completeCanonicalIntegration(fleet.root, "w1", fleet.generation, inconclusive.intentId, "base", "audit-head", 114);
+    assert.equal(fleet.parent.snapshot(fleet.root).fleet.frontier_version, 0);
+    assert.equal(fleet.parent.completeLaneReset(fleet.root, "w1", fleet.generation, inconclusive.intentId, 115).disposition, "replace");
+
+    const accepted = w2.publishIntent({ question: "accepted but merge fails", experiment: "promotion", reason: "failure path", baselineHead: "base" }, 120);
+    w2.finishCampaign({ outcome: "accepted", summary: "Promotion passed", terminalHead: "terminal-accepted" }, 121);
+    fleet.parent.markIntegrationRef(fleet.root, "w2", fleet.generation, accepted.intentId, "refs/accepted", 122);
+    fleet.parent.beginIntegration(fleet.root, "w2", fleet.generation, accepted.intentId, "audit-head", 123);
+    fleet.parent.parentUpdateWorker(fleet.root, "w1", { status: "parked", processState: "stopped" }, 124, fleet.generation);
+    fleet.parent.blockIntegration(fleet.root, "w2", fleet.generation, accepted.intentId, "synthetic merge failure", 125);
+    const snapshot = fleet.parent.snapshot(fleet.root);
+    assert.equal(snapshot.fleet.frontier_version, 0);
+    assert.equal(snapshot.workers.find((worker) => worker.worker_id === "w1").status, "parked");
+  } finally {
+    w2.close();
+    w1.close();
+    fleet.parent.close();
+    rmSync(fleet.dir, { recursive: true, force: true });
+  }
+});
+
 test("fresh replacement sessions resume interrupted intents and reject stale session writes without tokens", () => {
   const fleet = createFleet(1);
   const old = workerStore(fleet, 0);
@@ -245,10 +395,10 @@ test("automatic recovery attempt history survives store reopen and resets only o
   }
 });
 
-test("v3 coordination schema contains intents but no admission, evidence, claim, or token structures", () => {
+test("protocol 4 coordination schema contains intents and semantic frontier state but no admission, evidence, claim, or token structures", () => {
   const fleet = createFleet(1);
   try {
-    assert.equal(AUTORESEARCH_PROTOCOL_VERSION, 3);
+    assert.equal(AUTORESEARCH_PROTOCOL_VERSION, 4);
     const tables = fleet.parent.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_v3'").all().map((row) => row.name);
     assert.deepEqual(tables.sort(), ["checkpoints_v3", "events_v3", "fleets_v3", "intents_v3", "workers_v3"]);
     const workerColumns = fleet.parent.db.prepare("PRAGMA table_info(workers_v3)").all().map((column) => column.name);
@@ -256,8 +406,9 @@ test("v3 coordination schema contains intents but no admission, evidence, claim,
     assert.ok(workerColumns.includes("current_tool_started_at"));
     const fleetColumns = fleet.parent.db.prepare("PRAGMA table_info(fleets_v3)").all().map((column) => column.name);
     assert.ok(!fleetColumns.includes("max_evidence_stages"));
+    assert.ok(fleetColumns.includes("frontier_version"));
     const intentColumns = fleet.parent.db.prepare("PRAGMA table_info(intents_v3)").all().map((column) => column.name);
-    for (const column of ["worker_id", "question", "experiment", "reason", "started_at", "status", "integration_phase", "integration_ref", "integration_base_head", "integration_result_head", "integration_error"]) assert.ok(intentColumns.includes(column));
+    for (const column of ["worker_id", "question", "experiment", "reason", "started_at", "status", "started_frontier_version", "integration_phase", "integration_ref", "integration_base_head", "integration_result_head", "integration_error"]) assert.ok(intentColumns.includes(column));
   } finally {
     fleet.parent.close();
     rmSync(fleet.dir, { recursive: true, force: true });
@@ -295,7 +446,7 @@ test("opening an existing v3 database adds integration and activity columns with
   }
 });
 
-test("opening protocol v3 removes obsolete admission and reservation schema", () => {
+test("opening protocol 4 removes obsolete admission and reservation schema", () => {
   const dir = mkdtempSync(join(tmpdir(), "autoresearch-v3-migration-"));
   const dbPath = join(dir, "fleet.sqlite");
   const legacy = new DatabaseSync(dbPath);
@@ -323,7 +474,7 @@ test("opening protocol v3 removes obsolete admission and reservation schema", ()
       WHERE type='table' AND name IN ('fleets','workers','checkpoints','events','admissions','admission_attempts','evidence_reservations')
     `).all();
     assert.deepEqual(obsolete, []);
-    assert.equal(store.db.prepare("PRAGMA user_version").get().user_version, 3);
+    assert.equal(store.db.prepare("PRAGMA user_version").get().user_version, 4);
     assert.equal(store.db.prepare("SELECT summary FROM checkpoints_v3 WHERE session_id='legacy-v2'").get().summary, "legacy finding");
     assert.equal(store.db.prepare("SELECT summary FROM events_v3 WHERE kind='checkpoint'").get().summary, "legacy event");
   } finally {
@@ -332,7 +483,7 @@ test("opening protocol v3 removes obsolete admission and reservation schema", ()
   }
 });
 
-test("protocol v3 refuses to discard potentially live v2 process state", () => {
+test("protocol 4 refuses to discard potentially live v2 process state", () => {
   const dir = mkdtempSync(join(tmpdir(), "autoresearch-v2-live-"));
   const dbPath = join(dir, "fleet.sqlite");
   const legacy = new DatabaseSync(dbPath);
@@ -443,12 +594,13 @@ test("worker announces intent, continues the same campaign across settlements, c
     const initial = await tool.execute("snapshot", { action: "snapshot" });
     assert.doesNotMatch(initial.content[0].text, /"admissions"|"reservations"|"claimed_scopes"|"token"/i);
 
-    await tool.execute("intent", {
+    const published = await tool.execute("intent", {
       action: "publish_intent",
       question: "Does a higher effort restore validity?",
       experiment: "Run three baselines",
       reason: "Prior rows were invalid",
     });
+    assert.deepEqual(published.details, { action: "publish_intent", intentId: 1 });
     await tool.execute("checkpoint", {
       action: "checkpoint", stage: "baseline", summary: "Evidence process launched",
       nextActions: ["wait for terminal status"], launchReceipt: { pid: 42 },
@@ -463,7 +615,7 @@ test("worker announces intent, continues the same campaign across settlements, c
     });
     await harness.emit("agent_settled");
     await waitFor(() => harness.sent.length === 1);
-    assert.match(harness.sent[0], /Continue your complete campaign/);
+    assert.match(harness.sent[0], /Continue your bounded campaign within the enduring project mission/);
     assert.equal(harness.compactCalls(), 0, "worker continuation does not invoke legacy ctx.compact");
 
     const completion = await tool.execute("finish", {
@@ -523,6 +675,41 @@ test("terminal finish requires a clean result commit and preserves external-bloc
   }
 });
 
+test("worker context injection after predecessor publication carries the full distinct-replication guidance", async () => {
+  const fleet = createFleet(2);
+  const predecessor = workerStore(fleet, 0);
+  const harness = createWorkerHarness();
+  const env = {
+    AUTORESEARCH_CANONICAL_ROOT: fleet.root,
+    AUTORESEARCH_WORKER_ID: "w2",
+    AUTORESEARCH_SESSION_ID: fleet.workers[1].sessionId,
+    AUTORESEARCH_STATE_DIR: fleet.dir,
+    AUTORESEARCH_FLEET_DB: fleet.dbPath,
+    AUTORESEARCH_GENERATION: String(fleet.generation),
+  };
+  try {
+    registerWorkerAutoresearch(harness.pi, { env });
+    await harness.emit("session_start");
+    predecessor.publishIntent({
+      question: "Which mechanism explains the regression?",
+      experiment: "Replicate the held-out regression with an independent setup",
+      reason: "The predecessor's result needs a distinct confirmation path",
+    });
+    const result = await harness.emit("before_agent_start");
+    const context = result[0].message.content;
+    assert.match(context, /Which mechanism explains the regression/);
+    assert.match(context, /Replicate the held-out regression with an independent setup/);
+    assert.match(context, /Choose a different mechanism from active intents by default/);
+    assert.match(context, /independent replication or a materially different evidence path answers a specific uncertainty/);
+    assert.match(context, /justify that overlap explicitly in the intent reason/);
+  } finally {
+    await harness.emit("session_shutdown");
+    predecessor.close();
+    fleet.parent.close();
+    rmSync(fleet.dir, { recursive: true, force: true });
+  }
+});
+
 test("worker shared context exposes active intentions without implying exclusivity", () => {
   const fleet = createFleet(2);
   const w1 = workerStore(fleet, 0);
@@ -534,7 +721,9 @@ test("worker shared context exposes active intentions without implying exclusivi
     assert.match(context, /informational, non-exclusive/);
     assert.match(context, /w1: Question A/);
     assert.match(context, /w2: Question B/);
-    assert.match(context, /overlap is allowed/);
+    assert.match(context, /choose a different mechanism from active intents by default/i);
+    assert.match(context, /independent replication or a materially different evidence path answers a specific uncertainty/i);
+    assert.match(context, /justify that overlap explicitly in the intent reason/i);
   } finally {
     w2.close();
     w1.close();
@@ -627,12 +816,20 @@ class FakeRpcClient {
     if (this.failLiveness) throw new Error("synthetic hard process exit");
     return { isStreaming: false, sessionFile: `/sessions/${this.options.env.AUTORESEARCH_SESSION_ID}.jsonl` };
   }
-  async prompt(message) { this.records.prompts.push({ workerId: this.options.env.AUTORESEARCH_WORKER_ID, message }); }
+  async prompt(message) {
+    this.records.prompts.push({ workerId: this.options.env.AUTORESEARCH_WORKER_ID, message });
+    this.records.promptHook?.(this, message);
+    if (this.records.failPromptFor?.has(this.options.env.AUTORESEARCH_WORKER_ID)) {
+      this.records.failPromptFor.delete(this.options.env.AUTORESEARCH_WORKER_ID);
+      throw new Error("synthetic prompt failure");
+    }
+  }
   async steer(message) { this.records.steers.push(message); }
   async followUp(message) { this.records.followUps.push(message); }
   async abort() { this.aborted = true; }
   async stop() {
     this.stopCalls += 1;
+    this.records.stopHook?.(this);
     if (this.records.stopDelayMs > 0) await new Promise((resolvePromise) => setTimeout(resolvePromise, this.records.stopDelayMs));
     if (this.records.stopFails) throw new Error("process termination failed");
     this.stopped = true;
@@ -644,11 +841,12 @@ function createSupervisorFixture(options = {}) {
   const dir = mkdtempSync(join(tmpdir(), "autoresearch-supervisor-v3-"));
   const root = join(dir, "research");
   mkdirSync(root);
-  writeFileSync(join(root, "program.md"), "# Research program\nComplete one full campaign.");
+  writeFileSync(join(root, "program.md"), "# Research program\nComplete one bounded campaign within the enduring project mission.");
   const records = {
     clients: [], prompts: [], steers: [], followUps: [], sessionHeaders: [], ensured: [], syncs: [],
     createAttempts: 0, failCreatesRemaining: options.failCreatesRemaining ?? 0, stopFails: false,
-    stopDelayMs: options.stopDelayMs ?? 0,
+    failPromptFor: new Set(options.failPromptFor ?? []), stopDelayMs: options.stopDelayMs ?? 0,
+    promptHook: options.promptHook, stopHook: options.stopHook,
   };
   let nextSession = 100;
   const supervisor = {
@@ -660,26 +858,38 @@ function createSupervisorFixture(options = {}) {
       }
       return new FakeRpcClient(rpcOptions, records);
     },
-    inspectRepo: () => ({ canonicalRoot: root, commonDir: join(root, ".git"), branch: "main", head: "1234567890abcdef", dirty: false }),
+    inspectRepo: options.inspectRepo ?? (() => ({ canonicalRoot: root, commonDir: join(root, ".git"), branch: "main", head: "1234567890abcdef", dirty: false })),
     ensureIgnored: () => {},
     ensureLane: (_canonical, _common, lane) => {
       records.ensured.push(lane.workerId);
       mkdirSync(lane.path, { recursive: true });
-      writeFileSync(join(lane.path, "program.md"), "# Research program\nComplete one full campaign.");
+      writeFileSync(join(lane.path, "program.md"), "# Research program\nComplete one bounded campaign within the enduring project mission.");
       return lane;
     },
-    laneState: () => ({ head: "1234567890abcdef", dirty: false }),
-    syncLane: ({ lane, canonicalHead }) => {
+    laneState: options.laneState ?? (() => ({ head: "1234567890abcdef", dirty: false })),
+    syncLane: ({ lane, canonicalRoot, generation, canonicalHead }) => {
       records.syncs.push(lane.workerId);
+      if (options.preexistingIntent && lane.workerId === options.preexistingIntent.workerId) {
+        const seeded = new FleetStore(join(canonicalRoot, ".autoresearch", "fleet.sqlite"));
+        const worker = seeded.snapshot(canonicalRoot, { workerId: lane.workerId, recent: 1 }).workers[0];
+        const recovered = new FleetStore(join(canonicalRoot, ".autoresearch", "fleet.sqlite"), {
+          canonicalRoot, workerId: lane.workerId, sessionId: String(worker.session_id), generation,
+        });
+        recovered.publishIntent(options.preexistingIntent, Date.now());
+        recovered.close();
+        seeded.close();
+      }
       return { candidateRef: `refs/test/${lane.workerId}`, canonicalHead: canonicalHead ?? "1234567890abcdef" };
     },
     preserveTerminal: options.preserveTerminal ?? (({ generation, intentId }) => `refs/autoresearch/terminals/g${generation}/i${intentId}`),
     integrateTerminal: options.integrateTerminal ?? (({ expectedHead }) => ({ resultHead: expectedHead, alreadyIntegrated: true })),
     resetIntegratedLane: options.resetIntegratedLane ?? (() => {}),
+    isAncestor: options.isAncestor,
     createStore: (path) => new FleetStore(path),
     cliPath: process.execPath,
     extensionPath: resolve("configs/pi/extensions/autoresearch.ts"),
     dashboardIntervalMs: options.dashboardIntervalMs ?? 0,
+    initialIntentTimeoutMs: options.initialIntentTimeoutMs,
     sessionVersion: 3,
     recycleBackoffMs: 0,
     sessionId: () => testSessionId(nextSession++),
@@ -699,29 +909,262 @@ function identityFor(client) {
   };
 }
 
-test("supervisor eagerly launches the user-selected worker count with no admission, claim, token, or evidence budget", async () => {
+test("supervisor provisions every lane but stages initial prompts behind exact intent publication", async () => {
   const fixture = createSupervisorFixture();
+  let worker;
   try {
     await fixture.harness.emit("session_start", { reason: "startup" });
-    await fixture.harness.commands.get("autoresearch").handler("6", fixture.harness.ctx);
-    await waitFor(() => fixture.records.prompts.length === 6);
-    assert.equal(fixture.records.clients.length, 6);
-    assert.deepEqual(fixture.records.ensured, ["w1", "w2", "w3", "w4", "w5", "w6"]);
-    assert.deepEqual(fixture.records.syncs, ["w1", "w2", "w3", "w4", "w5", "w6"]);
-    for (const client of fixture.records.clients) {
-      assert.equal("AUTORESEARCH_WORKER_TOKEN" in client.options.env, false);
-    }
-    assert.match(fixture.records.prompts[0].message, /There is no dispatcher, task queue, claim, lock, admission/);
-    assert.match(fixture.records.prompts[0].message, /informational and non-exclusive/i);
-    assert.match(fixture.records.prompts[0].message, /complete research campaign/i);
+    await fixture.harness.commands.get("autoresearch").handler("3", fixture.harness.ctx);
+    await waitFor(() => fixture.records.clients.length === 1 && fixture.records.prompts.length === 1);
 
     const store = new FleetStore(join(fixture.root, ".autoresearch", "fleet.sqlite"));
-    const snapshot = store.snapshot(fixture.root);
-    assert.equal(snapshot.fleet.max_workers, 6);
-    assert.equal(snapshot.workers.length, 6);
+    const provisioned = store.snapshot(fixture.root);
+    assert.equal(provisioned.fleet.max_workers, 3);
+    assert.equal(provisioned.workers.length, 3);
+    assert.deepEqual(fixture.records.ensured, ["w1", "w2", "w3"]);
+    assert.deepEqual(fixture.records.syncs, ["w1", "w2", "w3"]);
+    for (const client of fixture.records.clients) assert.equal("AUTORESEARCH_WORKER_TOKEN" in client.options.env, false);
+    assert.equal(fixture.records.clients[0].stopped, false);
+    assert.match(fixture.records.prompts[0].message, /There is no dispatcher, task queue, claim, lock, admission/);
+    assert.match(fixture.records.prompts[0].message, /Choose a different mechanism from active intents by default/);
+    assert.match(fixture.records.prompts[0].message, /validated Pareto\/model frontier advance/);
+    assert.match(fixture.records.prompts[0].message, /project-level moves remain/);
+    assert.match(fixture.records.prompts[0].message, /Family or evidence-epoch closure is not project exhaustion/);
+    store.close();
+
+    worker = new FleetStore(fixture.records.clients[0].options.env.AUTORESEARCH_FLEET_DB, identityFor(fixture.records.clients[0]));
+    fixture.records.clients[0].emit({
+      type: "tool_execution_end", toolName: AUTORESEARCH_WORKER_TOOL, isError: false,
+      result: { details: { action: "checkpoint", checkpointId: 1 } },
+    });
+    fixture.records.clients[0].emit({
+      type: "tool_execution_end", toolName: AUTORESEARCH_WORKER_TOOL, isError: true,
+      result: { details: { action: "publish_intent", intentId: 1 } },
+    });
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+    assert.equal(fixture.records.prompts.length, 1, "unrelated and failed tool events do not release the barrier");
+    worker.publishIntent({ question: "Question one", experiment: "Mechanism one", reason: "Highest-value uncertainty" });
+    fixture.records.clients[0].emit({
+      type: "tool_execution_end", toolName: AUTORESEARCH_WORKER_TOOL, isError: false,
+      result: { details: { action: "publish_intent", intentId: 1 } },
+    });
+    await waitFor(() => fixture.records.clients.length === 2 && fixture.records.prompts.length === 2);
+    assert.equal(fixture.records.clients[0].stopped, false, "the first worker continues while the second starts");
+
+    worker.close();
+    worker = new FleetStore(fixture.records.clients[1].options.env.AUTORESEARCH_FLEET_DB, identityFor(fixture.records.clients[1]));
+    worker.publishIntent({ question: "Question two", experiment: "Mechanism two", reason: "Different evidence path" });
+    fixture.records.clients[1].emit({
+      type: "tool_execution_end", toolName: AUTORESEARCH_WORKER_TOOL, isError: false,
+      result: { details: { action: "publish_intent", intentId: 2 } },
+    });
+    await waitFor(() => fixture.records.clients.length === 3 && fixture.records.prompts.length === 3);
+    assert.equal(fixture.records.clients[1].stopped, false);
+    assert.equal(fixture.records.clients[2].stopped, false);
+    assert.match(fixture.records.prompts[2].message, /bounded research campaign within the enduring project mission/i);
+  } finally {
+    worker?.close();
+    await fixture.harness.emit("session_shutdown", { reason: "quit" });
+    rmSync(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("initial launch failure releases startup progression for the next initial worker", async () => {
+  const fixture = createSupervisorFixture({ failCreatesRemaining: 1, initialIntentTimeoutMs: 500 });
+  try {
+    await fixture.harness.emit("session_start", { reason: "startup" });
+    await fixture.harness.commands.get("autoresearch").handler("3", fixture.harness.ctx);
+    await waitFor(() => fixture.records.prompts.some((prompt) => prompt.workerId === "w2"), 1_000);
+    assert.ok(fixture.records.clients.some((client) => client.options.env.AUTORESEARCH_WORKER_ID === "w2"));
+    assert.equal(fixture.records.prompts.filter((prompt) => prompt.workerId === "w2").length, 1);
+  } finally {
+    await fixture.harness.emit("session_shutdown", { reason: "quit" });
+    rmSync(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("prompt failure releases startup progression and keeps failed-worker recycling active", async () => {
+  const fixture = createSupervisorFixture({ failPromptFor: ["w1"], initialIntentTimeoutMs: 500 });
+  try {
+    await fixture.harness.emit("session_start", { reason: "startup" });
+    await fixture.harness.commands.get("autoresearch").handler("2", fixture.harness.ctx);
+    await waitFor(() => fixture.records.prompts.some((prompt) => prompt.workerId === "w2"), 1_000);
+    await waitFor(() => fixture.records.prompts.filter((prompt) => prompt.workerId === "w1").length >= 2, 1_000);
+    assert.equal(fixture.records.prompts.filter((prompt) => prompt.workerId === "w2").length, 1);
+    assert.ok(fixture.records.clients.filter((client) => client.options.env.AUTORESEARCH_WORKER_ID === "w1").length >= 2);
+  } finally {
+    await fixture.harness.emit("session_shutdown", { reason: "quit" });
+    rmSync(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("worker failure before publication releases progression while replacement skips the startup wait", async () => {
+  for (const failure of [
+    { name: "extension error", event: { type: "extension_error", error: "synthetic provider failure" } },
+    { name: "validated failed terminal event", event: {
+      type: "agent_end",
+      messages: [{ role: "assistant", content: [{ type: "text", text: "failed" }], stopReason: "error", errorMessage: "synthetic failed terminal" }],
+    } },
+  ]) {
+    const fixture = createSupervisorFixture({ initialIntentTimeoutMs: 500 });
+    try {
+      await fixture.harness.emit("session_start", { reason: "startup" });
+      await fixture.harness.commands.get("autoresearch").handler("2", fixture.harness.ctx);
+      await waitFor(() => fixture.records.prompts.length === 1);
+      const first = fixture.records.clients[0];
+      first.emit(failure.event);
+      await waitFor(() => fixture.records.prompts.some((prompt) => prompt.workerId === "w2"), 1_000);
+      await waitFor(() => fixture.records.prompts.filter((prompt) => prompt.workerId === "w1").length >= 2, 1_000);
+      assert.equal(fixture.records.prompts.filter((prompt) => prompt.workerId === "w2").length, 1, failure.name);
+      assert.notEqual(fixture.records.clients[1].options.env.AUTORESEARCH_SESSION_ID, first.options.env.AUTORESEARCH_SESSION_ID, failure.name);
+    } finally {
+      await fixture.harness.emit("session_shutdown", { reason: "quit" });
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("pre-existing active intent is recovered without delaying the next initial prompt", async () => {
+  const fixture = createSupervisorFixture({
+    preexistingIntent: {
+      workerId: "w1", question: "Recover the interrupted question", experiment: "Resume the interrupted experiment", reason: "Crash recovery must preserve the active campaign",
+    },
+  });
+  try {
+    await fixture.harness.emit("session_start", { reason: "startup" });
+    await fixture.harness.commands.get("autoresearch").handler("2", fixture.harness.ctx);
+    await waitFor(() => fixture.records.prompts.some((prompt) => prompt.workerId === "w2"));
+    assert.equal(fixture.records.prompts.filter((prompt) => prompt.workerId === "w1").length, 1);
+    assert.match(fixture.records.prompts.find((prompt) => prompt.workerId === "w1").message, /working intent survived a process interruption/i);
+    assert.match(fixture.records.prompts.find((prompt) => prompt.workerId === "w1").message, /Recover the interrupted question/);
+    assert.equal(fixture.records.prompts.filter((prompt) => prompt.workerId === "w2").length, 1);
+  } finally {
+    await fixture.harness.emit("session_shutdown", { reason: "quit" });
+    rmSync(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("a supervisor session replacement fails the old wait and stale publication cannot release a new one", async () => {
+  let oldClient;
+  let staleSent = false;
+  const fixture = createSupervisorFixture({
+    initialIntentTimeoutMs: 50,
+    stopDelayMs: 10,
+    stopHook(client) {
+      if (client === oldClient && !staleSent) {
+        staleSent = true;
+        client.emit({
+          type: "tool_execution_end", toolName: AUTORESEARCH_WORKER_TOOL, isError: false,
+          result: { details: { action: "publish_intent", intentId: 999 } },
+        });
+      }
+    },
+  });
+  try {
+    await fixture.harness.emit("session_start", { reason: "startup" });
+    await fixture.harness.commands.get("autoresearch").handler("2", fixture.harness.ctx);
+    await waitFor(() => fixture.records.prompts.length === 1);
+    oldClient = fixture.records.clients[0];
+    await fixture.harness.tools.get("autoresearch_control").execute("restart", { action: "restart", target: "w1" });
+    await waitFor(() => fixture.records.prompts.some((prompt) => prompt.workerId === "w2"));
+    await waitFor(() => fixture.records.prompts.filter((prompt) => prompt.workerId === "w1").length >= 2);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 80));
+    assert.equal(staleSent, true);
+    assert.equal(fixture.records.prompts.filter((prompt) => prompt.workerId === "w2").length, 1);
+    assert.equal(fixture.records.prompts.filter((prompt) => prompt.workerId === "w1").length, 2);
+    assert.equal(fixture.harness.notifications.filter((entry) => entry.type === "warning" && /barrier timeout/i.test(entry.message)).length, 0);
+  } finally {
+    await fixture.harness.emit("session_shutdown", { reason: "quit" });
+    rmSync(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("publication during prompt acceptance is latched before the initial waiter is installed", async () => {
+  let hookPublished = false;
+  const fixture = createSupervisorFixture({
+    promptHook(client) {
+      if (hookPublished || client.options.env.AUTORESEARCH_WORKER_ID !== "w1") return;
+      hookPublished = true;
+      const store = new FleetStore(client.options.env.AUTORESEARCH_FLEET_DB, identityFor(client));
+      store.publishIntent({ question: "Prompt-hook question", experiment: "Prompt-hook experiment", reason: "Exercise publication latch" });
+      store.close();
+      client.emit({
+        type: "tool_execution_end", toolName: AUTORESEARCH_WORKER_TOOL, isError: false,
+        result: { details: { action: "publish_intent", intentId: 1 } },
+      });
+    },
+  });
+  try {
+    await fixture.harness.emit("session_start", { reason: "startup" });
+    await fixture.harness.commands.get("autoresearch").handler("2", fixture.harness.ctx);
+    await waitFor(() => fixture.records.prompts.length === 2);
+    assert.equal(hookPublished, true);
+    assert.equal(fixture.records.clients[0].stopped, false);
+  } finally {
+    await fixture.harness.emit("session_shutdown", { reason: "quit" });
+    rmSync(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("initial intent barrier timeout fails open once while the active fleet keeps every worker healthy", async () => {
+  const fixture = createSupervisorFixture({ initialIntentTimeoutMs: 10 });
+  try {
+    await fixture.harness.emit("session_start", { reason: "startup" });
+    await fixture.harness.commands.get("autoresearch").handler("2", fixture.harness.ctx);
+    await waitFor(() => fixture.records.prompts.length === 2);
+    assert.equal(fixture.records.clients[0].stopped, false);
+    const warnings = fixture.harness.notifications.filter((entry) => entry.type === "warning" && /barrier timeout/i.test(entry.message));
+    assert.equal(warnings.length, 1);
+    const store = new FleetStore(join(fixture.root, ".autoresearch", "fleet.sqlite"));
+    const snapshot = store.snapshot(fixture.root, { recent: 20 });
+    const timeoutEvents = snapshot.events.filter((event) => event.kind === "initial_intent_barrier_timeout" && event.worker_id === "w1");
+    assert.equal(snapshot.fleet.status, "active");
+    assert.equal(timeoutEvents.length, 1);
+    assert.ok(snapshot.workers.every((worker) => worker.process_state === "owned" && !["failed", "stopped"].includes(worker.status)));
     store.close();
   } finally {
     await fixture.harness.emit("session_shutdown", { reason: "quit" });
+    rmSync(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("stopping while the initial barrier waits cancels all delayed work", async () => {
+  const fixture = createSupervisorFixture({ initialIntentTimeoutMs: 50 });
+  try {
+    await fixture.harness.emit("session_start", { reason: "startup" });
+    await fixture.harness.commands.get("autoresearch").handler("3", fixture.harness.ctx);
+    await waitFor(() => fixture.records.prompts.length === 1);
+    await fixture.harness.commands.get("autoresearch").handler("off", fixture.harness.ctx);
+    const warningsAtStop = fixture.harness.notifications.filter((entry) => entry.type === "warning").length;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+    assert.equal(fixture.records.prompts.length, 1);
+    assert.equal(fixture.records.clients.length, 1);
+    assert.equal(fixture.harness.notifications.filter((entry) => entry.type === "warning").length, warningsAtStop);
+    const store = new FleetStore(join(fixture.root, ".autoresearch", "fleet.sqlite"));
+    assert.equal(store.snapshot(fixture.root, { recent: 20 }).events.filter((event) => event.kind === "initial_intent_barrier_timeout").length, 0);
+    store.close();
+  } finally {
+    await fixture.harness.emit("session_shutdown", { reason: "quit" });
+    rmSync(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("session shutdown while the initial barrier waits cancels all delayed work", async () => {
+  const fixture = createSupervisorFixture({ initialIntentTimeoutMs: 50 });
+  try {
+    await fixture.harness.emit("session_start", { reason: "startup" });
+    await fixture.harness.commands.get("autoresearch").handler("3", fixture.harness.ctx);
+    await waitFor(() => fixture.records.prompts.length === 1);
+    const warningsAtShutdown = fixture.harness.notifications.filter((entry) => entry.type === "warning").length;
+    await fixture.harness.emit("session_shutdown", { reason: "quit" });
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+    assert.equal(fixture.records.prompts.length, 1);
+    assert.equal(fixture.records.clients.length, 1);
+    assert.equal(fixture.harness.notifications.filter((entry) => entry.type === "warning").length, warningsAtShutdown);
+    const store = new FleetStore(join(fixture.root, ".autoresearch", "fleet.sqlite"));
+    assert.equal(store.snapshot(fixture.root, { recent: 20 }).events.filter((event) => event.kind === "initial_intent_barrier_timeout").length, 0);
+    store.close();
+  } finally {
     rmSync(fixture.dir, { recursive: true, force: true });
   }
 });
@@ -807,7 +1250,52 @@ test("terminal integration failure blocks the lane, queues an incident, and laun
   }
 });
 
-test("crashed workers are replaced fresh and resume their existing full campaign intent", async () => {
+test("sync retries a blocked terminal integration after a verified canonical fast-forward", async () => {
+  let currentHead = "canonical-old";
+  let integrationCalls = 0;
+  const fixture = createSupervisorFixture({
+    inspectRepo: () => ({ canonicalRoot: fixture.root, commonDir: join(fixture.root, ".git"), branch: "main", head: currentHead, dirty: false }),
+    laneState: () => ({ head: "terminal-head", dirty: false }),
+    isAncestor: () => true,
+    integrateTerminal: ({ expectedHead }) => {
+      integrationCalls += 1;
+      if (integrationCalls === 1) throw new Error(`Canonical HEAD changed from expected ${expectedHead} to canonical-new`);
+      assert.equal(expectedHead, "canonical-new");
+      return { resultHead: "merge-result", alreadyIntegrated: false };
+    },
+  });
+  let worker;
+  let observer;
+  try {
+    await fixture.harness.emit("session_start", { reason: "startup" });
+    await fixture.harness.commands.get("autoresearch").handler("1", fixture.harness.ctx);
+    await waitFor(() => fixture.records.prompts.length === 1);
+    const first = fixture.records.clients[0];
+    worker = new FleetStore(first.options.env.AUTORESEARCH_FLEET_DB, identityFor(first));
+    worker.publishIntent({ question: "Audited campaign", experiment: "Receipt only", reason: "Exercise canonical retry", baselineHead: "baseline-head" });
+    worker.finishCampaign({ outcome: "inconclusive", summary: "Terminal result", terminalHead: "terminal-head" });
+    currentHead = "canonical-new";
+    first.emit({ type: "agent_settled" });
+
+    observer = new FleetStore(join(fixture.root, ".autoresearch", "fleet.sqlite"));
+    await waitFor(() => observer.snapshot(fixture.root).intents[0].integration_phase === "blocked");
+    const result = await fixture.harness.tools.get("autoresearch_control").execute("sync", { action: "sync", target: "w1" });
+    assert.equal(result.details.synced[0].retriedIntegration, true);
+    await waitFor(() => observer.snapshot(fixture.root).intents[0].integration_phase === "complete");
+    await waitFor(() => fixture.records.clients.length === 2);
+    const snapshot = observer.snapshot(fixture.root);
+    assert.equal(snapshot.fleet.canonical_head, "merge-result");
+    assert.equal(snapshot.intents[0].integration_error, null);
+    assert.equal(integrationCalls, 2);
+  } finally {
+    observer?.close();
+    worker?.close();
+    await fixture.harness.emit("session_shutdown", { reason: "quit" });
+    rmSync(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("crashed workers are replaced fresh and resume their existing bounded campaign intent", async () => {
   const fixture = createSupervisorFixture();
   let worker;
   try {
@@ -1016,7 +1504,7 @@ test("dashboard describes workers and intentions without evidence capacity or ad
     events: [],
   };
   const lines = fleetDashboardLines(snapshot, { now: 121_000, canonicalHead: "abcdef123456" });
-  assert.match(lines[0], /1 worker · 7 campaigns completed · canonical abcdef12/);
+  assert.match(lines[0], /1 worker · 7 campaigns completed · frontier 0 · canonical abcdef12/);
   assert.doesNotMatch(lines.join("\n"), /evidence \d|admission/i);
   assert.match(lines[1], /age 02:00/);
   assert.match(lines[1], /bash 01:00/);

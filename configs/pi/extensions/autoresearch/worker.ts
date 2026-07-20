@@ -29,9 +29,11 @@ export const AUTORESEARCH_PARENT_TOOLS = ["autoresearch_inspect", "autoresearch_
 const TERMINAL_STATUSES = new Set<WorkerStatus>(["paused", "blocked", "failed", "complete", "stopped"]);
 const CONTINUATION = [
   "[autoresearch worker continuation]",
-  "Continue your complete campaign. Reread program.md and shared state.",
+  "Continue your bounded campaign within the enduring project mission. Reread program.md, its lifecycle index, and shared state. If no immutable executable epoch is active, fail model and evidence launches closed while continuing meta-research, design, implementation, prerequisite, evaluator, and harness work.",
+  "Choose a different mechanism from active intents by default. Overlap only when independent replication or a materially different evidence path answers a specific uncertainty; justify it explicitly in the intent reason.",
   "Do not stop at a stage boundary, after launching evidence, while waiting, because context is large, or because no prepared task exists.",
   "If you have no active intent, independently choose and publish one. If you have one, carry it to a terminal scientific result.",
+  "Only call accepted after every applicable program gate passes and the committed result delivers either a validated Pareto/model frontier advance or a validated search-capability advance that makes a previously impossible legal campaign executable, such as a tested representation primitive, direct runtime kernel, evaluator, harness, prerequisite, or safely activated successor epoch. Merely drafting docs, changing Git, closing an epoch, or performing an audit is inconclusive unless it delivers such a validated capability. A tested failure is rejected while project-level moves remain. Family or evidence-epoch exhaustion returns to the enduring project mission: pursue legal architecture pivots, prerequisite implementation, evaluator or harness construction, or safe successor epochs; never call exhausted for those bounded closures. Exhausted means no useful legal project-level move remains across model, representation, architecture, runtime, evaluation, permitted data, tooling or prerequisites, and safe successor epochs, or continuation is permanently impossible under external constraints with no legal workaround. Only genuine project-level exhaustion may park the fleet; external-blocked is a specific unavailable prerequisite, never global exhaustion.",
 ].join("\n");
 
 export interface WorkerRegistrationOptions {
@@ -164,7 +166,7 @@ export function registerWorkerAutoresearch(
       const result = store.publishIntent({ question, experiment, reason, baselineHead: git.head });
       return {
         content: [{ type: "text", text: `Research intent ${result.intentId} published as informational, non-exclusive shared state. Continue the full campaign.` }],
-        details: result,
+        details: { action: "publish_intent", intentId: result.intentId },
       };
     }
     if (action === "checkpoint") {
@@ -211,7 +213,7 @@ export function registerWorkerAutoresearch(
       });
       stopCurrentTurn();
       return {
-        content: [{ type: "text", text: `Campaign intent ${result.intentId} finished with outcome ${outcome}. This disposable worker will exit.` }],
+        content: [{ type: "text", text: `Campaign intent ${result.intentId} finished with outcome ${outcome}. ${outcome === "exhausted" ? "This result declares genuine project-level exhaustion; the fleet may park rather than receive automatic replacements." : "This bounded campaign is complete; this disposable worker will exit for the next project-level move."}` }],
         details: { ...result, outcome },
       };
     }
@@ -340,14 +342,15 @@ export function registerWorkerAutoresearch(
   pi.registerTool({
     name: AUTORESEARCH_WORKER_TOOL,
     label: "Autoresearch Worker State",
-    description: "Read shared intentions, publish this worker's non-exclusive research intent, checkpoint progress, and finish one complete campaign.",
-    promptSnippet: "Announce, execute, and finish one autonomous research campaign",
+    description: "Read shared intentions, publish this worker's non-exclusive research intent, checkpoint progress, and finish one bounded campaign within the enduring project mission.",
+    promptSnippet: "Announce, execute, and finish one bounded campaign within the enduring project mission",
     promptGuidelines: [
       "Read shared state and durable Git research before selecting work. Publish exactly one informational intent before campaign mutation.",
-      "Intents are not claims or permissions. Avoid obvious duplication when useful, but overlap and independent replication are allowed.",
+      "Intents are not claims or permissions. Choose a different mechanism from active intents by default. Overlap only when independent replication or a materially different evidence path answers a specific uncertainty; justify it explicitly in the intent reason.",
       "A checkpoint is only for observability and crash recovery. It never hands the campaign to another worker and never ends normal work.",
       "Carry the campaign through all required experiments, replication, diagnosis, confirmation, and waiting. Then commit durable findings and call finish_campaign once.",
-      "Do not finish because a queue is empty, a stage ended, follow-up is required, evidence is running, or context is large.",
+      "Only accepted means every applicable program gate passed and the committed result delivers either a validated Pareto/model frontier advance or a validated search-capability advance that makes a previously impossible legal campaign executable, such as a tested representation primitive, direct runtime kernel, evaluator, harness, prerequisite, or safely activated successor epoch. Merely drafting docs, changing Git, closing an epoch, or auditing is inconclusive unless it delivers such a validated capability. A tested failure is rejected while project-level moves remain. Family or evidence-epoch exhaustion returns to the enduring project mission through a legal architecture pivot, prerequisite implementation, evaluator or harness construction, or safe successor epoch, never by parking this lane. Exhausted means no useful legal project-level move remains across model, representation, architecture, runtime, evaluation, permitted data, tooling or prerequisites, and safe successor epochs, or continuation is permanently impossible under external constraints with no legal workaround. Only genuine project-level exhaustion may park the fleet; external-blocked is a specific unavailable prerequisite, never global exhaustion.",
+      "Do not finish because a queue is empty, a stage ended, follow-up is required, evidence is running, context is large, or a bounded family or epoch closed. Return to the enduring project mission and select the next legal move.",
     ],
     parameters: {
       type: "object",

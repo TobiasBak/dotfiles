@@ -125,7 +125,7 @@ export function syncLaneToCanonical(input: {
   return { candidateRef, canonicalHead };
 }
 
-function isAncestor(canonicalRoot: string, ancestor: string, descendant: string, run: CommandRunner): boolean {
+export function isGitAncestor(canonicalRoot: string, ancestor: string, descendant: string, run: CommandRunner = defaultRun): boolean {
   try {
     run("git", ["-C", canonicalRoot, "merge-base", "--is-ancestor", ancestor, descendant]);
     return true;
@@ -166,7 +166,7 @@ export function preserveTerminalRef(input: {
   }
   const branch = run("git", ["-C", input.lane.path, "symbolic-ref", "--quiet", "--short", "HEAD"]);
   if (branch !== input.lane.branch) throw new Error(`${input.lane.workerId} lane is not on ${input.lane.branch}`);
-  if (!isAncestor(input.canonicalRoot, input.baselineHead, input.terminalHead, run)) {
+  if (!isGitAncestor(input.canonicalRoot, input.baselineHead, input.terminalHead, run)) {
     throw new Error(`Campaign baseline ${input.baselineHead} is not an ancestor of terminal ${input.terminalHead}`);
   }
 
@@ -201,13 +201,13 @@ export function integrateTerminalRef(input: {
   if (run("git", ["-C", input.canonicalRoot, "status", "--porcelain"])) throw new Error("Canonical checkout is dirty");
   const head = run("git", ["-C", input.canonicalRoot, "rev-parse", "HEAD"]);
   if (head !== input.expectedHead) {
-    if (input.recoverMerged && isAncestor(input.canonicalRoot, input.terminalRef, head, run)) {
+    if (input.recoverMerged && isGitAncestor(input.canonicalRoot, input.terminalRef, head, run)) {
       const firstParent = run("git", ["-C", input.canonicalRoot, "rev-parse", `${head}^1`]);
       if (firstParent === input.expectedHead) return { resultHead: head, alreadyIntegrated: true };
     }
     throw new Error(`Canonical HEAD changed from expected ${input.expectedHead} to ${head}`);
   }
-  if (isAncestor(input.canonicalRoot, input.terminalRef, head, run)) {
+  if (isGitAncestor(input.canonicalRoot, input.terminalRef, head, run)) {
     return { resultHead: head, alreadyIntegrated: true };
   }
 
@@ -244,7 +244,7 @@ export function integrateTerminalRef(input: {
   const resultHead = run("git", ["-C", input.canonicalRoot, "rev-parse", "HEAD"]);
   const postconditionError = run("git", ["-C", input.canonicalRoot, "status", "--porcelain"]) || canonicalOperationState(input.canonicalRoot, run)
     ? "Canonical checkout was not clean after terminal integration"
-    : !isAncestor(input.canonicalRoot, input.terminalRef, resultHead, run)
+    : !isGitAncestor(input.canonicalRoot, input.terminalRef, resultHead, run)
       ? "Terminal ref is not reachable from canonical integration result"
       : undefined;
   if (postconditionError) {

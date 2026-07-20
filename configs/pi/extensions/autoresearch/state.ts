@@ -3,13 +3,14 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
-export const AUTORESEARCH_PROTOCOL_VERSION = 3;
+export const AUTORESEARCH_PROTOCOL_VERSION = 4;
 
 export type WorkerStatus =
   | "queued"
   | "launching"
   | "running"
   | "idle"
+  | "parked"
   | "paused"
   | "blocked"
   | "failed"
@@ -18,6 +19,13 @@ export type WorkerStatus =
 
 export type IntentStatus = "active" | "complete" | "blocked" | "failed";
 export type CampaignOutcome = "accepted" | "rejected" | "inconclusive" | "exhausted" | "external-blocked";
+export type LaneDisposition = "replace" | "park" | "fleet-exhausted";
+
+export interface LaneResetResult {
+  disposition: LaneDisposition;
+  reactivatedWorkerIds: string[];
+  frontierAdvanced: boolean;
+}
 
 export interface WorkerIdentity {
   canonicalRoot: string;
@@ -127,6 +135,7 @@ export class FleetStore {
         canonical_branch TEXT,
         canonical_head TEXT,
         integration_error TEXT,
+        frontier_version INTEGER NOT NULL DEFAULT 0,
         protocol_version INTEGER NOT NULL,
         max_workers INTEGER NOT NULL,
         started_at INTEGER NOT NULL,
@@ -178,6 +187,7 @@ export class FleetStore {
         reason TEXT NOT NULL,
         status TEXT NOT NULL,
         outcome TEXT,
+        started_frontier_version INTEGER NOT NULL DEFAULT 0,
         baseline_head TEXT,
         terminal_head TEXT,
         integration_phase TEXT,
@@ -233,6 +243,7 @@ export class FleetStore {
     this.db.exec("UPDATE intents_v3 SET status='active' WHERE status='working'");
     this.ensureAdditiveColumns();
     this.removeObsoleteCoordinationSchema();
+    this.db.exec("PRAGMA user_version=4");
   }
 
   private assertLegacyProcessesStopped(): void {
@@ -280,7 +291,7 @@ export class FleetStore {
         DROP TABLE IF EXISTS events;
         DROP TABLE IF EXISTS workers;
         DROP TABLE IF EXISTS fleets;
-        PRAGMA user_version=3;
+        PRAGMA user_version=4;
         COMMIT;
       `);
     } catch (error) {
@@ -298,12 +309,12 @@ export class FleetStore {
         if (!existing.has(name)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
       }
     };
-    ensure("fleets_v3", [["canonical_branch", "TEXT"], ["integration_error", "TEXT"]]);
+    ensure("fleets_v3", [["canonical_branch", "TEXT"], ["integration_error", "TEXT"], ["frontier_version", "INTEGER NOT NULL DEFAULT 0"]]);
     ensure("workers_v3", [["current_tool_started_at", "INTEGER"]]);
     ensure("intents_v3", [
       ["baseline_head", "TEXT"], ["terminal_head", "TEXT"], ["integration_phase", "TEXT"],
       ["integration_ref", "TEXT"], ["integration_base_head", "TEXT"], ["integration_result_head", "TEXT"],
-      ["integration_error", "TEXT"], ["integration_updated_at", "INTEGER"],
+      ["integration_error", "TEXT"], ["integration_updated_at", "INTEGER"], ["started_frontier_version", "INTEGER NOT NULL DEFAULT 0"],
     ]);
   }
 
@@ -331,14 +342,16 @@ export class FleetStore {
   private assertCurrent(): WorkerIdentity {
     const identity = this.requireIdentity();
     const row = this.db.prepare(`
-      SELECT w.generation,w.session_id,f.status AS fleet_status,f.generation AS fleet_generation
+      SELECT w.generation,w.session_id,w.protocol_version AS worker_protocol_version,
+        f.status AS fleet_status,f.generation AS fleet_generation,f.protocol_version AS fleet_protocol_version
       FROM workers_v3 w JOIN fleets_v3 f ON f.canonical_root=w.canonical_root
       WHERE w.canonical_root=? AND w.worker_id=?
     `).get(identity.canonicalRoot, identity.workerId) as {
-      generation?: number; session_id?: string; fleet_status?: string; fleet_generation?: number;
+      generation?: number; session_id?: string; worker_protocol_version?: number; fleet_status?: string; fleet_generation?: number; fleet_protocol_version?: number;
     } | undefined;
     if (!row || row.generation !== identity.generation || row.fleet_generation !== identity.generation
-      || row.session_id !== identity.sessionId || !["launching", "active"].includes(row.fleet_status ?? "")) {
+      || row.session_id !== identity.sessionId || row.worker_protocol_version !== AUTORESEARCH_PROTOCOL_VERSION
+      || row.fleet_protocol_version !== AUTORESEARCH_PROTOCOL_VERSION || !["launching", "active"].includes(row.fleet_status ?? "")) {
       throw new StaleWorkerError(`Stale autoresearch worker session for ${identity.workerId}`);
     }
     return identity;
@@ -381,12 +394,12 @@ export class FleetStore {
 
       const generation = (previous?.generation ?? 0) + 1;
       this.db.prepare(`
-        INSERT INTO fleets_v3(canonical_root,generation,status,parent_session,canonical_branch,canonical_head,integration_error,protocol_version,max_workers,started_at,updated_at,stopped_at)
-        VALUES(?,?,?,?,?,?,NULL,?,?,?,?,NULL)
+        INSERT INTO fleets_v3(canonical_root,generation,status,parent_session,canonical_branch,canonical_head,integration_error,frontier_version,protocol_version,max_workers,started_at,updated_at,stopped_at)
+        VALUES(?,?,?,?,?,?,NULL,0,?,?,?,?,NULL)
         ON CONFLICT(canonical_root) DO UPDATE SET
           generation=excluded.generation,status=excluded.status,parent_session=excluded.parent_session,
           canonical_branch=excluded.canonical_branch,canonical_head=excluded.canonical_head,integration_error=NULL,
-          protocol_version=excluded.protocol_version,max_workers=excluded.max_workers,
+          frontier_version=excluded.frontier_version,protocol_version=excluded.protocol_version,max_workers=excluded.max_workers,
           started_at=excluded.started_at,updated_at=excluded.updated_at,stopped_at=NULL
       `).run(input.canonicalRoot, generation, "launching", input.parentSession ?? null, input.canonicalBranch ?? null,
         input.canonicalHead ?? null, AUTORESEARCH_PROTOCOL_VERSION, input.workers.length, now, now);
@@ -463,11 +476,14 @@ export class FleetStore {
         SELECT id FROM intents_v3 WHERE canonical_root=? AND worker_id=? AND status='active'
       `).get(identity.canonicalRoot, identity.workerId) as { id?: number } | undefined;
       if (existing?.id !== undefined) throw new Error("worker already has an active research intent; resume it or finish it before publishing another");
+      const fleet = this.db.prepare("SELECT frontier_version FROM fleets_v3 WHERE canonical_root=? AND generation=?")
+        .get(identity.canonicalRoot, identity.generation) as { frontier_version?: number } | undefined;
+      if (!fleet) throw new StaleWorkerError(`Stale autoresearch fleet for ${identity.workerId}`);
       const result = this.db.prepare(`
-        INSERT INTO intents_v3(canonical_root,worker_id,generation,session_id,question,experiment,reason,status,baseline_head,started_at,updated_at)
-        VALUES(?,?,?,?,?,?,?,'active',?,?,?)
+        INSERT INTO intents_v3(canonical_root,worker_id,generation,session_id,question,experiment,reason,status,outcome,started_frontier_version,baseline_head,started_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,'active',NULL,?,?,?,?)
       `).run(identity.canonicalRoot, identity.workerId, identity.generation, identity.sessionId,
-        question, experiment, reason, input.baselineHead ?? null, now, now);
+        question, experiment, reason, Number(fleet.frontier_version ?? 0), input.baselineHead ?? null, now, now);
       const intentId = Number(result.lastInsertRowid);
       this.db.prepare(`
         UPDATE workers_v3 SET status='running',task=?,summary=?,last_seen=?
@@ -511,11 +527,12 @@ export class FleetStore {
       if (!intent) throw new Error("no active research intent to finish");
       const status: IntentStatus = input.outcome === "external-blocked" ? "blocked" : "complete";
       const terminalHead = requiredText(input.terminalHead, "campaign terminal head");
+      const integrationPhase = input.outcome === "external-blocked" ? "complete" : "pending";
       const result = this.db.prepare(`
-        UPDATE intents_v3 SET status=?,outcome=?,summary=?,findings=?,run_ids=?,terminal_head=?,integration_phase='pending',
+        UPDATE intents_v3 SET status=?,outcome=?,summary=?,findings=?,run_ids=?,terminal_head=?,integration_phase=?,
           integration_ref=NULL,integration_base_head=NULL,integration_result_head=NULL,integration_error=NULL,integration_updated_at=?,updated_at=?,completed_at=?
         WHERE id=? AND status='active'
-      `).run(status, input.outcome, summary, json(input.findings), json(input.runIds), terminalHead, now, now, now, Number(intent.id));
+      `).run(status, input.outcome, summary, json(input.findings), json(input.runIds), terminalHead, integrationPhase, now, now, now, Number(intent.id));
       if (Number(result.changes) !== 1) throw new StaleWorkerError("research intent changed before completion");
       const workerStatus: WorkerStatus = status === "complete" ? "complete" : status;
       this.workerHeartbeat({ status: workerStatus, currentTool: null, summary, error: status === "complete" ? null : summary }, now);
@@ -572,26 +589,74 @@ export class FleetStore {
     });
   }
 
-  completeCanonicalIntegration(canonicalRoot: string, workerId: string, generation: number, intentId: number, baseHead: string, resultHead: string, now = Date.now()): void {
-    this.transaction(() => {
-      const fleet = this.db.prepare("UPDATE fleets_v3 SET canonical_head=?,updated_at=? WHERE canonical_root=? AND generation=? AND canonical_head=? AND integration_error IS NULL")
-        .run(resultHead, now, canonicalRoot, generation, baseHead);
+  completeCanonicalIntegration(canonicalRoot: string, workerId: string, generation: number, intentId: number, baseHead: string, resultHead: string, now = Date.now()): { frontierAdvanced: boolean } {
+    return this.transaction(() => {
+      const source = this.db.prepare("SELECT outcome FROM intents_v3 WHERE id=? AND canonical_root=? AND worker_id=? AND integration_phase='integrating'")
+        .get(intentId, canonicalRoot, workerId) as { outcome?: CampaignOutcome } | undefined;
+      if (!source) throw new StaleWorkerError(`Integration state changed for ${workerId}`);
+      const frontierAdvanced = source.outcome === "accepted" && resultHead !== baseHead;
+      if (source.outcome === "accepted" && !frontierAdvanced) {
+        throw new Error("Accepted integration did not produce a changed canonical result");
+      }
+      const fleet = this.db.prepare("UPDATE fleets_v3 SET canonical_head=?,frontier_version=frontier_version+?,updated_at=? WHERE canonical_root=? AND generation=? AND canonical_head=? AND integration_error IS NULL")
+        .run(resultHead, frontierAdvanced ? 1 : 0, now, canonicalRoot, generation, baseHead);
       if (Number(fleet.changes) !== 1) throw new StaleWorkerError("Persisted canonical HEAD changed while completing integration");
       const intent = this.db.prepare(`
         UPDATE intents_v3 SET integration_phase='integrated',integration_result_head=?,integration_error=NULL,integration_updated_at=?
         WHERE id=? AND canonical_root=? AND worker_id=? AND integration_phase='integrating' AND integration_base_head=?
       `).run(resultHead, now, intentId, canonicalRoot, workerId, baseHead);
       if (Number(intent.changes) !== 1) throw new StaleWorkerError(`Integration state changed for ${workerId}`);
+      if (frontierAdvanced) this.addEventUnsafe(canonicalRoot, workerId, generation, "frontier_advanced", `${baseHead} -> ${resultHead}`, now);
       this.addEventUnsafe(canonicalRoot, workerId, generation, "terminal_integrated", resultHead, now);
+      return { frontierAdvanced };
     });
   }
 
-  completeLaneReset(canonicalRoot: string, workerId: string, _generation: number, intentId: number, now = Date.now()): void {
-    const result = this.db.prepare(`
-      UPDATE intents_v3 SET integration_phase='complete',integration_error=NULL,integration_updated_at=?
-      WHERE id=? AND canonical_root=? AND worker_id=? AND integration_phase='integrated'
-    `).run(now, intentId, canonicalRoot, workerId);
-    if (Number(result.changes) !== 1) throw new StaleWorkerError(`Integration reset state changed for ${workerId}`);
+  completeLaneReset(canonicalRoot: string, workerId: string, generation: number, intentId: number, now = Date.now()): LaneResetResult {
+    return this.transaction(() => {
+      const intent = this.db.prepare("SELECT outcome,started_frontier_version,integration_base_head,integration_result_head FROM intents_v3 WHERE id=? AND canonical_root=? AND worker_id=? AND integration_phase='integrated'")
+        .get(intentId, canonicalRoot, workerId) as { outcome?: CampaignOutcome; started_frontier_version?: number; integration_base_head?: string; integration_result_head?: string } | undefined;
+      if (!intent) throw new StaleWorkerError(`Integration reset state changed for ${workerId}`);
+      const fleet = this.db.prepare("SELECT frontier_version,status FROM fleets_v3 WHERE canonical_root=? AND generation=?")
+        .get(canonicalRoot, generation) as { frontier_version?: number; status?: string } | undefined;
+      if (!fleet) throw new StaleWorkerError("Fleet generation changed during lane reset");
+      const frontierAdvanced = intent.outcome === "accepted" && intent.integration_base_head !== intent.integration_result_head;
+      this.db.prepare("UPDATE intents_v3 SET integration_phase='complete',integration_error=NULL,integration_updated_at=? WHERE id=?")
+        .run(now, intentId);
+
+      let disposition: LaneDisposition = "replace";
+      const reactivatedWorkerIds: string[] = [];
+      if (intent.outcome === "exhausted") {
+        disposition = Number(intent.started_frontier_version ?? 0) === Number(fleet.frontier_version ?? 0) ? "park" : "replace";
+        if (disposition === "park") {
+          this.db.prepare("UPDATE workers_v3 SET status='parked',process_state='stopped',current_tool=NULL,current_tool_started_at=NULL,last_seen=? WHERE canonical_root=? AND worker_id=? AND generation=? AND process_state='stopped'")
+            .run(now, canonicalRoot, workerId, generation);
+          this.addEventUnsafe(canonicalRoot, workerId, generation, "worker_parked", "Project-level research exhausted at its started frontier", now);
+        }
+      }
+      if (intent.outcome === "accepted" && frontierAdvanced) {
+        const parked = this.db.prepare("SELECT worker_id FROM workers_v3 WHERE canonical_root=? AND generation=? AND status='parked' AND process_state='stopped' ORDER BY worker_id").all(canonicalRoot, generation) as Array<{ worker_id: string }>;
+        for (const row of parked) {
+          reactivatedWorkerIds.push(row.worker_id);
+          this.db.prepare("UPDATE workers_v3 SET status='queued',summary='Reactivated after a scientific frontier advance.',error=NULL,last_seen=? WHERE canonical_root=? AND worker_id=? AND generation=? AND status='parked' AND process_state='stopped'")
+            .run(now, canonicalRoot, row.worker_id, generation);
+          this.addEventUnsafe(canonicalRoot, row.worker_id, generation, "worker_reactivated", "Scientific frontier advanced", now);
+        }
+        this.db.prepare("UPDATE fleets_v3 SET status='active',stopped_at=NULL,updated_at=? WHERE canonical_root=? AND generation=? AND status='exhausted'")
+          .run(now, canonicalRoot, generation);
+      }
+      const incomplete = this.db.prepare("SELECT COUNT(*) AS count FROM intents_v3 WHERE canonical_root=? AND generation=? AND (status='active' OR (integration_phase IS NOT NULL AND integration_phase<>'complete'))").get(canonicalRoot, generation) as { count: number };
+      const lanes = this.db.prepare("SELECT status,process_state FROM workers_v3 WHERE canonical_root=? AND generation=?").all(canonicalRoot, generation) as Array<{ status?: string; process_state?: string }>;
+      const allParked = lanes.length > 0 && lanes.every((row) => row.status === "parked" && row.process_state === "stopped");
+      if (intent.outcome === "exhausted" && disposition === "park" && Number(incomplete.count) === 0 && allParked) {
+        disposition = "fleet-exhausted";
+        this.db.prepare("UPDATE fleets_v3 SET status='exhausted',stopped_at=?,updated_at=? WHERE canonical_root=? AND generation=? AND status<>'off'")
+          .run(now, now, canonicalRoot, generation);
+        this.addEventUnsafe(canonicalRoot, null, generation, "fleet_exhausted", `All ${lanes.length} lanes declared project-level exhaustion at frontier ${Number(fleet.frontier_version ?? 0)}`, now);
+      }
+      this.addEventUnsafe(canonicalRoot, workerId, generation, "lane_reset", disposition, now);
+      return { disposition, reactivatedWorkerIds, frontierAdvanced };
+    });
   }
 
   blockIntegration(canonicalRoot: string, workerId: string, generation: number, intentId: number, error: string, now = Date.now()): void {
@@ -606,6 +671,37 @@ export class FleetStore {
         WHERE canonical_root=? AND worker_id=? AND generation=?
       `).run(error.slice(0, 500), now, canonicalRoot, workerId, generation);
       this.addEventUnsafe(canonicalRoot, workerId, generation, "terminal_integration_blocked", error.slice(0, 500), now);
+    });
+  }
+
+  retryBlockedIntegrationAfterCanonicalAdvance(
+    canonicalRoot: string,
+    workerId: string,
+    generation: number,
+    intentId: number,
+    expectedHead: string,
+    actualHead: string,
+    now = Date.now(),
+  ): void {
+    this.transaction(() => {
+      const fleet = this.db.prepare(`
+        UPDATE fleets_v3 SET canonical_head=?,updated_at=?
+        WHERE canonical_root=? AND generation=? AND canonical_head=? AND integration_error IS NULL AND status='active'
+      `).run(actualHead, now, canonicalRoot, generation, expectedHead);
+      if (Number(fleet.changes) !== 1) throw new StaleWorkerError("Canonical state changed before blocked integration retry");
+      const intent = this.db.prepare(`
+        UPDATE intents_v3 SET integration_phase='ref_created',integration_base_head=NULL,integration_result_head=NULL,
+          integration_error=NULL,integration_updated_at=?
+        WHERE id=? AND canonical_root=? AND worker_id=? AND integration_phase='blocked' AND integration_ref IS NOT NULL
+      `).run(now, intentId, canonicalRoot, workerId);
+      if (Number(intent.changes) !== 1) throw new StaleWorkerError(`Blocked integration state changed for ${workerId}`);
+      const worker = this.db.prepare(`
+        UPDATE workers_v3 SET status='paused',summary='Retrying terminal integration after verified canonical advance.',
+          error=NULL,last_seen=?
+        WHERE canonical_root=? AND worker_id=? AND generation=? AND process_state='stopped'
+      `).run(now, canonicalRoot, workerId, generation);
+      if (Number(worker.changes) !== 1) throw new StaleWorkerError(`${workerId} is not stopped for blocked integration retry`);
+      this.addEventUnsafe(canonicalRoot, workerId, generation, "terminal_integration_retry", `${expectedHead} -> ${actualHead}`, now);
     });
   }
 
