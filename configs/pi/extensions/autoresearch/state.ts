@@ -705,6 +705,47 @@ export class FleetStore {
     });
   }
 
+  adoptBlockedCanonicalIntegration(
+    canonicalRoot: string,
+    workerId: string,
+    generation: number,
+    intentId: number,
+    expectedHead: string,
+    resultHead: string,
+    now = Date.now(),
+  ): void {
+    this.transaction(() => {
+      const source = this.db.prepare(`
+        SELECT outcome FROM intents_v3
+        WHERE id=? AND canonical_root=? AND worker_id=? AND integration_phase='blocked' AND integration_ref IS NOT NULL
+      `).get(intentId, canonicalRoot, workerId) as { outcome?: CampaignOutcome } | undefined;
+      if (!source) throw new StaleWorkerError(`Blocked integration state changed for ${workerId}`);
+      const frontierAdvanced = source.outcome === "accepted" && resultHead !== expectedHead;
+      if (source.outcome === "accepted" && !frontierAdvanced) {
+        throw new Error("Accepted manual integration did not produce a changed canonical result");
+      }
+      const fleet = this.db.prepare(`
+        UPDATE fleets_v3 SET canonical_head=?,frontier_version=frontier_version+?,updated_at=?
+        WHERE canonical_root=? AND generation=? AND canonical_head=? AND integration_error IS NULL AND status='active'
+      `).run(resultHead, frontierAdvanced ? 1 : 0, now, canonicalRoot, generation, expectedHead);
+      if (Number(fleet.changes) !== 1) throw new StaleWorkerError("Canonical state changed before adopting blocked integration");
+      const intent = this.db.prepare(`
+        UPDATE intents_v3 SET integration_phase='integrated',integration_base_head=?,integration_result_head=?,
+          integration_error=NULL,integration_updated_at=?
+        WHERE id=? AND canonical_root=? AND worker_id=? AND integration_phase='blocked'
+      `).run(expectedHead, resultHead, now, intentId, canonicalRoot, workerId);
+      if (Number(intent.changes) !== 1) throw new StaleWorkerError(`Blocked integration state changed for ${workerId}`);
+      const worker = this.db.prepare(`
+        UPDATE workers_v3 SET status='paused',summary='Adopted verified manual terminal integration.',
+          error=NULL,last_seen=?
+        WHERE canonical_root=? AND worker_id=? AND generation=? AND process_state='stopped'
+      `).run(now, canonicalRoot, workerId, generation);
+      if (Number(worker.changes) !== 1) throw new StaleWorkerError(`${workerId} is not stopped for blocked integration adoption`);
+      if (frontierAdvanced) this.addEventUnsafe(canonicalRoot, workerId, generation, "frontier_advanced", `${expectedHead} -> ${resultHead}`, now);
+      this.addEventUnsafe(canonicalRoot, workerId, generation, "terminal_integration_adopted", resultHead, now);
+    });
+  }
+
   blockAllIntegrations(canonicalRoot: string, generation: number, error: string, now = Date.now()): void {
     const result = this.db.prepare("UPDATE fleets_v3 SET integration_error=?,updated_at=? WHERE canonical_root=? AND generation=?")
       .run(error.slice(0, 2000), now, canonicalRoot, generation);

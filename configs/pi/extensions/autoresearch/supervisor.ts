@@ -1646,17 +1646,16 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
     if (worker.process_state !== "stopped") throw new Error(`${workerId} process ownership must be stopped before integration retry`);
     if (this.clients.get(workerId)) throw new Error(`${workerId} still has a process client; integration retry is forbidden`);
     if (store.currentIntent(root, workerId)) throw new Error(`${workerId} still has an active campaign intent`);
-    if (!String(pending.integration_error ?? "").startsWith("Canonical HEAD changed from expected ")) {
-      throw new Error(`${workerId} blocked integration is not a canonical-advance retry`);
-    }
+    const integrationError = String(pending.integration_error ?? "");
     const fleet = store.snapshot(root, { recent: 1 }).fleet;
     const expectedHead = String(fleet?.canonical_head ?? "");
     const integrationBase = String(pending.integration_base_head ?? "");
     if (!expectedHead || integrationBase !== expectedHead) throw new Error(`${workerId} blocked integration base no longer matches fleet state`);
+    const terminalHead = String(pending.terminal_head ?? "");
     const lane = this.lanes.get(workerId);
     if (!lane) throw new Error(`Missing worker lane: ${workerId}`);
     const laneState = (this.options.laneState ?? ((path) => laneGitState(path, this.options.run)))(lane.path);
-    if (laneState.dirty || laneState.head !== String(pending.terminal_head ?? "")) {
+    if (laneState.dirty || laneState.head !== terminalHead) {
       throw new Error(`${workerId} lane must be clean at its preserved terminal head before integration retry`);
     }
     const inspect = this.options.inspectRepo ?? ((cwd: string) => inspectRepository(cwd, this.options.run));
@@ -1667,6 +1666,16 @@ export class AutoresearchSupervisor implements FleetCommandHandler {
     const isAncestor = this.options.isAncestor ?? isGitAncestor;
     if (!isAncestor(root, expectedHead, actual.head, this.options.run)) {
       throw new Error(`Canonical HEAD ${actual.head} is not a fast-forward descendant of expected ${expectedHead}`);
+    }
+    if (terminalHead && isAncestor(root, terminalHead, actual.head, this.options.run)) {
+      store.adoptBlockedCanonicalIntegration(
+        root, workerId, this.generation, Number(pending.id), expectedHead, actual.head, (this.options.now ?? Date.now)(),
+      );
+      await this.enqueueTerminalIntegration(workerId);
+      return { adoptedIntegration: true, previousCanonicalHead: expectedHead, observedCanonicalHead: actual.head };
+    }
+    if (!integrationError.startsWith("Canonical HEAD changed from expected ")) {
+      throw new Error(`${workerId} blocked integration has not been manually integrated into canonical HEAD`);
     }
     store.retryBlockedIntegrationAfterCanonicalAdvance(
       root, workerId, this.generation, Number(pending.id), expectedHead, actual.head, (this.options.now ?? Date.now)(),
