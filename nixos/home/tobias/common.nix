@@ -37,11 +37,18 @@ in
     };
   };
 
-  programs.git = {
-    enable = true;
-    settings.user = {
-      name = "Tobias Bak";
-      email = "tobiasbak@live.dk";
+  programs = {
+    gh = {
+      enable = true;
+      gitCredentialHelper.enable = true;
+    };
+
+    git = {
+      enable = true;
+      settings.user = {
+        name = "Tobias Bak";
+        email = "tobiasbak@live.dk";
+      };
     };
   };
 }

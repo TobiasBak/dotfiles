@@ -62,7 +62,6 @@ ensure_github_auth() {
   require_command gh || return 1
 
   if gh auth status --hostname github.com >/dev/null 2>&1; then
-    gh auth setup-git --hostname github.com >/dev/null 2>&1 || true
     return 0
   fi
 
@@ -71,8 +70,6 @@ ensure_github_auth() {
     warn "GitHub login did not complete."
     return 1
   fi
-
-  gh auth setup-git --hostname github.com >/dev/null 2>&1 || true
 }
 
 install_codex_cli() {
