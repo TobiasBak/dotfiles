@@ -87,7 +87,7 @@ binds {
     Mod+Q { close-window; }
 
     // Applications
-    Mod+Space { spawn "ghostty"; }
+    Mod+Space { spawn "ghostty" "-e" "tmux" "new-session" "-A" "-s" "main"; }
     Mod+D { spawn "fuzzel"; }
     Super+Alt+L { spawn "swaylock"; }
     Mod+1 { spawn "chromium"; }
