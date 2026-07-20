@@ -105,6 +105,7 @@ in
     networkmanagerapplet
     papirus-icon-theme
     pavucontrol
+    pciutils
     playerctl
     quickshell
     swaybg
@@ -112,6 +113,7 @@ in
     vscode
     wayland-utils
     wezterm
+    wireplumber
     wl-clipboard
     xwayland-satellite
   ];

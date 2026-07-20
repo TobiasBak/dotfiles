@@ -14,6 +14,6 @@
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";
 
   warnings = [
-    "tobias-stationary is using its bootstrap hardware configuration; replace hosts/tobias-stationary/hardware-configuration.nix before installation"
+    "laptop is using its bootstrap hardware configuration; replace hosts/laptop/hardware-configuration.nix before installation"
   ];
 }

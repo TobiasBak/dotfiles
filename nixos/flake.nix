@@ -42,11 +42,11 @@
         ];
 
         pc = mkDeveloperSystem [
-          ./hosts/tobias-stationary/configuration.nix
+          ./hosts/pc/configuration.nix
         ];
 
         laptop = mkDeveloperSystem [
-          ./hosts/tobias-laptop/configuration.nix
+          ./hosts/laptop/configuration.nix
         ];
 
         laptop-server = nixpkgs.lib.nixosSystem {

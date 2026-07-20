@@ -144,15 +144,11 @@ git clone https://github.com/TobiasBak/dotfiles.git /mnt/home/tobias/code/dotfil
 ln -s /home/tobias/code/dotfiles /mnt/home/tobias/.dotfiles
 ```
 
-Choose exactly one host and its configuration directory:
+Choose exactly one host:
 
 ```bash
 host=pc
-host_dir=tobias-stationary
-
-# For the laptop instead:
 # host=laptop
-# host_dir=tobias-laptop
 ```
 
 Generate the target hardware configuration and replace the bootstrap file:
@@ -160,7 +156,7 @@ Generate the target hardware configuration and replace the bootstrap file:
 ```bash
 nixos-generate-config --root /mnt
 cp /mnt/etc/nixos/hardware-configuration.nix \
-  "/mnt/home/tobias/code/dotfiles/nixos/hosts/$host_dir/hardware-configuration.nix"
+  "/mnt/home/tobias/code/dotfiles/nixos/hosts/$host/hardware-configuration.nix"
 ```
 
 Review the generated filesystems before proceeding. They must contain the
@@ -172,7 +168,7 @@ before installing:
 
 ```bash
 cd /mnt/home/tobias/code/dotfiles/nixos
-if grep -q "Bootstrap placeholder" "hosts/$host_dir/hardware-configuration.nix"; then
+if grep -q "Bootstrap placeholder" "hosts/$host/hardware-configuration.nix"; then
   echo "Hardware configuration was not replaced" >&2
   exit 1
 fi
@@ -195,7 +191,7 @@ mutable Pi/Codex tools and skill links:
 ~/.dotfiles/rebuild-nixos.sh --bootstrap
 ```
 
-Add host-specific output blocks to `hosts/<host-directory>/niri.kdl` only after checking
+Add host-specific output blocks to `hosts/<host>/niri.kdl` only after checking
 the identifiers reported by:
 
 ```bash

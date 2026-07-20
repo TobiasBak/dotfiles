@@ -67,8 +67,7 @@ fi
 current_host="$(hostname)"
 host="${TARGET_HOST:-$current_host}"
 case "$host" in
-  pc) host_dir="tobias-stationary" ;;
-  laptop) host_dir="tobias-laptop" ;;
+  pc | laptop) ;;
   *)
     echo "Unsupported native NixOS hostname: $host" >&2
     echo "For first setup, pass pc or laptop explicitly." >&2
@@ -76,7 +75,7 @@ case "$host" in
     ;;
 esac
 
-hardware_config="$REPO_DIR/nixos/hosts/$host_dir/hardware-configuration.nix"
+hardware_config="$REPO_DIR/nixos/hosts/$host/hardware-configuration.nix"
 if grep -q "Bootstrap placeholder" "$hardware_config"; then
   generated_hardware_config="/etc/nixos/hardware-configuration.nix"
   if [ -z "$TARGET_HOST" ] || [ ! -f "$generated_hardware_config" ]; then
