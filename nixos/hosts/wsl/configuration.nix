@@ -50,10 +50,9 @@ in
 
   home-manager.users.tobias.imports = [ ../../home/tobias/wsl.nix ];
 
-  environment.systemPackages = with pkgs; [
+  environment.systemPackages = [
     windowsCode
     windowsPowerShell
-    wslu
   ];
 
   # Keep this at the generated install release unless you intentionally migrate it.

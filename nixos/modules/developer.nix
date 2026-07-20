@@ -23,7 +23,7 @@ in
       glib
       libGL
       stdenv.cc.cc.lib
-      xorg.libX11
+      libx11
     ];
   };
 
@@ -45,7 +45,7 @@ in
     gh
     hunk.packages.${pkgs.stdenv.hostPlatform.system}.hunk
     nixd
-    nixfmt-rfc-style
+    nixfmt
     nodejs
     oh-my-zsh
     openssl

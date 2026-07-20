@@ -2,14 +2,14 @@
   description = "NixOS configurations for developer machines and servers";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     hunk = {
       url = "github:modem-dev/hunk";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     nixos-wsl.url = "github:nix-community/NixOS-WSL/main";
     home-manager = {
-      url = "github:nix-community/home-manager/release-25.11";
+      url = "github:nix-community/home-manager/release-26.05";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -33,7 +33,7 @@
         };
     in
     {
-      formatter.${system} = nixpkgs.legacyPackages.${system}.nixfmt-rfc-style;
+      formatter.${system} = nixpkgs.legacyPackages.${system}.nixfmt;
 
       nixosConfigurations = {
         wsl = mkDeveloperSystem [

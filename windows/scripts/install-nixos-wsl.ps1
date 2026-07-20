@@ -256,7 +256,7 @@ export NIX_CONFIG="${NIX_CONFIG:-}
 experimental-features = nix-command flakes"
 
 repo="/root/dotfiles"
-nixpkgs_ref="github:NixOS/nixpkgs/nixos-25.11"
+nixpkgs_ref="github:NixOS/nixpkgs/nixos-26.05"
 rm -f /etc/dotfiles-nixos-wsl-system-ok
 
 run_git() {
@@ -338,7 +338,7 @@ set -euo pipefail
 
 target="$HOME/code/dotfiles"
 stable="$HOME/.dotfiles"
-nixpkgs_ref="github:NixOS/nixpkgs/nixos-25.11"
+nixpkgs_ref="github:NixOS/nixpkgs/nixos-26.05"
 
 run_git() {
   if command -v git >/dev/null 2>&1; then
