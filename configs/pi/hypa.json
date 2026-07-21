@@ -1,4 +1,4 @@
 {
   "mode": "replace",
-  "binary": "/home/tobias/.pi/agent/extensions/hypa-pi-wrapper.sh"
+  "binary": "/home/tobias/code/pi-tools/scripts/hypa-pi-wrapper.sh"
 }

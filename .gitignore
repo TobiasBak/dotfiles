@@ -6,8 +6,11 @@
 # Local temp workspace
 /tmp/
 
-# Pi extension runtime deps installed from pnpm-lock.yaml
-configs/pi/extensions/node_modules/
+# VS Code runtime state, local history, and workspace caches
+configs/Code/User/History/
+configs/Code/User/chatLanguageModels.json
+configs/Code/User/globalStorage/
+configs/Code/User/workspaceStorage/
 
 # Local secrets and machine-private NixOS files
 *.age

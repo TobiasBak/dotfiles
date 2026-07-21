@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.80.10",
+  "lastChangelogVersion": "0.81.0",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.6-sol",
   "defaultThinkingLevel": "high",
@@ -12,11 +12,16 @@
     "keepRecentTokens": 20000
   },
   "packages": [
+    "/home/tobias/code/pi-tools",
     "npm:@hypabolic/pi-hypa",
     {
       "source": "npm:pi-web-access",
       "skills": []
     }
+  ],
+  "skills": [
+    "~/code/skills/skills",
+    "~/code/skills/external"
   ],
   "defaultProjectTrust": "always",
   "enableInstallTelemetry": true,

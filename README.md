@@ -11,7 +11,7 @@ This repository contains configuration files for Windows, native NixOS developer
 - `assets/`: Shared non-configuration assets such as wallpapers.
 - `nixos/`: Flake-based NixOS host configs for WSL, native developer machines, and servers.
 - `windows/`: Windows setup scripts.
-- `scripts/`: Shared bootstrap, benchmark, and extension test scripts.
+- `scripts/`: Shared bootstrap and benchmark scripts.
 - `docs/`: Historical research notes and supporting documentation.
 
 ## Usage
@@ -27,7 +27,7 @@ powershell -ExecutionPolicy Bypass -File .\rebuild-windows.ps1
 This elevates when needed, applies the winget configuration, installs Windows
 host tools, creates the Windows config links, and installs or updates NixOS WSL
 when its recorded repository revision is stale. The WSL bootstrap also refreshes
-mutable agent CLIs and skill links when it runs. Commit and push the revision
+mutable agent CLIs, Pi tools, and skill links when it runs. Commit and push the revision
 before running this command because WSL checks out that commit from the configured
 Git remote.
 
@@ -51,6 +51,10 @@ Inside NixOS WSL, refresh the system profile and Home Manager user config with:
 ```bash
 ./rebuild-wsl.sh
 ```
+
+Pi extensions live in the sibling `~/code/pi-tools` repository and are loaded
+through `configs/pi/settings.json`. The developer-tool bootstrap clones or
+updates that repository alongside dotfiles.
 
 ### Native NixOS
 
