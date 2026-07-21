@@ -5,6 +5,24 @@
 }:
 
 let
+  nativeLibraries = with pkgs; [
+    expat
+    glib
+    libGL
+    stdenv.cc.cc.lib
+    libx11
+  ];
+  uvWithNativeLibraries = pkgs.symlinkJoin {
+    name = "uv-with-native-libraries";
+    paths = [ pkgs.uv ];
+    nativeBuildInputs = [ pkgs.makeWrapper ];
+    postBuild = ''
+      wrapProgram $out/bin/uv \
+        --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath nativeLibraries}"
+      wrapProgram $out/bin/uvx \
+        --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath nativeLibraries}"
+    '';
+  };
   vitePlus = pkgs.callPackage ../packages/vite-plus { };
 in
 {
@@ -19,13 +37,7 @@ in
   # Supports native PyPI wheels and other dynamically linked development tools.
   programs.nix-ld = {
     enable = true;
-    libraries = with pkgs; [
-      expat
-      glib
-      libGL
-      stdenv.cc.cc.lib
-      libx11
-    ];
+    libraries = nativeLibraries;
   };
 
   environment.sessionVariables.ZSH = "${pkgs.oh-my-zsh}/share/oh-my-zsh";
@@ -57,7 +69,7 @@ in
     tailscale
     tmux
     unzip
-    uv
+    uvWithNativeLibraries
     vitePlus
     wget
     xdg-utils

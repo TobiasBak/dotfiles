@@ -43,10 +43,6 @@ in
   # depend on an interactive password prompt.
   security.sudo.wheelNeedsPassword = false;
 
-  # Let uv-managed native wheels find nix-ld libraries in WSL. Keep this
-  # compatibility path out of native desktop sessions.
-  environment.sessionVariables.LD_LIBRARY_PATH = "/run/current-system/sw/share/nix-ld/lib";
-
   home-manager.users.tobias.imports = [ ../../home/tobias/wsl.nix ];
 
   environment.systemPackages = [

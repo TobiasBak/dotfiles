@@ -5,8 +5,9 @@ input {
     keyboard {
         xkb {
             layout "dk"
-            // Use Left Alt as AltGr (Level 3 switch) for 60% keyboards.
-            options "lv3:lalt_switch"
+            variant "nodeadkeys"
+            // Use either Alt key as AltGr (Level 3 switch) for 60% keyboards.
+            options "lv3:alt_switch"
         }
     }
 

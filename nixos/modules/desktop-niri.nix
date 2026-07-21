@@ -42,6 +42,8 @@ in
   };
 
   services = {
+    tailscale.extraSetFlags = [ "--operator=tobias" ];
+
     greetd = {
       enable = true;
       settings.default_session = {
