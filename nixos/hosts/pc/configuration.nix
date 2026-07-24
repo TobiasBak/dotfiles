@@ -1,5 +1,24 @@
-{ config, ... }:
+{ config, pkgs, ... }:
 
+let
+  whisperModel = pkgs.fetchurl {
+    url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin";
+    hash = "sha256-OUIhcJzVrR9AxG5gMcphvOiJMebgiMGIKUxtWlX/p+I=";
+  };
+
+  piWhisperTranscribe = pkgs.writeShellApplication {
+    name = "pi-whisper-transcribe";
+    runtimeInputs = [ pkgs.whisper-cpp-vulkan ];
+    text = ''
+      if [ "$#" -ne 1 ]; then
+        echo "Usage: $0 <audio-file>" >&2
+        exit 2
+      fi
+
+      exec whisper-cli -m ${whisperModel} -l auto -nt -np -f "$1"
+    '';
+  };
+in
 {
   nixpkgs.overlays = [
     (_final: previous: {
@@ -14,6 +33,8 @@
   ];
 
   networking.hostName = "pc";
+
+  environment.systemPackages = [ piWhisperTranscribe ];
 
   services.xserver.videoDrivers = [ "nvidia" ];
   hardware.nvidia = {
