@@ -96,6 +96,43 @@ install_pi_cli() {
   command pnpm add --global --ignore-scripts "@earendil-works/pi-coding-agent@latest"
 }
 
+install_hypa() {
+  require_command git || return 0
+
+  local hypa_repo="https://github.com/TobiasBak/Hypa.git"
+  local hypa_dir pi_hypa_dir
+  hypa_dir="$(cd "$REAL_REPO_DIR/.." && pwd)/hypa"
+  pi_hypa_dir="$hypa_dir/packages/pi-hypa"
+
+  mkdir -p "$(dirname "$hypa_dir")"
+  if [ -d "$hypa_dir/.git" ]; then
+    log "Updating Hypa repo at $hypa_dir..."
+    run_git_noninteractive -C "$hypa_dir" pull --ff-only ||
+      warn "Could not update Hypa at $hypa_dir. Continuing with the existing checkout."
+  elif [ ! -e "$hypa_dir" ]; then
+    log "Cloning Hypa into $hypa_dir..."
+    run_git_noninteractive clone "$hypa_repo" "$hypa_dir" || {
+      warn "Could not clone Hypa into $hypa_dir."
+      if [ -d "$hypa_dir" ] && [ ! -d "$hypa_dir/.git" ]; then
+        rm -rf "$hypa_dir"
+      fi
+      return 0
+    }
+  else
+    echo "$hypa_dir exists but is not a git repository. Move it aside before bootstrapping." >&2
+    return 1
+  fi
+
+  require_command npm || return 0
+  if [ ! -f "$pi_hypa_dir/package-lock.json" ]; then
+    warn "Hypa Pi package lockfile not found: $pi_hypa_dir/package-lock.json"
+    return 0
+  fi
+
+  log "Installing Hypa Pi package runtime dependencies..."
+  command npm --prefix "$pi_hypa_dir" ci --omit=dev --omit=peer
+}
+
 install_pi_tools() {
   require_command git || return 0
 
@@ -118,8 +155,8 @@ install_pi_tools() {
       return 0
     }
   else
-    warn "$pi_tools_dir exists but is not a git repository. Skipping Pi tools setup."
-    return 0
+    echo "$pi_tools_dir exists but is not a git repository. Move it aside before bootstrapping." >&2
+    return 1
   fi
 
   require_command pnpm || return 0
@@ -206,6 +243,7 @@ ensure_dotfiles_link
 install_codex_cli
 install_pi_cli
 install_pi_tools
+install_hypa
 remove_legacy_subagents
 install_agent_skill_links
 set_shell
