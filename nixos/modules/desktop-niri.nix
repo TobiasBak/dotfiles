@@ -5,6 +5,11 @@
 }:
 
 let
+  codexbar = pkgs.callPackage ../packages/codexbar { };
+  codexCli = pkgs.writeShellScriptBin "codex" ''
+    exec "$HOME/.local/share/pnpm/bin/codex" "$@"
+  '';
+
   mkNiriService = description: execStart: {
     inherit description;
     wantedBy = [ "niri.service" ];
@@ -115,6 +120,7 @@ in
   environment.systemPackages = with pkgs; [
     adwaita-icon-theme
     brightnessctl
+    codexbar
     discord
     docker-compose
     fuzzel
@@ -146,6 +152,9 @@ in
       path = [
         config.programs.niri.package
         pkgs.bash
+        codexCli
+        codexbar
+        pkgs.nodejs
         pkgs.python3
         pkgs.wireplumber
         pkgs.wl-clipboard

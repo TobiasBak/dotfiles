@@ -29,6 +29,7 @@ in
     ".config/quickshell" = linkFromDotfiles "configs/quickshell";
     ".config/Code/User" = linkFromDotfiles "configs/Code/User";
     ".config/discord/settings.json" = linkFromDotfiles "configs/discord/settings.json";
+    ".config/systemd/user/t3code.service.d/local.conf" = linkFromDotfiles "configs/t3code/service.conf";
 
     "Pictures/Wallpapers" = linkFromDotfiles "assets/wallpapers";
   };

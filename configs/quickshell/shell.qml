@@ -10,6 +10,10 @@ ShellRoot {
         id: niriProvider
     }
 
+    CodexUsageModel {
+        id: codexUsageModel
+    }
+
     // Clipboard copy indicator
     ClipboardPopup {}
 
@@ -77,6 +81,11 @@ ShellRoot {
                             }
                             spacing: 10
 
+                            CodexUsage {
+                                Layout.alignment: Qt.AlignVCenter
+                                popupScreen: mainBar.screen
+                                usageModel: codexUsageModel
+                            }
                             AudioControl {
                                 Layout.alignment: Qt.AlignVCenter
                                 popupScreen: mainBar.screen

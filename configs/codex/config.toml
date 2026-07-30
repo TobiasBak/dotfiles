@@ -1,5 +1,5 @@
 model = "gpt-5.6-sol"
-model_reasoning_effort = "high"
+model_reasoning_effort = "xhigh"
 model_reasoning_summary = "concise"
 model_verbosity = "low"
 personality = "pragmatic"
@@ -23,6 +23,15 @@ trust_level = "trusted"
 trust_level = "trusted"
 
 [projects."/home/tobias/code/PDFPrint"]
+trust_level = "trusted"
+
+[projects."/home/tobias/code/poly-executor"]
+trust_level = "trusted"
+
+[projects."/home/tobias/code/csbetting"]
+trust_level = "trusted"
+
+[projects."/home/tobias/code/t3code"]
 trust_level = "trusted"
 
 [notice]

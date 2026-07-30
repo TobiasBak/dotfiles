@@ -5,11 +5,13 @@ import Quickshell.Wayland
 
 Item {
     id: popupButton
-    implicitWidth: 24
+    implicitWidth: label.length > 0 ? buttonRow.implicitWidth + 12 : 24
     implicitHeight: 24
 
     property bool popupVisible: false
     property string icon: ""
+    property string label: ""
+    property color foregroundColor: "#c0caf5"
     property int popupWidth: 200
     property int popupTopMargin: 52
     property int popupRightMargin: 80
@@ -25,12 +27,26 @@ Item {
         color: buttonMouseArea.containsMouse ? "#363b54" : "transparent"
         radius: 4
 
-        Text {
+        RowLayout {
+            id: buttonRow
             anchors.centerIn: parent
-            text: popupButton.icon
-            font.family: "Symbols Nerd Font"
-            font.pixelSize: 16
-            color: "#c0caf5"
+            spacing: 5
+
+            Text {
+                visible: popupButton.icon.length > 0
+                text: popupButton.icon
+                font.family: "Symbols Nerd Font"
+                font.pixelSize: 16
+                color: popupButton.foregroundColor
+            }
+
+            Text {
+                visible: popupButton.label.length > 0
+                text: popupButton.label
+                font.pixelSize: 12
+                font.bold: true
+                color: popupButton.foregroundColor
+            }
         }
 
         MouseArea {

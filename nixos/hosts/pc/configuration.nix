@@ -18,6 +18,26 @@ let
       exec whisper-cli -m ${whisperModel} -l auto -nt -np -f "$1"
     '';
   };
+
+  rdpClient = pkgs.writeShellApplication {
+    name = "rdp";
+    runtimeInputs = [ pkgs.freerdp ];
+    text = ''
+      if [ "$#" -ne 1 ] || [[ "$1" != *@* ]]; then
+        echo "Usage: rdp <user>@<host>" >&2
+        exit 2
+      fi
+
+      username="''${1%%@*}"
+      host="''${1#*@}"
+      if [ -z "$username" ] || [ -z "$host" ]; then
+        echo "Usage: rdp <user>@<host>" >&2
+        exit 2
+      fi
+
+      exec xfreerdp "/u:$username" "/v:$host" +dynamic-resolution +clipboard /cert:tofu /from-stdin:force
+    '';
+  };
 in
 {
   nixpkgs.overlays = [
@@ -34,7 +54,25 @@ in
 
   networking.hostName = "pc";
 
-  environment.systemPackages = [ piWhisperTranscribe ];
+  # Keep the user manager available for T3 Code's official per-user background service.
+  users.users.tobias.linger = true;
+
+  # T3 Code is reachable from localhost and the Tailnet, but not the LAN.
+  networking.firewall.interfaces.tailscale0.allowedTCPPorts = [ 3773 ];
+
+  fileSystems."/mnt/data-2tb" = {
+    device = "/dev/disk/by-uuid/0e9d1e0f-a81d-4b66-981a-d3502dc45b1d";
+    fsType = "ext4";
+    options = [ "nofail" ];
+  };
+
+  # T3 Code's official updater may compile node-pty when a release lacks a matching prebuild.
+  environment.systemPackages = [
+    piWhisperTranscribe
+    pkgs.gcc
+    pkgs.gnumake
+    rdpClient
+  ];
 
   services.xserver.videoDrivers = [ "nvidia" ];
   hardware.nvidia = {

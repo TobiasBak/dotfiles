@@ -27,3 +27,11 @@ An agent can fix "max_nodes=128, asked for 129". It cannot fix a blank window. E
 ### Fight for the "obvious" solution
 
 Measure twice, cut once: understand the problem fully before building, because cleverness is what gets written when you haven't. The biggest simplicity win is refusing to solve problems we don't have. Good code is the most simple thing that delivers full functionality and performance, nothing traded away, nothing bolted on. Push back when you see a more obvious way.
+
+## Context and delegation
+
+Treat context as a scarce working set even when the model has a large window. Keep the objective, constraints, decisions, implementation state, and acceptance evidence with the main agent; retrieve narrow evidence as needed, and delegate noisy exploration only when the returned result will be materially smaller and source-addressable.
+
+- The main agent owns decomposition, diagnosis, design, synthesis, review judgment, and final acceptance. Do not delegate these to Luna merely to reduce cost.
+- When available, use GPT-5.6 Luna subagents only for bounded read-only evidence work with explicit relevance criteria: code or source localization, inventories, extraction, factual comparison, primary-source gathering, and compact summaries of logs or documents. Never delegate implementation or edits to Luna.
+- Give Luna fresh or deliberately reduced context, not the full transcript. Require exact paths and lines or source URLs, inspection coverage, uncertainty, and retrieval routes; reopen decisive evidence in the main agent. Keep small lookups direct, and escalate when the task requires implications, recommendations, tradeoffs, edits, or semantic judgment.

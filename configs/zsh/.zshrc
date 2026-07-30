@@ -182,6 +182,8 @@ pi() {
   command pi "$@"
 }
 
+alias t3token='command npx --yes t3@nightly auth pairing create'
+
 export PNPM_HOME="$HOME/.local/share/pnpm"
 export PNPM_BIN="$PNPM_HOME/bin"
 path=("$PNPM_BIN" ${path:#$PNPM_BIN})
