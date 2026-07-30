@@ -16,6 +16,15 @@ trust_level = "trusted"
 [projects."/home/tobias/vault"]
 trust_level = "trusted"
 
+[projects."/home/tobias/code/order-integration-platform"]
+trust_level = "trusted"
+
+[projects."/home/tobias"]
+trust_level = "trusted"
+
+[projects."/home/tobias/code/PDFPrint"]
+trust_level = "trusted"
+
 [notice]
 hide_rate_limit_model_nudge = true
 
@@ -31,3 +40,4 @@ url = "https://developers.openai.com/mcp"
 
 [features]
 code_mode = true
+multi_agent_v2 = true

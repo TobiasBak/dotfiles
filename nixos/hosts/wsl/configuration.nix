@@ -1,6 +1,48 @@
 { pkgs, ... }:
 
 let
+  windowsBrowser = pkgs.writeShellApplication {
+    name = "wslview";
+    text = ''
+      if (( $# != 1 )); then
+        echo "Usage: wslview <URL-or-path>" >&2
+        exit 2
+      fi
+
+      target="$1"
+      case "$target" in
+        [a-zA-Z]*:*) ;;
+        *)
+          if [[ ! -e "$target" ]]; then
+            echo "wslview: target does not exist: $target" >&2
+            exit 1
+          fi
+
+          if ! wslpath_bin="$(command -v wslpath)"; then
+            echo "wslview: wslpath not found." >&2
+            exit 127
+          fi
+          target="$("$wslpath_bin" -w "$target")"
+          ;;
+      esac
+
+      handler="/mnt/c/Windows/System32/rundll32.exe"
+      if [[ ! -x "$handler" ]]; then
+        echo "wslview: Windows URL handler not found." >&2
+        exit 127
+      fi
+
+      exec "$handler" url.dll,FileProtocolHandler "$target"
+    '';
+  };
+
+  windowsXdgOpen = pkgs.writeShellApplication {
+    name = "xdg-open";
+    text = ''
+      exec ${windowsBrowser}/bin/wslview "$@"
+    '';
+  };
+
   windowsPowerShell = pkgs.writeShellScriptBin "powershell.exe" ''
     executable="/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
     if [ -x "$executable" ]; then
@@ -39,6 +81,9 @@ in
 
   networking.hostName = "nixos-wsl";
 
+  virtualisation.docker.enable = true;
+  users.users.tobias.extraGroups = [ "docker" ];
+
   # WSL setup is driven from Windows automation, so first rebuilds must not
   # depend on an interactive password prompt.
   security.sudo.wheelNeedsPassword = false;
@@ -46,6 +91,9 @@ in
   home-manager.users.tobias.imports = [ ../../home/tobias/wsl.nix ];
 
   environment.systemPackages = [
+    (pkgs.lib.hiPrio windowsXdgOpen)
+    pkgs.docker-compose
+    windowsBrowser
     windowsCode
     windowsPowerShell
   ];
