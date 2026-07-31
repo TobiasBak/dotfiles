@@ -101,7 +101,6 @@ in
 
   environment.sessionVariables = {
     GTK_IM_MODULE = "simple";
-    NIXOS_OZONE_WL = "1";
   };
 
   nixpkgs.config.allowUnfree = true;
@@ -128,6 +127,7 @@ in
     htop
     libnotify
     mako
+    nautilus
     networkmanagerapplet
     papirus-icon-theme
     pavucontrol

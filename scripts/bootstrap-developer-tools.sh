@@ -171,7 +171,6 @@ install_pi_tools() {
 
 remove_legacy_subagents() {
   local package_root="$HOME/.pi/agent/npm"
-  local agents_link="$HOME/.codex/agents"
 
   if [ -d "$package_root/node_modules/pi-subagents" ] ||
      { [ -f "$package_root/package.json" ] && grep -q '"pi-subagents"' "$package_root/package.json"; }; then
@@ -182,11 +181,6 @@ remove_legacy_subagents() {
     else
       warn "pnpm not found, skipping legacy pi-subagents package cleanup."
     fi
-  fi
-
-  if [ -L "$agents_link" ]; then
-    log "Removing legacy Codex agents link..."
-    rm -f "$agents_link"
   fi
 }
 

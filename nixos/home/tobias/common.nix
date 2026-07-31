@@ -31,6 +31,7 @@ in
 
       ".codex/AGENTS.md" = linkFromDotfiles "configs/codex/AGENTS.md";
       ".codex/config.toml" = linkFromDotfiles "configs/codex/config.toml";
+      ".codex/agents" = linkFromDotfiles "configs/codex/agents";
       ".codex/prompts" = linkFromDotfiles "configs/codex/prompts";
     };
   };

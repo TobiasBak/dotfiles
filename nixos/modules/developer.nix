@@ -11,6 +11,7 @@ let
     libGL
     stdenv.cc.cc.lib
     libx11
+    zlib
   ];
   uvWithNativeLibraries = pkgs.symlinkJoin {
     name = "uv-with-native-libraries";

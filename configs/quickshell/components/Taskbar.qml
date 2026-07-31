@@ -52,6 +52,7 @@ RowLayout {
         model: root.displayItems
 
         Item {
+            required property var modelData
             property var itemData: modelData
             property var windowData: itemData.kind === "window" ? itemData.window : null
             width: itemData.kind === "separator" ? 10 : 32
@@ -94,8 +95,9 @@ RowLayout {
 
                         // Specific remappings
                         if (id === "ghostty" || id === "com.mitchellh.ghostty") return "image://icon/com.mitchellh.ghostty";
-                        if (id === "code-oss" || id === "code") return "image://icon/com.visualstudio.code.oss";
-                        if (id === "chromium") return "image://icon/chromium";
+                        if (id === "code-oss" || id === "code") return "image://icon/vscode";
+                        if (id === "chromium" || id === "chromium-browser") return "image://icon/chromium";
+                        if (id === "remote-viewer") return "file:///run/current-system/sw/share/icons/Papirus/22x22/apps/virt-viewer.svg";
                         if (id === "firefox") return "image://icon/firefox";
                         if (id === "spotify") return "image://icon/spotify-launcher";
                         if (id === "codex" || id === "codex-app") return "image://icon/codex-app";
@@ -111,9 +113,12 @@ RowLayout {
                             var id = appId.toLowerCase();
                             if (id.includes("ghostty")) source = "image://icon/com.mitchellh.ghostty";
                             else if (id.includes("terminal")) source = "image://icon/utilities-terminal";
-                            else if (id.includes("code")) source = "image://icon/code";
+                            else if (id.includes("code")) source = "image://icon/vscode";
                             else if (id.includes("codex")) source = "image://icon/codex-app";
-                            else if (id.includes("browser") || id.includes("chromium") || id.includes("firefox")) source = "image://icon/internet-web-browser";
+                            else if (id.includes("chromium")) source = "image://icon/chromium";
+                            else if (id.includes("firefox")) source = "image://icon/firefox";
+                            else if (id.includes("browser")) source = "image://icon/internet-web-browser";
+                            else if (id.includes("remote-viewer")) source = "file:///run/current-system/sw/share/icons/Papirus/22x22/apps/virt-viewer.svg";
                             else source = "image://icon/application-x-executable";
                         }
                     }
