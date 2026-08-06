@@ -58,7 +58,20 @@
         /var/lib/hermes/env /var/lib/hermes/.hermes/.env
       ${pkgs.coreutils}/bin/printf '%s\n' \
         'SEARXNG_URL=http://127.0.0.1:8888' \
+        'AGENT_BROWSER_EXECUTABLE_PATH=/home/hermes/.agent-browser/chrome' \
         >> /var/lib/hermes/.hermes/.env
+
+      browser_root=/var/lib/hermes/home/.agent-browser
+      chrome_path="$(${pkgs.findutils}/bin/find "$browser_root/browsers" \
+        -mindepth 2 -maxdepth 2 -type f -name chrome -perm -0100 \
+        -print -quit 2>/dev/null || true)"
+      if [ -n "$chrome_path" ]; then
+        chrome_dir="$(${pkgs.coreutils}/bin/basename \
+          "$(${pkgs.coreutils}/bin/dirname "$chrome_path")")"
+        ${pkgs.coreutils}/bin/ln -sfn \
+          "browsers/$chrome_dir/chrome" "$browser_root/chrome"
+        ${pkgs.coreutils}/bin/chown -h hermes:hermes "$browser_root/chrome"
+      fi
     '';
   };
 }
