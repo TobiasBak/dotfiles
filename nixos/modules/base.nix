@@ -8,6 +8,8 @@
 
   time.timeZone = "Europe/Copenhagen";
 
+  services.openssh.settings.PasswordAuthentication = true;
+
   nix.gc = {
     automatic = true;
     dates = "weekly";
