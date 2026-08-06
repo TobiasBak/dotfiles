@@ -7,18 +7,10 @@
 
   services.hermes-agent = {
     enable = true;
-    addToSystemPackages = true;
 
     # Hermes' Nix support is best-effort. Keep its mutable runtime and tools in
     # the module's persistent container without exposing the NAS or Docker socket.
-    container = {
-      enable = true;
-
-      # Let Tobias use the host CLI against the gateway's persistent state.
-      # The upstream module also adds him to the hermes group and installs the
-      # container-routing marker in his ~/.hermes directory.
-      hostUsers = [ "tobias" ];
-    };
+    container.enable = true;
 
     settings.model = {
       provider = "openai-codex";

@@ -20,12 +20,14 @@ Then authenticate Hermes against the ChatGPT subscription. The device flow
 prints a URL and one-time code that can be completed on another machine:
 
 ```sh
-hermes auth add openai-codex
+docker exec -it -u hermes hermes-agent \
+  /data/current-package/bin/hermes auth add openai-codex
 sudo systemctl restart hermes-agent
 ```
 
-Reconnect over SSH after the NixOS activation before running `hermes`, so the
-login session has the new `hermes` group membership.
+Run other Hermes administration commands through the same owner-scoped
+`docker exec` prefix. Hermes protects its credential directory with mode 0700,
+so the host CLI cannot safely share that state with a different user.
 
 Check the service with `systemctl status hermes-agent` and
 `journalctl -u hermes-agent`.
