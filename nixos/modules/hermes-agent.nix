@@ -17,6 +17,7 @@
       extraOptions = [
         "--env HERMES_MANAGED="
         "--env NPM_CONFIG_PREFIX=/home/hermes/.local"
+        "--env PATH=/home/hermes/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
       ];
     };
 
