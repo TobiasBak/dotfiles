@@ -7,7 +7,6 @@ This directory contains flake-based NixOS host configs.
 - `wsl`: NixOS-WSL developer environment used as the default Windows WSL distro.
 - `pc`: native Niri/Quickshell developer workstation with NVIDIA graphics and Docker.
 - `laptop`: native Niri/Quickshell developer laptop with integrated graphics, laptop power management, and Docker.
-- `laptop-server`: lightweight laptop server with XFCE, xrdp, SSH, Tailscale, firewall, garbage collection, and laptop sleep disabled.
 - `tobias-serv01`: NixOS file server with Docker, Samba, SSH, and Tailscale.
 
 ## Source of truth
@@ -25,7 +24,7 @@ its own host directory. For example:
 
 ```bash
 cp /etc/nixos/hardware-configuration.nix \
-  /path/to/dotfiles/nixos/hosts/laptop-server/hardware-configuration.nix
+  /path/to/dotfiles/nixos/hosts/tobias-serv01/hardware-configuration.nix
 ```
 
 Never reuse a generated hardware configuration between machines. The standard
@@ -221,15 +220,14 @@ nvidia-smi
 
 ### Servers / bare metal
 
-The two server hosts have different roles and expected checkout paths:
+The server has a fixed role and expected checkout path:
 
 | Host | Expected flake directory | Services | NAS storage |
 | --- | --- | --- | --- |
-| `laptop-server` | `/home/tobias/dotfiles-nixos` | XFCE, xrdp, Samba, SSH, Tailscale | `/srv/nas` on the system disk |
 | `tobias-serv01` | `/home/tobias/code/dotfiles/nixos` | Docker, Samba, SSH, Tailscale | Dedicated ext4 disk mounted at `/srv/nas`; share data in `/srv/nas/files` |
 
-The paths are part of each host's exact passwordless activation rule. If a
-checkout moves, update that host's configuration and this documentation
+The path is part of the host's exact passwordless activation rule. If the
+checkout moves, update the host's configuration and this documentation
 together.
 
 From the NixOS installer, adapt the devices and mount points to the target's
@@ -244,7 +242,7 @@ mount /dev/disk/by-label/boot /mnt/boot
 nixos-generate-config --root /mnt
 ```
 
-Use `nmtui` to join Wi-Fi before partitioning or installing. Both servers use
+Use `nmtui` to join Wi-Fi before partitioning or installing. The server uses
 NetworkManager. After boot, it remains available as `sudo nmtui`.
 
 Copy the repository to the expected path, choose exactly one host, and copy the
@@ -253,12 +251,8 @@ machine-specific file. The committed server hardware files describe the
 existing physical machines; they are not generic placeholders.
 
 ```bash
-host=laptop-server
-repo=/mnt/home/tobias/dotfiles-nixos
-
-# For tobias-serv01 instead:
-# host=tobias-serv01
-# repo=/mnt/home/tobias/code/dotfiles/nixos
+host=tobias-serv01
+repo=/mnt/home/tobias/code/dotfiles/nixos
 
 cp /mnt/etc/nixos/hardware-configuration.nix \
   "$repo/hosts/$host/hardware-configuration.nix"
@@ -267,7 +261,7 @@ nix build --no-link \
 nixos-install --flake "$repo#$host"
 ```
 
-The authorized keys already declared in both server configurations are real
+The authorized keys already declared in the server configuration are real
 public keys, not placeholders. Before installation, confirm that at least one
 corresponding private key is available to the operator. Add the intended
 operator's public key if necessary, and remove obsolete keys only after new
@@ -278,22 +272,16 @@ OpenSSH key authentication from another Tailscale device:
 
 ```bash
 sudo tailscale up --ssh=false
-ssh tobias@laptop-server
-# or: ssh tobias@tobias-serv01
+ssh tobias@tobias-serv01
 ```
-
-Only `laptop-server` provides xrdp. Its port 3389 firewall opening is limited to
-the `tailscale0` interface, so connect Windows Remote Desktop to
-`laptop-server` or its Tailscale IP, not its LAN address.
 
 ## Remote server operation
 
 ### Prefer normal OpenSSH over Tailscale
 
-Tailscale MagicDNS can be used with normal OpenSSH for either host:
+Tailscale MagicDNS can be used with normal OpenSSH:
 
 ```bash
-ssh tobias@laptop-server
 ssh tobias@tobias-serv01
 ```
 
@@ -312,12 +300,6 @@ drops, an interactive command can be interrupted.
 Build first as the normal user, using the path and host that match the target:
 
 ```bash
-# laptop-server
-cd /home/tobias/dotfiles-nixos
-nix build --no-link \
-  .#nixosConfigurations.laptop-server.config.system.build.toplevel
-
-# tobias-serv01
 cd /home/tobias/code/dotfiles/nixos
 nix build --no-link \
   .#nixosConfigurations.tobias-serv01.config.system.build.toplevel
@@ -326,13 +308,6 @@ nix build --no-link \
 After the build succeeds, use the matching exact detached activation:
 
 ```bash
-# laptop-server
-sudo /run/current-system/sw/bin/systemd-run \
-  --unit=nixos-switch-laptop-server --collect --service-type=exec \
-  /run/current-system/sw/bin/nixos-rebuild switch \
-  --flake /home/tobias/dotfiles-nixos#laptop-server
-
-# tobias-serv01
 sudo /run/current-system/sw/bin/systemd-run \
   --unit=nixos-switch-tobias-serv01 --collect --service-type=exec \
   /run/current-system/sw/bin/nixos-rebuild switch \
@@ -344,26 +319,17 @@ while it is running and use the journal after completion. Because `--collect`
 unloads the finished unit, it may no longer appear in `systemctl status`.
 
 ```bash
-systemctl status nixos-switch-laptop-server.service
-journalctl -u nixos-switch-laptop-server.service
-# Substitute nixos-switch-tobias-serv01 on tobias-serv01.
+systemctl status nixos-switch-tobias-serv01.service
+journalctl -u nixos-switch-tobias-serv01.service
 ```
 
-Each server grants `tobias` passwordless sudo only for its exact
+The server grants `tobias` passwordless sudo only for its exact
 `systemd-run` invocation. Normal sudo still requires a password. Do not add
 arguments or change the path or unit name. For risky networking, SSH,
 Tailscale, firewall, remote desktop, or NAS changes, keep local console access
 available.
 
 ### Remote update from Windows
-
-`laptop-server` uses a standalone copy of the `nixos` directory:
-
-```powershell
-scp -r .\nixos\* tobias@laptop-server:~/dotfiles-nixos/
-ssh tobias@laptop-server "cd /home/tobias/dotfiles-nixos && nix build --no-link .#nixosConfigurations.laptop-server.config.system.build.toplevel"
-ssh tobias@laptop-server "sudo /run/current-system/sw/bin/systemd-run --unit=nixos-switch-laptop-server --collect --service-type=exec /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/dotfiles-nixos#laptop-server"
-```
 
 `tobias-serv01` uses the full dotfiles checkout. Update that checkout through
 its normal Git workflow, then build and activate it:
@@ -377,7 +343,7 @@ Run the activation command only after its matching build succeeds.
 
 ### NAS access: LAN and Tailscale paths
 
-Both Samba configurations allow the Tailscale range, the home LAN, and
+The Samba configuration allows the Tailscale range, the home LAN, and
 localhost at the application layer. `services.samba.openFirewall` provides the
 SMB firewall ports, so separate `tailscale0` port 445 rules are unnecessary.
 Prefer a LAN address while at home so access does not depend on Tailscale DNS
@@ -385,11 +351,10 @@ or relay health.
 
 | Host | LAN SMB path | Tailscale MagicDNS path | Server directory |
 | --- | --- | --- | --- |
-| `laptop-server` | `\\<laptop-server-LAN-IP>\nas` | `\\laptop-server\nas` | `/srv/nas` |
 | `tobias-serv01` | `\\192.168.86.209\nas` | `\\tobias-serv01\nas` | `/srv/nas/files` |
 
 If `192.168.86.209` is reassigned, use the current LAN address and update this
-documentation. The allow list in both host configurations is:
+documentation. The allow list in the host configuration is:
 
 ```nix
 "hosts allow" = "100.64.0.0/10 192.168.86.0/24 127.0.0.1";

@@ -2,6 +2,7 @@
 
 {
   imports = [
+    ../../modules/hermes-agent.nix
     ../../modules/server-base.nix
     ./hardware-configuration.nix
   ];
@@ -105,6 +106,7 @@
       "docker"
     ];
     openssh.authorizedKeys.keys = [
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEfTzBgxvSrUI4/qSMysUaVZgsQTe1sAb6+YevBM5gmZ tobias@pc"
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFEvr2qCdxh7peyDqmauJKmLiql3e77uo8+IrkmSwRDe tobias@windows"
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPwf+bDRHxfll2vHjpPt33kQyFacdcr/wuXqJvUVKNx+ tobias@DESKTOP-LOEC6VP"
     ];
