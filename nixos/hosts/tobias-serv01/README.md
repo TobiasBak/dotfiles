@@ -52,7 +52,11 @@ read access with a fine-grained personal access token stored only in
 
 ```dotenv
 GITHUB_TOKEN=github_pat_...
+GH_TOKEN=github_pat_...
 ```
+
+These contain the same token. Hermes' Skills Hub checks `GITHUB_TOKEN`, while
+the GitHub CLI reads `GH_TOKEN`.
 
 For access across Tobias's repositories, select `TobiasBak` as the resource
 owner, choose all repositories, and grant read-only repository permissions.
