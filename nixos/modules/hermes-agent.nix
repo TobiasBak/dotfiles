@@ -1,4 +1,4 @@
-{ ... }:
+{ lib, pkgs, ... }:
 
 {
   systemd.tmpfiles.rules = [
@@ -16,9 +16,12 @@
       provider = "openai-codex";
       default = "gpt-5.6-sol";
     };
-
-    # tmpfiles creates this outside the Nix store without overwriting it.
-    # It contains DISCORD_BOT_TOKEN and DISCORD_ALLOWED_USERS.
-    environmentFiles = [ "/var/lib/hermes/env" ];
   };
+
+  # Refresh runtime secrets on every start, including ordinary token rotations.
+  # The upstream environmentFiles option only copies during NixOS activation.
+  systemd.services.hermes-agent.preStart = lib.mkBefore ''
+    ${pkgs.coreutils}/bin/install -o hermes -g hermes -m 0640 \
+      /var/lib/hermes/env /var/lib/hermes/.hermes/.env
+  '';
 }
