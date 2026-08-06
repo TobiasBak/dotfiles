@@ -44,6 +44,22 @@ docker exec -u hermes hermes-agent \
 The Nix-declared provider and model are reapplied on a NixOS activation. Other
 Hermes settings are preserved.
 
+## GitHub read access
+
+The container exposes the Nix-managed GitHub CLI as `gh`. Give Hermes broad
+read access with a fine-grained personal access token stored only in
+`/var/lib/hermes/env`:
+
+```dotenv
+GITHUB_TOKEN=github_pat_...
+```
+
+For access across Tobias's repositories, select `TobiasBak` as the resource
+owner, choose all repositories, and grant read-only repository permissions.
+`Contents` covers code and Git data; add read access for issues, pull requests,
+and actions if the agent should inspect those too. Never put the token in Nix
+or Git. Restart `hermes-agent` after rotating it.
+
 ## Web research
 
 SearXNG listens only on `127.0.0.1:8888`. The Hermes service adds that URL to

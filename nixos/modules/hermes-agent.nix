@@ -61,6 +61,13 @@
         'AGENT_BROWSER_EXECUTABLE_PATH=/home/hermes/.agent-browser/chrome' \
         >> /var/lib/hermes/.hermes/.env
 
+      ${pkgs.coreutils}/bin/install -d -o hermes -g hermes -m 0750 \
+        /var/lib/hermes/home/.local/bin
+      ${pkgs.coreutils}/bin/ln -sfn \
+        ${pkgs.gh}/bin/gh /var/lib/hermes/home/.local/bin/gh
+      ${pkgs.coreutils}/bin/chown -h hermes:hermes \
+        /var/lib/hermes/home/.local/bin/gh
+
       browser_root=/var/lib/hermes/home/.agent-browser
       chrome_path="$(${pkgs.findutils}/bin/find "$browser_root/browsers" \
         -mindepth 2 -maxdepth 2 -type f -name chrome -perm -0100 \
