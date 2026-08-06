@@ -17,7 +17,8 @@
     };
     hermes-agent = {
       url = "github:NousResearch/hermes-agent";
-      inputs.nixpkgs.follows = "nixpkgs";
+      # Keep Hermes on its upstream Nixpkgs pin. Its Python runtime needs a
+      # newer SQLite than the stable host input currently provides.
     };
   };
 
