@@ -317,6 +317,7 @@ After the build succeeds, use the matching exact detached activation:
 
 ```bash
 sudo /run/current-system/sw/bin/systemd-run \
+  --setenv=PATH=/run/current-system/sw/bin \
   --unit=nixos-switch-tobias-serv01 --collect --service-type=exec \
   /run/current-system/sw/bin/nixos-rebuild switch \
   --flake /home/tobias/code/dotfiles/nixos#tobias-serv01
@@ -344,7 +345,7 @@ its normal Git workflow, then build and activate it:
 
 ```powershell
 ssh tobias@tobias-serv01 "cd /home/tobias/code/dotfiles/nixos && nix build --no-link .#nixosConfigurations.tobias-serv01.config.system.build.toplevel"
-ssh tobias@tobias-serv01 "sudo /run/current-system/sw/bin/systemd-run --unit=nixos-switch-tobias-serv01 --collect --service-type=exec /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/code/dotfiles/nixos#tobias-serv01"
+ssh tobias@tobias-serv01 "sudo /run/current-system/sw/bin/systemd-run --setenv=PATH=/run/current-system/sw/bin --unit=nixos-switch-tobias-serv01 --collect --service-type=exec /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/code/dotfiles/nixos#tobias-serv01"
 ```
 
 Run the activation command only after its matching build succeeds.
