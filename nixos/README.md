@@ -297,6 +297,14 @@ Never run a plain interactive `nixos-rebuild switch` over SSH. An activation
 may restart NetworkManager, the firewall, tailscaled, or sshd. If the session
 drops, an interactive command can be interrupted.
 
+The server configuration declares its user-owned dotfiles checkout as a safe
+Git directory for root. When bootstrapping from an older generation that lacks
+that declaration, run this once before the detached activation:
+
+```bash
+sudo git config --global --add safe.directory /home/tobias/code/dotfiles
+```
+
 Build first as the normal user, using the path and host that match the target:
 
 ```bash

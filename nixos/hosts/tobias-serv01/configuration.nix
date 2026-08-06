@@ -9,6 +9,12 @@
 
   networking.hostName = "tobias-serv01";
 
+  # Detached rebuilds run as root against this checkout owned by tobias.
+  programs.git = {
+    enable = true;
+    config.safe.directory = "/home/tobias/code/dotfiles";
+  };
+
   boot.loader.systemd-boot.enable = true;
   boot.loader.efi.canTouchEfiVariables = true;
 
