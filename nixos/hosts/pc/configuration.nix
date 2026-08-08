@@ -52,6 +52,11 @@ in
     ./hardware-configuration.nix
   ];
 
+  services.voxtype = {
+    enable = true;
+    transcriber = piWhisperTranscribe;
+  };
+
   networking.hostName = "pc";
 
   # Keep the user manager available for T3 Code's official per-user background service.

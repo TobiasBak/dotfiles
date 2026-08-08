@@ -15,15 +15,26 @@
       url = "github:nix-community/home-manager/release-26.05";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    hermes-agent = {
+      url = "github:NousResearch/hermes-agent";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    voxtype = {
+      # Keep the private repo local so Nix rebuilds do not need GitHub credentials.
+      url = "path:/home/tobias/code/voxtype";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
     {
       self,
       home-manager,
+      hermes-agent,
       hunk,
       nixpkgs,
       nixos-wsl,
+      voxtype,
     }:
     let
       system = "x86_64-linux";
@@ -45,6 +56,7 @@
         ];
 
         pc = mkDeveloperSystem [
+          voxtype.nixosModules.default
           ./hosts/pc/configuration.nix
         ];
 
@@ -52,14 +64,12 @@
           ./hosts/laptop/configuration.nix
         ];
 
-        laptop-server = nixpkgs.lib.nixosSystem {
-          inherit system;
-          modules = [ ./hosts/laptop-server/configuration.nix ];
-        };
-
         tobias-serv01 = nixpkgs.lib.nixosSystem {
           inherit system;
-          modules = [ ./hosts/tobias-serv01/configuration.nix ];
+          modules = [
+            hermes-agent.nixosModules.default
+            ./hosts/tobias-serv01/configuration.nix
+          ];
         };
       };
     };

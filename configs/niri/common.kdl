@@ -84,7 +84,8 @@ binds {
     Mod+D { spawn "fuzzel"; }
     Super+Alt+L { spawn "swaylock"; }
     Mod+1 { spawn "chromium"; }
-    // TODO: Add a host-provided voice-input command when one is available.
+    // Voxtype is installed on voice-input hosts; keep the shared binding inert elsewhere.
+    Ctrl+Space { spawn-sh "command -v voxtype >/dev/null && exec voxtype toggle"; }
 
     // Settings
     XF86AudioRaiseVolume allow-when-locked=true { spawn "wpctl" "set-volume" "-l" "1.5" "@DEFAULT_AUDIO_SINK@" "10%+"; }

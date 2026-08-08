@@ -18,7 +18,15 @@ Before changing or remotely rebuilding a NixOS server, read `nixos/README.md` an
 
 ## Installed T3 Code service
 
-The `pc` host uses T3 Code's official pinned per-user background service on the npm nightly channel. NixOS owns user lingering and the Tailnet-only port `3773` firewall rule; it does not own the service unit or runtime. Update through `npx t3@nightly service update`, not a source checkout. Inspect the live unit and process before operational changes, and account for an update or restart terminating its hosted coding-agent sessions.
+The `pc` host uses T3 Code's official pinned per-user background service on the npm nightly channel. NixOS owns user lingering and the Tailnet-only port `3773` firewall rule; it does not own the service unit or runtime. Update from outside T3 Code through `npx --yes t3@nightly service update`, not a source checkout.
+
+An agent running inside T3 Code must detach the update from `t3code.service` so stopping that service does not kill the updater. Use this one command:
+
+```sh
+systemd-run --user --collect --unit=t3code-update --service-type=exec --working-directory=/home/tobias -- /run/current-system/sw/bin/npx --yes t3@nightly service update
+```
+
+The thread will disconnect briefly while the service replaces itself; reconnect to the same thread after `pc:3773` returns. Inspect the live unit and process before other operational changes, and account for any update or restart terminating hosted coding-agent sessions.
 
 ## Installers and rebuilds
 

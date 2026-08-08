@@ -1,5 +1,6 @@
 {
   config,
+  lib,
   osConfig,
   pkgs,
   ...
@@ -15,6 +16,14 @@ let
 in
 
 {
+  # Treat each explicit pc activation as a request to move T3 Code to the
+  # newest npm nightly through its supported in-place updater.
+  home.activation.updateT3Code = lib.mkIf (hostname == "pc") (
+    lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+      run ${pkgs.nodejs}/bin/npx --yes t3@nightly service update
+    ''
+  );
+
   home.file = {
     # Niri's generated entry point is the only file here that is not a direct
     # repository link: it selects the portable config and this machine's

@@ -1,12 +1,23 @@
-{ config, pkgs, ... }:
+{
+  config,
+  pkgs,
+  ...
+}:
 
 {
   imports = [
+    ../../modules/hermes-agent.nix
     ../../modules/server-base.nix
     ./hardware-configuration.nix
   ];
 
   networking.hostName = "tobias-serv01";
+
+  # Detached rebuilds run as root against this checkout owned by tobias.
+  programs.git = {
+    enable = true;
+    config.safe.directory = "/home/tobias/code/dotfiles";
+  };
 
   boot.loader.systemd-boot.enable = true;
   boot.loader.efi.canTouchEfiVariables = true;
@@ -54,6 +65,12 @@
   fileSystems."/srv/nas" = {
     device = "/dev/disk/by-uuid/fc63f569-7356-4020-a715-efce9b3ef742";
     fsType = "ext4";
+  };
+
+  systemd.services.hermes-agent = {
+    requires = [ "srv-nas.mount" ];
+    after = [ "srv-nas.mount" ];
+    unitConfig.AssertPathIsMountPoint = "/srv/nas";
   };
 
   systemd.services.samba-smbd = {
@@ -105,6 +122,7 @@
       "docker"
     ];
     openssh.authorizedKeys.keys = [
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEfTzBgxvSrUI4/qSMysUaVZgsQTe1sAb6+YevBM5gmZ tobias@pc"
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFEvr2qCdxh7peyDqmauJKmLiql3e77uo8+IrkmSwRDe tobias@windows"
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPwf+bDRHxfll2vHjpPt33kQyFacdcr/wuXqJvUVKNx+ tobias@DESKTOP-LOEC6VP"
     ];
@@ -115,7 +133,7 @@
       users = [ "tobias" ];
       commands = [
         {
-          command = "/run/current-system/sw/bin/systemd-run --unit=nixos-switch-tobias-serv01 --collect --service-type=exec /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/code/dotfiles/nixos#tobias-serv01";
+          command = "/run/current-system/sw/bin/systemd-run --setenv=PATH=/run/current-system/sw/bin --unit=nixos-switch-tobias-serv01 --collect --service-type=exec /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/code/dotfiles/nixos#tobias-serv01";
           options = [ "NOPASSWD" ];
         }
       ];

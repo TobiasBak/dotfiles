@@ -55,13 +55,10 @@ Measure twice, cut once: understand the problem fully before building, because c
 
 ## Context and delegation
 
-Treat context as a scarce working set even when the model has a large window. Keep the objective, constraints, decisions, implementation state, and acceptance evidence with the main agent; retrieve narrow evidence as needed, and delegate noisy exploration only when the returned result will be materially smaller and source-addressable.
+Treat context as a scarce working set even when the model has a large window. Keep the objective, constraints, decisions, implementation state, and acceptance evidence with the main agent; retrieve narrow evidence as needed, and delegate bounded read-only work when its result will be materially smaller than its working context.
 
-- The main agent owns decomposition, diagnosis, design, synthesis, review judgment, and final acceptance. Do not delegate these to Luna merely to reduce cost.
-- Use Luna only for bounded read-only evidence work with explicit relevance criteria: code or source localization, inventories, extraction, factual comparison, primary-source gathering, and compact summaries of logs or documents. Never delegate implementation or edits to Luna.
-- Default to the `luna_subagent` custom agent for bounded read-only evidence work. The main agent MUST delegate every independent bounded evidence area to Luna in parallel; direct retrieval is reserved for exactly one small lookup.
-- For each Luna assignment, use `agent_type="luna_subagent"` and `fork_turns="none"` without passing `model`; put task-specific instructions in `message`, and launch all ready assignments before waiting.
-- Keep each Luna `message` narrowly task-specific. Require a self-contained result with exact paths and lines or source URLs, exact identifiers, inspection coverage, uncertainty, and retrieval routes.
-- After launching Luna, do not independently explore its assigned area while it runs. Treat a complete source-addressable result as the factual retrieval record; do not repeat its searches or reopen cited files merely for confidence.
-- Before synthesis, check that every requested evidence item is covered and preserve returned identifiers and paths verbatim. Follow up with Luna for missing factual evidence. Reopen only the smallest decisive span for a conflict or semantic judgment the result cannot resolve.
+- The main agent owns decomposition, diagnosis, system design, implementation, synthesis, integration, review judgment, and final acceptance. Luna agents are leaf workers, must not spawn agents, and never receive implementation or edit tasks.
+- Default to `luna_retriever` for bounded read-only evidence work with explicit relevance criteria: code or source localization, inventories, extraction, factual comparison, primary-source gathering, and compact summaries of logs or documents. The main agent MUST delegate every independent bounded evidence area in parallel; direct retrieval is reserved for exactly one small lookup.
+- For each Luna retrieval assignment, use `agent_type="luna_retriever"` and `fork_turns="none"` without passing `model`, put all task-specific instructions in `message`, and launch all ready assignments before waiting.
+- Require `luna_retriever` to return a self-contained result with exact paths and lines or source URLs, exact identifiers, inspection coverage, uncertainty, and retrieval routes. Do not repeat its searches or reopen cited files merely for confidence; follow up for missing evidence and reopen only the smallest decisive span needed for a conflict or semantic judgment.
 - Treat prompted tool-call ceilings as advisory and use host-enforced budgets when a hard limit matters.

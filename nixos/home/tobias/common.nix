@@ -1,7 +1,8 @@
-{ config, ... }:
+{ config, pkgs, ... }:
 
 let
   dotfiles = "${config.home.homeDirectory}/.dotfiles";
+  playwrightCli = pkgs.callPackage ../../packages/playwright-cli { };
   linkFromDotfiles = path: {
     source = config.lib.file.mkOutOfStoreSymlink "${dotfiles}/${path}";
     # The repository is authoritative for every declared home path.
@@ -33,6 +34,8 @@ in
       ".codex/config.toml" = linkFromDotfiles "configs/codex/config.toml";
       ".codex/agents" = linkFromDotfiles "configs/codex/agents";
       ".codex/prompts" = linkFromDotfiles "configs/codex/prompts";
+      ".codex/skills/playwright-cli".source =
+        "${playwrightCli}/lib/node_modules/playwright-cli-wrapper/node_modules/@playwright/cli/skills/playwright-cli";
     };
   };
 

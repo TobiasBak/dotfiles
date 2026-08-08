@@ -24,6 +24,7 @@ let
         --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath nativeLibraries}"
     '';
   };
+  playwrightCli = pkgs.callPackage ../packages/playwright-cli { };
   vitePlus = pkgs.callPackage ../packages/vite-plus { };
 in
 {
@@ -66,6 +67,7 @@ in
     openssl
     openssh
     pnpm
+    playwrightCli
     python3
     tailscale
     tmux
