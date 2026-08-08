@@ -297,6 +297,14 @@ Never run a plain interactive `nixos-rebuild switch` over SSH. An activation
 may restart NetworkManager, the firewall, tailscaled, or sshd. If the session
 drops, an interactive command can be interrupted.
 
+The server configuration declares its user-owned dotfiles checkout as a safe
+Git directory for root. When bootstrapping from an older generation that lacks
+that declaration, run this once before the detached activation:
+
+```bash
+sudo git config --global --add safe.directory /home/tobias/code/dotfiles
+```
+
 Build first as the normal user, using the path and host that match the target:
 
 ```bash
@@ -309,6 +317,7 @@ After the build succeeds, use the matching exact detached activation:
 
 ```bash
 sudo /run/current-system/sw/bin/systemd-run \
+  --setenv=PATH=/run/current-system/sw/bin \
   --unit=nixos-switch-tobias-serv01 --collect --service-type=exec \
   /run/current-system/sw/bin/nixos-rebuild switch \
   --flake /home/tobias/code/dotfiles/nixos#tobias-serv01
@@ -336,7 +345,7 @@ its normal Git workflow, then build and activate it:
 
 ```powershell
 ssh tobias@tobias-serv01 "cd /home/tobias/code/dotfiles/nixos && nix build --no-link .#nixosConfigurations.tobias-serv01.config.system.build.toplevel"
-ssh tobias@tobias-serv01 "sudo /run/current-system/sw/bin/systemd-run --unit=nixos-switch-tobias-serv01 --collect --service-type=exec /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/code/dotfiles/nixos#tobias-serv01"
+ssh tobias@tobias-serv01 "sudo /run/current-system/sw/bin/systemd-run --setenv=PATH=/run/current-system/sw/bin --unit=nixos-switch-tobias-serv01 --collect --service-type=exec /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/code/dotfiles/nixos#tobias-serv01"
 ```
 
 Run the activation command only after its matching build succeeds.

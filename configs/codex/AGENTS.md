@@ -51,7 +51,15 @@ An agent can fix "max_nodes=128, asked for 129". It cannot fix a blank window. E
 
 ### Fight for the "obvious" solution
 
-Measure twice, cut once: understand the problem fully before building, because cleverness is what gets written when you haven't. The biggest simplicity win is refusing to solve problems we don't have. Good code is the most simple thing that delivers full functionality and performance, nothing traded away, nothing bolted on. Push back when you see a more obvious way.
+Choose the simplest implementation that fully meets current requirements. Avoid speculative abstractions, configuration, and indirection.
+
+### Design for durability
+
+Keep components modular and concerns clearly separated.
+
+Prefer established, well-maintained libraries when they reduce complexity or improve reliability. Inspect existing dependencies through their documentation and types before reimplementing functionality or adding packages.
+
+Make architectural decisions for the long term. Do not accept stopgaps intended to be replaced later.
 
 ## Context and delegation
 
