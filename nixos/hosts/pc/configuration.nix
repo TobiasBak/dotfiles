@@ -59,6 +59,8 @@ in
 
   networking.hostName = "pc";
 
+  programs.steam.enable = true;
+
   # Keep the user manager available for T3 Code's official per-user background service.
   users.users.tobias.linger = true;
 
