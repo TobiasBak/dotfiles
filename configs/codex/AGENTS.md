@@ -63,10 +63,13 @@ Make architectural decisions for the long term. Do not accept stopgaps intended 
 
 ## Context and delegation
 
-Treat context as a scarce working set even when the model has a large window. Keep the objective, constraints, decisions, implementation state, and acceptance evidence with the main agent; retrieve narrow evidence as needed, and delegate bounded read-only work when its result will be materially smaller than its working context.
+Treat context as a scarce working set even when the model has a large window. Keep the objective, constraints, decisions, integration state, and acceptance evidence with the main agent; retrieve narrow evidence as needed, and delegate bounded work when its result will be materially smaller than its working context.
 
-- The main agent owns decomposition, diagnosis, system design, implementation, synthesis, integration, review judgment, and final acceptance. Luna agents are leaf workers, must not spawn agents, and never receive implementation or edit tasks.
+- The main agent owns decomposition, diagnosis, system design, synthesis, integration, review judgment, and final acceptance. It may delegate bounded implementation and focused validation to the built-in `worker` agent running `gpt-5.6-sol`.
+- Use Sol Low for small, clear implementation tasks and Sol Medium when the bounded task needs more judgment. Workers may spawn subagents for cleanly independent subtasks, but retain ownership of their assigned result and must not broaden scope.
+- Luna agents are leaf workers, must not spawn agents, and never receive implementation or edit tasks.
 - Default to `luna_retriever` for bounded read-only evidence work with explicit relevance criteria: code or source localization, inventories, extraction, factual comparison, primary-source gathering, and compact summaries of logs or documents. The main agent MUST delegate every independent bounded evidence area in parallel; direct retrieval is reserved for exactly one small lookup.
 - For each Luna retrieval assignment, use `agent_type="luna_retriever"` and `fork_turns="none"` without passing `model`, put all task-specific instructions in `message`, and launch all ready assignments before waiting.
+- For each Sol implementation assignment, use `agent_type="worker"` and `fork_turns="none"`, pass `model="gpt-5.6-sol"`, and set `reasoning_effort` to `low` or `medium` for the task. Give the worker clear file or module ownership, say that other agents share the codebase, and require focused validation and a concise handoff.
 - Require `luna_retriever` to return a self-contained result with exact paths and lines or source URLs, exact identifiers, inspection coverage, uncertainty, and retrieval routes. Do not repeat its searches or reopen cited files merely for confidence; follow up for missing evidence and reopen only the smallest decisive span needed for a conflict or semantic judgment.
 - Treat prompted tool-call ceilings as advisory and use host-enforced budgets when a hard limit matters.
