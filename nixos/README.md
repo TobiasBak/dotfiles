@@ -360,13 +360,13 @@ or relay health.
 
 | Host | LAN SMB path | Tailscale MagicDNS path | Server directory |
 | --- | --- | --- | --- |
-| `tobias-serv01` | `\\192.168.86.209\nas` | `\\tobias-serv01\nas` | `/srv/nas/files` |
+| `tobias-serv01` | `\\192.168.1.53\nas` | `\\tobias-serv01\nas` | `/srv/nas/files` |
 
-If `192.168.86.209` is reassigned, use the current LAN address and update this
+If `192.168.1.53` is reassigned, use the current LAN address and update this
 documentation. The allow list in the host configuration is:
 
 ```nix
-"hosts allow" = "100.64.0.0/10 192.168.86.0/24 127.0.0.1";
+"hosts allow" = "100.64.0.0/10 192.168.1.0/24 127.0.0.1";
 "hosts deny" = "0.0.0.0/0";
 ```
 

@@ -38,7 +38,7 @@
         "security" = "user";
         "map to guest" = "Never";
         "invalid users" = [ "root" ];
-        "hosts allow" = "100.64.0.0/10 192.168.86.0/24 127.0.0.1";
+        "hosts allow" = "100.64.0.0/10 192.168.1.0/24 127.0.0.1";
         "hosts deny" = "0.0.0.0/0";
         "smb encrypt" = "required";
       };
