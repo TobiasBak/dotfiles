@@ -38,6 +38,65 @@ let
       exec xfreerdp "/u:$username" "/v:$host" +dynamic-resolution +clipboard /cert:tofu /from-stdin:force
     '';
   };
+
+  rdpLauncher = pkgs.writeShellApplication {
+    name = "rdp-launcher";
+    runtimeInputs = [
+      pkgs.fuzzel
+      pkgs.libnotify
+      rdpClient
+    ];
+    text = ''
+      target_error=""
+      while true; do
+        prompt_args=(
+          --dmenu
+          "--prompt-only=Remote Desktop: "
+          "--placeholder=user@host"
+        )
+        if [ -n "$target_error" ]; then
+          prompt_args+=("--mesg=$target_error")
+        fi
+
+        target="$(fuzzel "''${prompt_args[@]}")" || exit 0
+        username="''${target%%@*}"
+        host="''${target#*@}"
+        if [[ "$target" == *@* ]] && [ -n "$username" ] && [ -n "$host" ]; then
+          break
+        fi
+
+        target_error="Use user@host, for example jd@larsbroe-runner."
+      done
+
+      password="$(fuzzel \
+        --dmenu \
+        --password \
+        "--prompt-only=Password: " \
+        "--mesg=$target")" || exit 0
+
+      if ! printf '%s\n' "$password" | rdp "$target"; then
+        notify-send --urgency=critical "Remote Desktop" "Connection to $target failed"
+        exit 1
+      fi
+    '';
+  };
+
+  rdpDesktopItem = pkgs.makeDesktopItem {
+    name = "remote-desktop";
+    desktopName = "Remote Desktop";
+    genericName = "RDP client";
+    comment = "Connect to a remote desktop";
+    exec = "rdp-launcher";
+    icon = "computer";
+    categories = [
+      "Network"
+      "RemoteAccess"
+    ];
+    keywords = [
+      "RDP"
+      "Remote Desktop"
+    ];
+  };
 in
 {
   nixpkgs.overlays = [
@@ -79,6 +138,8 @@ in
     pkgs.gcc
     pkgs.gnumake
     rdpClient
+    rdpDesktopItem
+    rdpLauncher
   ];
 
   services.xserver.videoDrivers = [ "nvidia" ];
