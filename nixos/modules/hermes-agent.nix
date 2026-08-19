@@ -47,6 +47,26 @@
     };
   };
 
+  # Both observed USB bridge resets re-enumerated the disk within seconds, but
+  # left the mount and Hermes inactive indefinitely. Reassert both once a minute
+  # so a returned disk restores the bot without an operator.
+  systemd.services.hermes-nas-recovery = {
+    description = "Recover the NAS mount used by Hermes";
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${pkgs.systemd}/bin/systemctl start srv-nas.mount hermes-agent.service";
+    };
+  };
+
+  systemd.timers.hermes-nas-recovery = {
+    description = "Retry the NAS mount used by Hermes";
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnBootSec = "1min";
+      OnUnitActiveSec = "1min";
+    };
+  };
+
   # Remove the second upstream managed-mode signal on every start, then refresh
   # runtime secrets, including ordinary token rotations. The upstream
   # environmentFiles option only copies during NixOS activation.

@@ -75,5 +75,6 @@
     "chat.disableAIFeatures": true,
     "explorer.confirmDelete": false,
     "extensions.ignoreRecommendations": true,
-    "explorer.confirmPasteNative": false
+    "explorer.confirmPasteNative": false,
+    "security.workspace.trust.untrustedFiles": "open"
 }

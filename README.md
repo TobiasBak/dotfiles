@@ -52,11 +52,8 @@ Inside NixOS WSL, refresh the system profile and Home Manager user config with:
 ./rebuild-wsl.sh
 ```
 
-Pi extensions live in the sibling `~/code/pi-tools` repository. Hypa's Pi
-extension is loaded from the sibling `~/code/hypa/packages/pi-hypa` fork through
-`configs/pi/settings.json`, not from npm. The developer-tool bootstrap clones or
-updates both repositories alongside dotfiles and installs only the Hypa Pi
-package's runtime dependencies.
+Pi extensions live in the sibling `~/code/pi-tools` repository. The
+developer-tool bootstrap clones or updates that repository alongside dotfiles.
 
 ### Native NixOS
 

@@ -46,7 +46,11 @@
         "path" = "/srv/nas/files";
         "browseable" = "yes";
         "read only" = "no";
-        "valid users" = [ "tobias" ];
+        "valid users" = [
+          "tobias"
+          "nas-guest"
+        ];
+        "read list" = [ "nas-guest" ];
         "force user" = "tobias";
         "create mask" = "0644";
         "directory mask" = "0755";
@@ -112,6 +116,14 @@
   ];
 
   console.keyMap = "dk-latin1";
+
+  # Authentication-only account for the NAS share. Its Unix password remains
+  # locked; Samba owns the separate password used by the Windows client.
+  users.users.nas-guest = {
+    isSystemUser = true;
+    group = "users";
+    description = "Read-only SMB access to the NAS";
+  };
 
   users.users.tobias = {
     isNormalUser = true;

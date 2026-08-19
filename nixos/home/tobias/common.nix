@@ -28,7 +28,6 @@ in
       ".pi/agent/themes" = linkFromDotfiles "configs/pi/themes";
       ".pi/agent/prompts" = linkFromDotfiles "configs/pi/prompts";
       ".pi/agent/keybindings.json" = linkFromDotfiles "configs/pi/keybindings.json";
-      ".hypa-pi/config.json" = linkFromDotfiles "configs/pi/hypa.json";
 
       ".codex/AGENTS.md" = linkFromDotfiles "configs/codex/AGENTS.md";
       ".codex/config.toml" = linkFromDotfiles "configs/codex/config.toml";

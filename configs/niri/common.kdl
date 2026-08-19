@@ -64,12 +64,6 @@ window-rule {
 }
 
 window-rule {
-    match app-id="discord"
-    default-column-width { proportion 1.0; }
-    default-window-height { proportion 0.33; }
-}
-
-window-rule {
     match app-id="spotify"
     default-column-width { proportion 1.0; }
     default-window-height { proportion 0.33; }
@@ -83,7 +77,7 @@ binds {
     Mod+Space { spawn "ghostty" "-e" "tmux" "new-session" "-A" "-s" "main"; }
     Mod+D { spawn "fuzzel"; }
     Super+Alt+L { spawn "swaylock"; }
-    Mod+1 { spawn "chromium"; }
+    Mod+1 { spawn "chromium-interactive"; }
     // Voxtype is installed on voice-input hosts; keep the shared binding inert elsewhere.
     Ctrl+Space { spawn-sh "command -v voxtype >/dev/null && exec voxtype toggle"; }
 

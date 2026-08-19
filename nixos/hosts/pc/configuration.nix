@@ -137,6 +137,8 @@ in
     piWhisperTranscribe
     pkgs.gcc
     pkgs.gnumake
+    pkgs.spotify
+    pkgs.vesktop
     rdpClient
     rdpDesktopItem
     rdpLauncher

@@ -43,6 +43,9 @@ trust_level = "trusted"
 [projects."/home/tobias/code/system-canvas"]
 trust_level = "trusted"
 
+[projects."/home/tobias/code/stepkit"]
+trust_level = "trusted"
+
 [notice]
 hide_rate_limit_model_nudge = true
 
@@ -64,3 +67,8 @@ multi_agent_v2 = true
 [agents]
 enabled = true
 max_concurrent_threads_per_session = 16
+
+[hooks.state]
+
+[hooks.state."/home/tobias/vault/.codex/hooks.json:session_end:0:0"]
+trusted_hash = "sha256:e4e1810f922dd754ce4ac7033551c5f580352c9f9a2f1453034cb871ba5c01be"

@@ -100,6 +100,7 @@ in
 
   environment.sessionVariables = {
     GTK_IM_MODULE = "simple";
+    NIXOS_OZONE_WL = "1";
   };
 
   nixpkgs.config.allowUnfree = true;
@@ -117,9 +118,9 @@ in
 
   environment.systemPackages = with pkgs; [
     adwaita-icon-theme
+    brave
     brightnessctl
     codexbar
-    discord
     docker-compose
     fuzzel
     ghostty
@@ -146,6 +147,14 @@ in
     # Let niri-session provide the complete user PATH, including system and
     # Home Manager packages used by Niri key bindings.
     niri.enableDefaultPath = false;
+
+    # A lingering user manager can D-Bus-activate the portal outside a session.
+    # Tie it to Niri so every portal process gets the current Wayland variables.
+    xdg-desktop-portal = {
+      after = [ "niri.service" ];
+      partOf = [ "niri.service" ];
+      requisite = [ "niri.service" ];
+    };
 
     quickshell = (mkNiriService "Quickshell desktop shell" "${pkgs.quickshell}/bin/quickshell") // {
       path = [
