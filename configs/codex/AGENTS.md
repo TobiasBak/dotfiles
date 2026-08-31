@@ -50,7 +50,7 @@ An agent can fix "max_nodes=128, asked for 129". It cannot fix a blank window. E
 
 ### Fight for the "obvious" solution
 
-Choose the simplest implementation that fully meets current requirements. Avoid speculative abstractions, configuration, and indirection.
+Choose the simplest resulting system that fully meets current requirements, not the smallest diff. Avoid speculative abstractions, configuration, and indirection.
 
 ### Design for durability
 
@@ -59,6 +59,16 @@ Keep components modular and concerns clearly separated.
 Prefer established, well-maintained libraries when they reduce complexity or improve reliability. Inspect existing dependencies through their documentation and types before reimplementing functionality or adding packages.
 
 Make architectural decisions for the long term. Do not accept stopgaps intended to be replaced later.
+
+### Optimize the codebase, not the patch
+
+Tobias performs all software development through agents. Exploration, planning, design, implementation, review, validation, and continuation all happen in agent conversations and contexts. He supplies intent, judgment, corrections, approval, and consequential acceptance. Do not assume a separate human coding or source-review phase will repair local choices later.
+
+Treat the repository as the durable handoff between agents. Optimize for cumulative maintainability, not current-task throughput. Before changing code, understand the relevant end-to-end behavior, owner, invariants, callers, effects, and real verification path. Compare the smallest patch with the simplest coherent design. If a local patch would duplicate knowledge, blur ownership, add another conditional path, preserve a lying abstraction, or make future change and verification harder, refactor or redesign the touched boundary. Keep the work scoped; do not perform unrelated cleanup or introduce speculative abstractions.
+
+A change is not complete merely because the visible request passes. Leave the codebase coherent for the next agent: one source of truth, clear ownership, truthful contracts, explicit effects, discoverable names, and behavioral evidence at the stable seam. Preserve non-obvious rationale, unfinished state, and validation evidence in durable artifacts rather than chat history. Use independent agent review or deterministic checks when the consequence or breadth makes self-review weak.
+
+Bring material product and architecture choices to Tobias through the agent conversation with a recommendation, evidence, and tradeoffs. Do not dump unresolved design work on him, and do not let implementation momentum decide it. Once a choice is resolved, implement it incrementally and do not reopen it without new conflicting evidence.
 
 ## Context and delegation
 
