@@ -31,7 +31,6 @@ in
 
       ".codex/AGENTS.md" = linkFromDotfiles "configs/codex/AGENTS.md";
       ".codex/config.toml" = linkFromDotfiles "configs/codex/config.toml";
-      ".codex/agents" = linkFromDotfiles "configs/codex/agents";
       ".codex/prompts" = linkFromDotfiles "configs/codex/prompts";
       ".codex/skills/playwright-cli".source =
         "${playwrightCli}/lib/node_modules/playwright-cli-wrapper/node_modules/@playwright/cli/skills/playwright-cli";
