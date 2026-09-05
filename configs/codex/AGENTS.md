@@ -42,7 +42,7 @@ When planning, do not be afraid to suggest seemingly insane solutions.
 
 ### Every number needs a receipt
 
-A limit without a measurement is a landmine. Before writing any number (a `max_nodes`, a byte cap, a timeout), measure the real thing first, then size it as a tripwire. Remeasure, update the receipt.
+For consequential engineering limits, keep the basis near the definition: measurement where safe, otherwise an external contract or explicit safety or resource policy. Remeasure when conditions change. Safety and integrity limits precede experimentation.
 
 ### A limit developers can hit is a limit they must see
 
@@ -69,7 +69,3 @@ Treat the repository as the durable handoff between agents. Optimize for cumulat
 A change is not complete merely because the visible request passes. Leave the codebase coherent for the next agent: one source of truth, clear ownership, truthful contracts, explicit effects, discoverable names, and behavioral evidence at the stable seam. Preserve non-obvious rationale, unfinished state, and validation evidence in durable artifacts rather than chat history. Use independent agent review or deterministic checks when the consequence or breadth makes self-review weak.
 
 Bring material product and architecture choices to Tobias through the agent conversation with a recommendation, evidence, and tradeoffs. Do not dump unresolved design work on him, and do not let implementation momentum decide it. Once a choice is resolved, implement it incrementally and do not reopen it without new conflicting evidence.
-
-## Context and delegation
-
-For interactive Codex work, use the built-in tools and agents. Delegate bounded, independent work when it materially improves speed or quality; keep tightly coupled work with the main agent. Inherit the parent model and reasoning effort unless Tobias requests an override.
