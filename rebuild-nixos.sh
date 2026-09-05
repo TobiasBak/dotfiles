@@ -152,3 +152,18 @@ if [ "$BOOTSTRAP" = true ]; then
 fi
 
 log "$host rebuild complete."
+
+if [ "$host" = pc ]; then
+  # Home Manager also activates at boot, before the user manager is ready.
+  # Keep network updates in this explicit rebuild path, outside activation.
+  # Detach because restarting T3 can terminate this script's agent session.
+  log "Starting the T3 Code nightly update; it may disconnect hosted sessions."
+  if systemd-run --user --collect --unit=t3code-update --service-type=exec \
+    --working-directory="$HOME" -- \
+    /run/current-system/sw/bin/npx --yes t3@nightly service update; then
+    log "T3 update started. Check: journalctl --user -u t3code-update.service"
+  else
+    echo "T3 Code update could not start; the NixOS rebuild completed successfully." >&2
+    exit 1
+  fi
+fi

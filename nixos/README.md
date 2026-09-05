@@ -203,6 +203,12 @@ mutable Pi/Codex tools and skill links:
 ~/.dotfiles/rebuild-nixos.sh --bootstrap
 ```
 
+On `pc`, the rebuild script starts T3 Code's nightly updater as a detached
+user service after the rebuild and optional bootstrap finish. The update can
+disconnect hosted agent sessions. Follow its result with
+`journalctl --user -u t3code-update.service`. Boot and plain Home Manager or
+`nixos-rebuild` activation do not update T3 Code.
+
 Add host-specific output blocks to `hosts/<host>/niri.kdl` only after checking
 the identifiers reported by:
 

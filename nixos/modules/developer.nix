@@ -74,6 +74,9 @@ in
   ];
 
   programs.zsh.enable = true;
+  # Both Oh My Zsh and the fast tmux shell initialize completion in .zshrc.
+  # Keep completion files available without running compinit twice per shell.
+  programs.zsh.enableGlobalCompInit = false;
   services.tailscale.enable = true;
 
   # Supports native PyPI wheels and other dynamically linked development tools.
