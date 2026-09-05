@@ -2,6 +2,7 @@
 
 // Main monitor: Dell, landscape, positioned on the right.
 output "Dell Inc. DELL S2725QS 4YNG364" {
+    mode "3840x2160@120.000"
     scale 1.5
     transform "normal"
     position x=1728 y=0
@@ -13,4 +14,9 @@ output "LG Electronics LG ULTRAFINE 503NTNH5Q631" {
     scale 1.25
     transform "90"
     position x=0 y=0
+}
+
+// Zowie esports monitor: use its advertised 240 Hz mode.
+output "PNP(BNQ) ZOWIE XL LCD N4L01481SL0" {
+    mode "1920x1080@239.760"
 }

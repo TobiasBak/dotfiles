@@ -97,6 +97,23 @@ let
       "Remote Desktop"
     ];
   };
+
+  cs2Stretched = pkgs.writeShellApplication {
+    name = "cs2-stretched";
+    runtimeInputs = [
+      pkgs.coreutils
+      pkgs.gawk
+      pkgs.gnugrep
+      pkgs.libnotify
+      pkgs.procps
+      pkgs.util-linux
+      pkgs.wmctrl
+      pkgs.xfconf
+      pkgs.xrandr
+    ];
+    text = builtins.readFile ../../../scripts/cs2-stretched.sh;
+  };
+
 in
 {
   nixpkgs.overlays = [
@@ -117,8 +134,18 @@ in
   };
 
   networking.hostName = "pc";
+  networking.networkmanager.plugins = [
+    pkgs.networkmanager-l2tp
+    pkgs.networkmanager-sstp
+    pkgs.networkmanager-strongswan
+  ];
+  environment.etc."strongswan.conf".text = "";
 
   programs.steam.enable = true;
+
+  programs.gamescope = {
+    enable = true;
+  };
 
   # Keep the user manager available for T3 Code's official per-user background service.
   users.users.tobias.linger = true;
@@ -134,6 +161,7 @@ in
 
   # T3 Code's official updater may compile node-pty when a release lacks a matching prebuild.
   environment.systemPackages = [
+    cs2Stretched
     piWhisperTranscribe
     pkgs.gcc
     pkgs.gnumake
@@ -149,6 +177,7 @@ in
     modesetting.enable = true;
     powerManagement.enable = false;
     powerManagement.finegrained = false;
+    # The RTX 5070 requires open kernel modules; the closed module cannot initialize it.
     open = true;
     nvidiaSettings = true;
     package = config.boot.kernelPackages.nvidiaPackages.stable;

@@ -102,6 +102,7 @@ in
     eza
     fd
     gh
+    go
     hunk.packages.${pkgs.stdenv.hostPlatform.system}.hunk
     nixd
     nixfmt

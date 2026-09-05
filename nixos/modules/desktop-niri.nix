@@ -9,6 +9,11 @@ let
   codexCli = pkgs.writeShellScriptBin "codex" ''
     exec "$HOME/.local/share/pnpm/bin/codex" "$@"
   '';
+  greetdXsessionWrapper = pkgs.writeShellScriptBin "greetd-xsession-wrapper" ''
+    export PATH="${pkgs.xinit}/bin:$PATH"
+    export NIXOS_OZONE_WL=0
+    exec ${pkgs.xinit}/bin/startx ${pkgs.coreutils}/bin/env "$@"
+  '';
 
   mkNiriService = description: execStart: {
     inherit description;
@@ -52,9 +57,20 @@ in
     greetd = {
       enable = true;
       settings.default_session = {
-        command = "${pkgs.tuigreet}/bin/tuigreet --time --remember --cmd ${config.programs.niri.package}/bin/niri-session";
+        command = "${pkgs.tuigreet}/bin/tuigreet --time --remember --sessions ${config.services.displayManager.sessionData.desktops}/share/wayland-sessions --xsessions ${config.services.displayManager.sessionData.desktops}/share/xsessions --xsession-wrapper ${greetdXsessionWrapper}/bin/greetd-xsession-wrapper --cmd ${config.programs.niri.package}/bin/niri-session";
         user = "greeter";
       };
+    };
+
+    xserver = {
+      enable = true;
+      displayManager.startx.enable = true;
+      xkb = {
+        layout = "dk";
+        variant = "nodeadkeys";
+        options = "lv3:alt_switch";
+      };
+      desktopManager.xfce.enable = true;
     };
 
     pipewire = {
