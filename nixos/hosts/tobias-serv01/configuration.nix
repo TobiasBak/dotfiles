@@ -3,6 +3,7 @@
 {
   imports = [
     ../../modules/hermes-agent.nix
+    ../../modules/kanban.nix
     ../../modules/server-base.nix
     ./hardware-configuration.nix
   ];
@@ -42,7 +43,11 @@
         "path" = "/srv/nas/files";
         "browseable" = "yes";
         "read only" = "no";
-        "valid users" = [ "tobias" ];
+        "valid users" = [
+          "tobias"
+          "nas-guest"
+        ];
+        "read list" = [ "nas-guest" ];
         "force user" = "tobias";
         "create mask" = "0644";
         "directory mask" = "0755";
@@ -61,6 +66,36 @@
   fileSystems."/srv/nas" = {
     device = "/dev/disk/by-uuid/fc63f569-7356-4020-a715-efce9b3ef742";
     fsType = "ext4";
+    # A missing USB disk must not block boot or remote repair over SSH.
+    # Stop the mount if its backing device disappears.
+    options = [ "nofail" "x-systemd.device-bound" ];
+  };
+
+  # Recover every NAS consumer after a late disk or USB disconnect. Keep the
+  # existing one-minute retry policy, measured from completion so a device
+  # timeout cannot consume the next retry. Service mount dependencies prevent
+  # creating application data on the root filesystem while the disk is absent.
+  systemd.services.nas-recovery = {
+    description = "Recover the NAS mount and dependent services";
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${pkgs.systemd}/bin/systemctl start srv-nas.mount samba-smbd.service hermes-agent.service docker-kanban.service";
+    };
+  };
+
+  systemd.timers.nas-recovery = {
+    description = "Retry the NAS mount and dependent services";
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnBootSec = "1min";
+      OnUnitInactiveSec = "1min";
+    };
+  };
+
+  systemd.services.hermes-agent = {
+    requires = [ "srv-nas.mount" ];
+    after = [ "srv-nas.mount" ];
+    unitConfig.AssertPathIsMountPoint = "/srv/nas";
   };
 
   systemd.services.samba-smbd = {
@@ -103,6 +138,14 @@
 
   console.keyMap = "dk-latin1";
 
+  # Authentication-only account for the NAS share. Its Unix password remains
+  # locked; Samba owns the separate password used by the Windows client.
+  users.users.nas-guest = {
+    isSystemUser = true;
+    group = "users";
+    description = "Read-only SMB access to the NAS";
+  };
+
   users.users.tobias = {
     isNormalUser = true;
     description = "tobias";
@@ -115,6 +158,7 @@
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEfTzBgxvSrUI4/qSMysUaVZgsQTe1sAb6+YevBM5gmZ tobias@pc"
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFEvr2qCdxh7peyDqmauJKmLiql3e77uo8+IrkmSwRDe tobias@windows"
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPwf+bDRHxfll2vHjpPt33kQyFacdcr/wuXqJvUVKNx+ tobias@DESKTOP-LOEC6VP"
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDcfYHFOxRxSQzxA9AixpvoJTW5xF16LVvIgkkBiEl5F tobias-nixos-wsl"
     ];
   };
 
@@ -123,7 +167,7 @@
       users = [ "tobias" ];
       commands = [
         {
-          command = "/run/current-system/sw/bin/systemd-run --setenv=PATH=/run/current-system/sw/bin --unit=nixos-switch-tobias-serv01 --collect --service-type=exec /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/code/dotfiles/nixos#tobias-serv01";
+          command = "/run/current-system/sw/bin/systemd-run --setenv=PATH=/run/current-system/sw/bin --unit=nixos-switch-tobias-serv01 --collect --service-type=exec /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/code/dotfiles/nixos\\#tobias-serv01";
           options = [ "NOPASSWD" ];
         }
       ];

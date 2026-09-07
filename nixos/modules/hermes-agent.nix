@@ -9,8 +9,8 @@
     enable = true;
 
     # Keep Hermes' mutable runtime and tools in the persistent container without
-    # exposing the NAS or Docker socket. The upstream module marks every config
-    # key as Nix-managed; override that coarse lock so Hermes can manage its own
+    # exposing the Docker socket. The upstream module marks every config key as
+    # Nix-managed; override that coarse lock so Hermes can manage its own
     # runtime config while Nix still owns the service and container.
     container = {
       enable = true;
@@ -19,6 +19,7 @@
         "--env NPM_CONFIG_PREFIX=/home/hermes/.local"
         "--env PATH=/home/hermes/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
       ];
+      extraVolumes = [ "/srv/nas/files:/nas:rw" ];
     };
 
     settings.model = {
