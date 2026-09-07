@@ -69,6 +69,30 @@
   fileSystems."/srv/nas" = {
     device = "/dev/disk/by-uuid/fc63f569-7356-4020-a715-efce9b3ef742";
     fsType = "ext4";
+    # A missing USB disk must not block boot or remote repair over SSH.
+    # Stop the mount if its backing device disappears.
+    options = [ "nofail" "x-systemd.device-bound" ];
+  };
+
+  # Recover every NAS consumer after a late disk or USB disconnect. Keep the
+  # existing one-minute retry policy, measured from completion so a device
+  # timeout cannot consume the next retry. Service mount dependencies prevent
+  # creating application data on the root filesystem while the disk is absent.
+  systemd.services.nas-recovery = {
+    description = "Recover the NAS mount and dependent services";
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${pkgs.systemd}/bin/systemctl start srv-nas.mount samba-smbd.service hermes-agent.service";
+    };
+  };
+
+  systemd.timers.nas-recovery = {
+    description = "Retry the NAS mount and dependent services";
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnBootSec = "1min";
+      OnUnitInactiveSec = "1min";
+    };
   };
 
   systemd.services.hermes-agent = {

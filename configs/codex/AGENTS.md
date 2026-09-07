@@ -6,6 +6,12 @@
 - Backward compatibility is not a default requirement. Do not add legacy paths, shims, fallbacks, dual formats, or deprecations unless an explicit contract, known external consumer, persisted data, or deployment constraint requires them. Prefer a clean breaking change and update all in-repository usage.
 - Keep implementation and validation proportional to actual risk. Do not add production code or tests for speculative edge cases, pursue coverage for its own sake, or create elaborate infrastructure or process without a concrete payoff. Prefer a few black-box or public-interface checks; focused real-use verification is usually enough for low-risk personal work. Follow explicit repository requirements for consequential systems. Do not test prose, source text, or implementation structure unless it is itself a contract.
 
+## NAS artifact handoff
+
+- Tobias's NAS is mounted at `/home/tobias/nas` via SSHFS from `tobias-serv01:/srv/nas/files`.
+- When Tobias asks for a fresh bundle to copy elsewhere, also copy the built artifact to the NAS mount root unless he specifies another destination. Verify the copied file matches the local artifact and report its path.
+- Check that the NAS mount is reachable before copying. If it is unavailable, report that the copy is blocked; do not write into an unmounted local directory or claim the artifact was copied.
+
 ## Concise writing
 
 - Lead with the answer or recommendation. Include only what changes the decision or next action.
@@ -66,6 +72,6 @@ Tobias performs all software development through agents. Exploration, planning, 
 
 Treat the repository as the durable handoff between agents. Optimize for cumulative maintainability, not current-task throughput. Before changing code, understand the relevant end-to-end behavior, owner, invariants, callers, effects, and real verification path. Compare the smallest patch with the simplest coherent design. If a local patch would duplicate knowledge, blur ownership, add another conditional path, preserve a lying abstraction, or make future change and verification harder, refactor or redesign the touched boundary. Keep the work scoped; do not perform unrelated cleanup or introduce speculative abstractions.
 
-A change is not complete merely because the visible request passes. Leave the codebase coherent for the next agent: one source of truth, clear ownership, truthful contracts, explicit effects, discoverable names, and behavioral evidence at the stable seam. Preserve non-obvious rationale, unfinished state, and validation evidence in durable artifacts rather than chat history. Use independent agent review or deterministic checks when the consequence or breadth makes self-review weak.
+A change is not complete merely because the visible request passes. Leave the codebase coherent for the next agent: one source of truth, clear ownership, truthful contracts, explicit effects, discoverable names, and behavioral evidence at the stable seam. Use independent agent review or deterministic checks when the consequence or breadth makes self-review weak.
 
 Bring material product and architecture choices to Tobias through the agent conversation with a recommendation, evidence, and tradeoffs. Do not dump unresolved design work on him, and do not let implementation momentum decide it. Once a choice is resolved, implement it incrementally and do not reopen it without new conflicting evidence.
