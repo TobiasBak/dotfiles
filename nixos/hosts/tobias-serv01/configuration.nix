@@ -7,6 +7,7 @@
 {
   imports = [
     ../../modules/hermes-agent.nix
+    ../../modules/kanban.nix
     ../../modules/server-base.nix
     ./hardware-configuration.nix
   ];
@@ -82,7 +83,7 @@
     description = "Recover the NAS mount and dependent services";
     serviceConfig = {
       Type = "oneshot";
-      ExecStart = "${pkgs.systemd}/bin/systemctl start srv-nas.mount samba-smbd.service hermes-agent.service";
+      ExecStart = "${pkgs.systemd}/bin/systemctl start srv-nas.mount samba-smbd.service hermes-agent.service docker-kanban.service";
     };
   };
 
@@ -161,6 +162,7 @@
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEfTzBgxvSrUI4/qSMysUaVZgsQTe1sAb6+YevBM5gmZ tobias@pc"
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFEvr2qCdxh7peyDqmauJKmLiql3e77uo8+IrkmSwRDe tobias@windows"
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPwf+bDRHxfll2vHjpPt33kQyFacdcr/wuXqJvUVKNx+ tobias@DESKTOP-LOEC6VP"
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDcfYHFOxRxSQzxA9AixpvoJTW5xF16LVvIgkkBiEl5F tobias-nixos-wsl"
     ];
   };
 
@@ -169,7 +171,7 @@
       users = [ "tobias" ];
       commands = [
         {
-          command = "/run/current-system/sw/bin/systemd-run --setenv=PATH=/run/current-system/sw/bin --unit=nixos-switch-tobias-serv01 --collect --service-type=exec /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/code/dotfiles/nixos#tobias-serv01";
+          command = "/run/current-system/sw/bin/systemd-run --setenv=PATH=/run/current-system/sw/bin --unit=nixos-switch-tobias-serv01 --collect --service-type=exec /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/code/dotfiles/nixos\\#tobias-serv01";
           options = [ "NOPASSWD" ];
         }
       ];
