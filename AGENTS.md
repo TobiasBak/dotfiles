@@ -10,7 +10,7 @@ NixOS and Home Manager links are declared under `nixos/home/tobias/`; Windows li
 
 ## Agent skills
 
-Personal Pi and Codex skills live in the sibling `../skills` repository, not here. Its installer discovers directories containing `SKILL.md`; use this repository's WSL or native NixOS rebuild entrypoint to refresh installed links.
+Agent skills live in the sibling `../vault-public` repository under `skills/`, not here. Its `scripts/install-skills.sh` links them into `~/.agents/skills`; use this repository's WSL or native NixOS rebuild entrypoint to refresh installed links.
 
 ## NixOS servers
 

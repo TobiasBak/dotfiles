@@ -19,8 +19,7 @@
     }
   ],
   "skills": [
-    "~/code/skills/skills",
-    "~/code/skills/external"
+    "~/code/vault-public/skills"
   ],
   "defaultProjectTrust": "always",
   "enableInstallTelemetry": true,

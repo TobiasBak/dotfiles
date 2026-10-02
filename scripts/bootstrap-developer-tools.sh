@@ -125,39 +125,35 @@ remove_legacy_subagents() {
 install_agent_skill_links() {
   require_command git || return 0
 
-  local skills_repo="https://github.com/TobiasBak/skills.git"
-  local skills_dir
-  skills_dir="$(cd "$REAL_REPO_DIR/.." && pwd)/skills"
+  local vault_repo="https://github.com/TobiasBak/vault-public.git"
+  local vault_dir
+  vault_dir="$(cd "$REAL_REPO_DIR/.." && pwd)/vault-public"
 
-  mkdir -p "$(dirname "$skills_dir")"
-  if [ -d "$skills_dir/.git" ]; then
-    log "Updating skills repo at $skills_dir..."
-    run_git_noninteractive -C "$skills_dir" pull --ff-only ||
-      warn "Could not update skills repo at $skills_dir. Continuing with the existing checkout."
-  elif [ ! -e "$skills_dir" ]; then
-    log "Cloning skills repo into $skills_dir..."
-    run_git_noninteractive clone "$skills_repo" "$skills_dir" || {
-      warn "Could not clone skills repo into $skills_dir."
-      if [ -d "$skills_dir" ] && [ ! -d "$skills_dir/.git" ]; then
-        rm -rf "$skills_dir"
+  if [ -d "$vault_dir/.git" ]; then
+    log "Updating vault at $vault_dir..."
+    run_git_noninteractive -C "$vault_dir" pull --ff-only ||
+      warn "Could not update vault at $vault_dir. Continuing with the existing checkout."
+  elif [ ! -e "$vault_dir" ]; then
+    log "Cloning vault into $vault_dir..."
+    run_git_noninteractive clone "$vault_repo" "$vault_dir" || {
+      warn "Could not clone vault into $vault_dir."
+      if [ -d "$vault_dir" ] && [ ! -d "$vault_dir/.git" ]; then
+        rm -rf "$vault_dir"
       fi
       return 0
     }
   else
-    warn "$skills_dir exists but is not a git repository. Skipping agent skill links."
+    warn "$vault_dir exists but is not a git repository. Skipping agent skill links."
     return 0
   fi
 
-  if [ ! -f "$skills_dir/scripts/install-links.sh" ]; then
-    warn "Skills installer not found: $skills_dir/scripts/install-links.sh"
+  if [ ! -f "$vault_dir/scripts/install-skills.sh" ]; then
+    warn "Skills installer not found: $vault_dir/scripts/install-skills.sh"
     return 0
   fi
 
-  log "Linking Pi skills..."
-  PI_SKILLS_DIR="$HOME/.pi/agent/skills" bash "$skills_dir/scripts/install-links.sh" --fix
-
-  log "Linking Codex CLI skills..."
-  PI_SKILLS_DIR="$HOME/.agents/skills" bash "$skills_dir/scripts/install-links.sh" --fix
+  log "Linking agent skills..."
+  bash "$vault_dir/scripts/install-skills.sh" --fix
 }
 
 set_shell() {
