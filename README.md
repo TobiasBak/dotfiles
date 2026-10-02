@@ -80,7 +80,7 @@ when requested:
 ./rebuild-nixos.sh pc --bootstrap
 ```
 
-Use `./rebuild-nixos.sh --bootstrap` on later rebuilds when Pi, Codex, Claude Code, and
+Use `./rebuild-nixos.sh --bootstrap` on later rebuilds when Pi, Codex, Claude Code, OpenCode v2, and
 agent skill links also need to be refreshed.
 
 The native GRUB configuration expects the EFI system partition at
@@ -97,11 +97,14 @@ See `nixos/README.md` for server build, installation, and remote-operation notes
 
 Run `bash scripts/bootstrap-ai-clis.sh` to install or update Codex and Claude Code
 without rebuilding the system or refreshing other developer tools. The full
-developer-tool bootstrap runs this step too. Both CLIs load privacy settings
-through managed links to `configs/`.
+developer-tool bootstrap runs this step too. Mutable agent CLIs track `latest`,
+not fixed versions. Claude Code uses Anthropic's native installer and latest
+update channel; the bootstrap removes old pnpm installs that shadow it.
+Both CLIs load privacy settings through managed links to `configs/`.
 
 These settings disable optional analytics, telemetry, and feedback uploads. They
-do not opt out of model training. For subscription sign-ins, turn off the account
+also disable Claude Code's background updates; rerun the bootstrap to update it.
+They do not opt out of model training. For subscription sign-ins, turn off the account
 settings in [ChatGPT Data controls](https://chatgpt.com/#settings/DataControls)
 ("Improve the model for everyone") and
 [Claude Privacy](https://claude.ai/settings/data-privacy-controls)

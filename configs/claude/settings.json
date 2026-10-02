@@ -4,5 +4,6 @@
     "CLAUDE_CODE_ENABLE_TELEMETRY": "0",
     "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1"
   },
-  "skipWebFetchPreflight": true
+  "skipWebFetchPreflight": true,
+  "autoUpdatesChannel": "latest"
 }

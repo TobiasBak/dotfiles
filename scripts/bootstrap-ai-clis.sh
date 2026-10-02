@@ -15,10 +15,12 @@ if [ "$(readlink -f "$STABLE_REPO_DIR" 2>/dev/null || true)" != "$REPO_DIR" ]; t
   exit 1
 fi
 
-if ! command -v pnpm >/dev/null 2>&1; then
-  echo "pnpm is required to install the agent CLIs." >&2
-  exit 1
-fi
+for dependency in pnpm curl; do
+  if ! command -v "$dependency" >/dev/null 2>&1; then
+    echo "$dependency is required to install the agent CLIs." >&2
+    exit 1
+  fi
+done
 
 PNPM_HOME="${PNPM_HOME:-$HOME/.local/share/pnpm}"
 PNPM_BIN="$PNPM_HOME/bin"
@@ -40,9 +42,16 @@ for config in codex/config.toml claude/settings.json; do
 done
 
 mkdir -p "$PNPM_BIN"
-CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 command pnpm add --global \
-  --allow-build=@anthropic-ai/claude-code \
-  "@openai/codex@latest" "@anthropic-ai/claude-code@latest"
+command pnpm add --global "@openai/codex@latest"
+
+curl -fsSL https://claude.ai/install.sh | \
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 bash -s -- latest
+
+"$HOME/.local/bin/claude" --version
+
+if [ -e "$PNPM_BIN/claude" ] || [ -L "$PNPM_BIN/claude" ]; then
+  command pnpm remove --global "@anthropic-ai/claude-code"
+fi
 
 "$PNPM_BIN/codex" --version
-"$PNPM_BIN/claude" --version
+command claude --version

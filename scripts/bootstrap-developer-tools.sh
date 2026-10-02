@@ -53,6 +53,16 @@ run_git_noninteractive() {
   fi
 }
 
+install_opencode_cli() {
+  require_command pnpm || return 0
+
+  mkdir -p "$PNPM_BIN"
+  log "Installing/updating OpenCode v2..."
+  # V2's postinstall selects the native binary; allow only its build script.
+  # https://opencode.ai/v2/docs
+  command pnpm add --global --allow-build=@opencode/cli "@opencode/cli@latest"
+}
+
 install_pi_cli() {
   require_command pnpm || return 0
 
@@ -163,6 +173,7 @@ fi
 
 ensure_dotfiles_link
 bash "$SCRIPT_DIR/bootstrap-ai-clis.sh"
+install_opencode_cli
 install_pi_cli
 install_pi_tools
 remove_legacy_subagents
