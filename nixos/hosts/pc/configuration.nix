@@ -165,12 +165,23 @@ in
     piWhisperTranscribe
     pkgs.gcc
     pkgs.gnumake
+    pkgs.google-cloud-sdk
+    (pkgs.callPackage ../../packages/terraform { })
     pkgs.spotify
     pkgs.vesktop
     rdpClient
     rdpDesktopItem
     rdpLauncher
   ];
+
+  # Keep acceleration available for GeoGuessr. Disabling it caused severe lag.
+  # Tobias accepted the risk of recurring NVIDIA BAR1 lockups on 595.71.05
+  # with a 256 MiB BAR1 aperture; Resizable BAR remains a candidate workaround.
+  # https://github.com/NVIDIA/open-gpu-kernel-modules/issues/1132
+  programs.chromium = {
+    enable = true;
+    extraOpts.HardwareAccelerationModeEnabled = true;
+  };
 
   services.xserver.videoDrivers = [ "nvidia" ];
   hardware.nvidia = {

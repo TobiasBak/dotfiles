@@ -4,6 +4,16 @@
     "CLAUDE_CODE_ENABLE_TELEMETRY": "0",
     "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1"
   },
+  "outputStyle": "Concise",
+  "attribution": false,
+  "autoMemoryEnabled": false,
+  "showThinkingSummaries": true,
+  "spinnerTipsEnabled": false,
+  "statusLine": {
+    "type": "command",
+    "command": "~/.dotfiles/configs/claude/statusline.sh"
+  },
   "skipWebFetchPreflight": true,
+  "theme": "dark",
   "autoUpdatesChannel": "latest"
 }

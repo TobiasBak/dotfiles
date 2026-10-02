@@ -77,6 +77,7 @@ hide_rate_limit_model_nudge = true
 [tui]
 status_line = ["model-with-reasoning", "current-dir", "context-used", "context-window-size", "git-branch"]
 status_line_use_colors = true
+screen_reader_detection_done = true
 
 [tui.model_availability_nux]
 "gpt-5.6-sol" = 4

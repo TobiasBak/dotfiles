@@ -232,9 +232,8 @@ The server has a fixed role and expected checkout path:
 | --- | --- | --- | --- |
 | `tobias-serv01` | `/home/tobias/code/dotfiles/nixos` | Docker, Samba, SSH, Tailscale | Dedicated ext4 disk mounted at `/srv/nas`; share data in `/srv/nas/files` |
 
-The path is part of the host's exact passwordless activation rule. If the
-checkout moves, update the host's configuration and this documentation
-together.
+The detached activation below uses this path. If the checkout moves, update
+this documentation and the activation command together.
 
 From the NixOS installer, adapt the devices and mount points to the target's
 actual partitioning:
@@ -338,11 +337,11 @@ systemctl status nixos-switch-tobias-serv01.service
 journalctl -u nixos-switch-tobias-serv01.service
 ```
 
-The server grants `tobias` passwordless sudo only for its exact
-`systemd-run` invocation. Normal sudo still requires a password. Do not add
-arguments or change the path or unit name. For risky networking, SSH,
-Tailscale, firewall, remote desktop, or NAS changes, keep local console access
-available.
+The server grants `tobias` unrestricted passwordless sudo for remote agent
+administration. SSH access as `tobias` therefore provides full root access.
+Keep remote rebuilds detached using the command above. For risky networking,
+SSH, Tailscale, firewall, remote desktop, or NAS changes, keep local console
+access available.
 
 ### Remote update from Windows
 

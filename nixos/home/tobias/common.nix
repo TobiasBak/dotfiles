@@ -24,15 +24,20 @@ in
       ".npmrc" = linkFromDotfiles "configs/npm/npmrc";
 
       ".pi/agent/settings.json" = linkFromDotfiles "configs/pi/settings.json";
-      ".pi/agent/APPEND_SYSTEM.md" = linkFromDotfiles "configs/codex/AGENTS.md";
+      ".pi/agent/APPEND_SYSTEM.md" = linkFromDotfiles "configs/agents/AGENTS.md";
       ".pi/agent/themes" = linkFromDotfiles "configs/pi/themes";
       ".pi/agent/prompts" = linkFromDotfiles "configs/pi/prompts";
       ".pi/agent/keybindings.json" = linkFromDotfiles "configs/pi/keybindings.json";
 
-      ".codex/AGENTS.md" = linkFromDotfiles "configs/codex/AGENTS.md";
+      ".codex/AGENTS.md" = linkFromDotfiles "configs/agents/AGENTS.md";
       ".codex/config.toml" = linkFromDotfiles "configs/codex/config.toml";
       ".codex/prompts" = linkFromDotfiles "configs/codex/prompts";
       ".claude/settings.json" = linkFromDotfiles "configs/claude/settings.json";
+      ".claude/CLAUDE.md" = linkFromDotfiles "configs/agents/AGENTS.md";
+      ".claude/skills" = {
+        source = config.lib.file.mkOutOfStoreSymlink "${config.home.homeDirectory}/.agents/skills";
+        force = true;
+      };
       ".codex/skills/playwright-cli".source =
         "${playwrightCli}/lib/node_modules/playwright-cli-wrapper/node_modules/@playwright/cli/skills/playwright-cli";
     };

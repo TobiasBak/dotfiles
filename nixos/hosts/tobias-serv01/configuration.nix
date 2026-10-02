@@ -23,6 +23,13 @@
   boot.loader.systemd-boot.enable = true;
   boot.loader.efi.canTouchEfiVariables = true;
 
+  # The NAS stayed undetected while these root hubs were runtime-suspended;
+  # plugging in a keyboard woke them and the untouched SSD appeared (2026-09-08).
+  # Keep this controller's root hubs awake, including before disk enumeration.
+  services.udev.extraRules = ''
+    ACTION=="add|bind", SUBSYSTEM=="usb", KERNEL=="usb[0-9]*", KERNELS=="0000:00:14.0", ATTR{power/control}="on"
+  '';
+
   virtualisation.docker.enable = true;
 
   environment.systemPackages = with pkgs; [
@@ -171,7 +178,7 @@
       users = [ "tobias" ];
       commands = [
         {
-          command = "/run/current-system/sw/bin/systemd-run --setenv=PATH=/run/current-system/sw/bin --unit=nixos-switch-tobias-serv01 --collect --service-type=exec /run/current-system/sw/bin/nixos-rebuild switch --flake /home/tobias/code/dotfiles/nixos\\#tobias-serv01";
+          command = "ALL";
           options = [ "NOPASSWD" ];
         }
       ];
