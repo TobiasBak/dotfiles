@@ -81,7 +81,7 @@ For a NixOS or Home Manager-only change, skip the mutable bootstrap work:
 ```
 
 `--nixos-only` still applies the embedded Home Manager configuration. It skips
-only user config link repair, mutable Codex/Pi installs, and skill link
+only user config link repair, mutable agent CLI installs, and skill link
 refresh.
 
 After changing flake inputs, update and commit the lock file from a machine
@@ -197,7 +197,7 @@ on the NixOS root filesystem.
 
 After rebooting, verify Windows Boot Manager is available from GRUB or the
 firmware boot menu. Then apply the normal native rebuild and install the
-mutable Pi/Codex tools and skill links:
+mutable agent CLIs and skill links:
 
 ```bash
 ~/.dotfiles/rebuild-nixos.sh --bootstrap

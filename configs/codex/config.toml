@@ -5,6 +5,18 @@ model_verbosity = "low"
 personality = "none"
 approvals_reviewer = "user"
 
+[analytics]
+enabled = false
+
+[feedback]
+enabled = false
+
+[otel]
+exporter = "none"
+trace_exporter = "none"
+metrics_exporter = "none"
+log_user_prompt = false
+
 [projects."/home/tobias/code/dotfiles"]
 trust_level = "trusted"
 

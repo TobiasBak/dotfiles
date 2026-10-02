@@ -21,7 +21,7 @@ Hosts:
   laptop
 
 Options:
-  --bootstrap  Refresh mutable Pi/Codex tools and skill links after switching.
+  --bootstrap  Refresh mutable agent CLIs and skill links after switching.
   -h, --help   Show this help.
 EOF
 }

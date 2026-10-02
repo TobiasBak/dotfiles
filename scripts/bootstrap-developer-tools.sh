@@ -45,47 +45,12 @@ require_command() {
   fi
 }
 
-is_wsl_windows_path() {
-  case "$1" in
-    /mnt/[A-Za-z]/*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 run_git_noninteractive() {
   if command -v timeout >/dev/null 2>&1; then
     GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never SSH_ASKPASS=/bin/false timeout 120 git "$@"
   else
     GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never SSH_ASKPASS=/bin/false git "$@"
   fi
-}
-
-install_codex_cli() {
-  local codex_path
-  codex_path="$(command -v codex 2>/dev/null || true)"
-
-  if [ -n "$codex_path" ]; then
-    if is_wsl_windows_path "$codex_path"; then
-      warn "Ignoring Windows Codex on WSL PATH: $codex_path"
-    else
-      log "Existing Codex CLI: $codex_path"
-    fi
-  fi
-
-  require_command pnpm || return 0
-  mkdir -p "$PNPM_BIN"
-  log "Installing/updating Codex CLI..."
-  if command pnpm add --global --ignore-scripts "@openai/codex@latest"; then
-    log "Codex CLI ready: $(command -v codex 2>/dev/null || printf '%s' "$PNPM_BIN/codex")"
-    return 0
-  fi
-
-  if [ -n "$codex_path" ] && ! is_wsl_windows_path "$codex_path"; then
-    warn "Codex update failed. Keeping existing native Codex: $codex_path"
-    return 0
-  fi
-
-  return 1
 }
 
 install_pi_cli() {
@@ -197,7 +162,7 @@ if [ "$(id -u)" -eq 0 ]; then
 fi
 
 ensure_dotfiles_link
-install_codex_cli
+bash "$SCRIPT_DIR/bootstrap-ai-clis.sh"
 install_pi_cli
 install_pi_tools
 remove_legacy_subagents

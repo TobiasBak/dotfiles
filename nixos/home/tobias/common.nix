@@ -32,6 +32,7 @@ in
       ".codex/AGENTS.md" = linkFromDotfiles "configs/codex/AGENTS.md";
       ".codex/config.toml" = linkFromDotfiles "configs/codex/config.toml";
       ".codex/prompts" = linkFromDotfiles "configs/codex/prompts";
+      ".claude/settings.json" = linkFromDotfiles "configs/claude/settings.json";
       ".codex/skills/playwright-cli".source =
         "${playwrightCli}/lib/node_modules/playwright-cli-wrapper/node_modules/@playwright/cli/skills/playwright-cli";
     };
