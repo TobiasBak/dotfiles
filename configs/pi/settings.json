@@ -1,27 +1,3 @@
 {
-  "lastChangelogVersion": "0.84.2",
-  "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-5.6-sol",
-  "defaultThinkingLevel": "low",
-  "theme": "rose-pine-moon",
-  "collapseChangelog": true,
-  "steeringMode": "all",
-  "compaction": {
-    "enabled": true,
-    "reserveTokens": 32000,
-    "keepRecentTokens": 20000
-  },
-  "packages": [
-    "/home/tobias/code/pi-tools",
-    {
-      "source": "npm:pi-web-access",
-      "skills": []
-    }
-  ],
-  "skills": [
-    "~/code/vault-public/skills"
-  ],
-  "defaultProjectTrust": "always",
-  "enableInstallTelemetry": true,
-  "hideThinkingBlock": false
+  "defaultTools": ["+codemode"]
 }

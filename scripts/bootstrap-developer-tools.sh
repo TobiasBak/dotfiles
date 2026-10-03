@@ -71,57 +71,6 @@ install_pi_cli() {
   command pnpm add --global --ignore-scripts "@earendil-works/pi-coding-agent@latest"
 }
 
-install_pi_tools() {
-  require_command git || return 0
-
-  local pi_tools_repo="https://github.com/TobiasBak/pi-tools.git"
-  local pi_tools_dir
-  pi_tools_dir="$(cd "$REAL_REPO_DIR/.." && pwd)/pi-tools"
-
-  mkdir -p "$(dirname "$pi_tools_dir")"
-  if [ -d "$pi_tools_dir/.git" ]; then
-    log "Updating Pi tools repo at $pi_tools_dir..."
-    run_git_noninteractive -C "$pi_tools_dir" pull --ff-only ||
-      warn "Could not update Pi tools at $pi_tools_dir. Continuing with the existing checkout."
-  elif [ ! -e "$pi_tools_dir" ]; then
-    log "Cloning Pi tools into $pi_tools_dir..."
-    run_git_noninteractive clone "$pi_tools_repo" "$pi_tools_dir" || {
-      warn "Could not clone Pi tools into $pi_tools_dir."
-      if [ -d "$pi_tools_dir" ] && [ ! -d "$pi_tools_dir/.git" ]; then
-        rm -rf "$pi_tools_dir"
-      fi
-      return 0
-    }
-  else
-    echo "$pi_tools_dir exists but is not a git repository. Move it aside before bootstrapping." >&2
-    return 1
-  fi
-
-  require_command pnpm || return 0
-  if [ ! -f "$pi_tools_dir/pnpm-lock.yaml" ]; then
-    warn "Pi tools dependency lockfile not found: $pi_tools_dir/pnpm-lock.yaml"
-    return 0
-  fi
-
-  log "Installing Pi tools runtime dependencies..."
-  command pnpm --dir "$pi_tools_dir" install --prod --frozen-lockfile
-}
-
-remove_legacy_subagents() {
-  local package_root="$HOME/.pi/agent/npm"
-
-  if [ -d "$package_root/node_modules/pi-subagents" ] ||
-     { [ -f "$package_root/package.json" ] && grep -q '"pi-subagents"' "$package_root/package.json"; }; then
-    if command -v pnpm >/dev/null 2>&1; then
-      log "Removing legacy pi-subagents package..."
-      command pnpm --dir "$package_root" remove pi-subagents ||
-        warn "Could not remove legacy pi-subagents package from $package_root"
-    else
-      warn "pnpm not found, skipping legacy pi-subagents package cleanup."
-    fi
-  fi
-}
-
 install_agent_skill_links() {
   require_command git || return 0
 
@@ -171,8 +120,6 @@ ensure_dotfiles_link
 bash "$SCRIPT_DIR/bootstrap-ai-clis.sh"
 install_opencode_cli
 install_pi_cli
-install_pi_tools
-remove_legacy_subagents
 install_agent_skill_links
 set_shell
 

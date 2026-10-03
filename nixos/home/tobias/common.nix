@@ -25,9 +25,6 @@ in
 
       ".pi/agent/settings.json" = linkFromDotfiles "configs/pi/settings.json";
       ".pi/agent/APPEND_SYSTEM.md" = linkFromDotfiles "configs/agents/AGENTS.md";
-      ".pi/agent/themes" = linkFromDotfiles "configs/pi/themes";
-      ".pi/agent/prompts" = linkFromDotfiles "configs/pi/prompts";
-      ".pi/agent/keybindings.json" = linkFromDotfiles "configs/pi/keybindings.json";
 
       ".codex/AGENTS.md" = linkFromDotfiles "configs/agents/AGENTS.md";
       ".codex/config.toml" = linkFromDotfiles "configs/codex/config.toml";

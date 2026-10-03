@@ -11,6 +11,7 @@ Before the first substantive answer in a conversation, read `/home/tobias/vault/
 - Never add an agent co-author to commit messages.
 - Never hand-edit `CHANGELOG.md` or files marked generated.
 - Other agents share this filesystem. Don't modify, revert, or delete changes you didn't make.
+- When running in Pi, use Pi for T3-delegated subagents by default. Switch harness only when Tobias asks or Pi lacks a required model or capability, and explain the reason.
 - Backward compatibility is opt-in. No legacy paths, shims, fallbacks, dual formats, or deprecations without an explicit contract, known external consumer, persisted data, or deployment constraint. Make the clean break and update every in-repo usage.
 - Keep code and validation proportional to real risk. No tests for speculative edge cases, coverage for its own sake, or tests of prose and source structure. A few public-interface or real-use checks usually suffice for personal work; follow stricter repo requirements where they exist.
 - **NAS:** `/home/tobias/nas` is SSHFS from `tobias-serv01:/srv/nas/files`. When Tobias asks for a fresh bundle to copy elsewhere, also copy it to the NAS root unless he names another destination. Check the mount first and say so if it's down. Verify the copy matches and report its path.
