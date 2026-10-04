@@ -79,9 +79,12 @@ elif mode == "socat":
     request = sys.stdin.read()
     record("qmp", [json.loads(line) for line in request.splitlines()])
     assert "system_powerdown" in request or '"quit"' in request
-    if '"quit"' in request or not (home / "ignore-powerdown").exists():
+    quitting = '"quit"' in request
+    if (quitting and not (home / "ignore-quit").exists()) or (not quitting and not (home / "ignore-powerdown").exists()):
         runtime = Path(args[-1].removeprefix("UNIX-CONNECT:")).parent
         os.kill(int((runtime / "qemu.pid").read_text()), signal.SIGTERM)
+    if quitting and (home / "qmp-quit-resets").exists():
+        sys.exit(1)
 elif mode == "scp":
     record(mode, args)
     if (home / "scp-failed").exists():

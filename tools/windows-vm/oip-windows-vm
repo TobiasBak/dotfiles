@@ -806,8 +806,10 @@ discard_clone() {
     {
       printf '{"execute":"qmp_capabilities"}\n'
       printf '{"execute":"quit"}\n'
-    } | timeout "${CONTROL_TIMEOUT_SECONDS}" socat - "UNIX-CONNECT:${socket}" >/dev/null ||
-      die "QMP quit failed; clone preserved: ${name}"
+    # Quit may close/reset QMP before socat reads its response. The owned process
+    # and its service/scope being gone, not the socket exit status, proves discard safe.
+    } | timeout "${CONTROL_TIMEOUT_SECONDS}" socat - "UNIX-CONNECT:${socket}" \
+      >"${path}/runtime/discard-qmp.log" 2>&1 || true
   fi
   wait_for_shutdown "${path}/runtime" "${DISCARD_WAIT_SECONDS}"
   destroy_clone "${name}"
