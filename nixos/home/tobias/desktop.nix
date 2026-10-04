@@ -58,6 +58,22 @@ in
     Install.WantedBy = [ "default.target" ];
   };
 
+  systemd.user.services.stremio-server = lib.mkIf (hostname == "pc") {
+    Unit.Description = "Stremio streaming and transcoding for the browser";
+    Service = {
+      ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p %h/.local/share/stremio-server";
+      ExecStart = "${pkgs.nodejs}/bin/node ${pkgs.stremio-linux-shell}/libexec/stremio/server.js";
+      Environment = [
+        "APP_PATH=%h/.local/share/stremio-server"
+        "FFMPEG_BIN=${pkgs.ffmpeg}/bin/ffmpeg"
+        "FFPROBE_BIN=${pkgs.ffmpeg}/bin/ffprobe"
+      ];
+      Restart = "on-failure";
+      RestartSec = 5;
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
   systemd.user.services.nas-mount = lib.mkIf (hostname == "pc") {
     Unit = {
       Description = "Mount the NAS over SSHFS";

@@ -168,6 +168,7 @@ in
     pkgs.google-cloud-sdk
     (pkgs.callPackage ../../packages/terraform { })
     pkgs.spotify
+    pkgs.stremio-linux-shell
     pkgs.vesktop
     rdpClient
     rdpDesktopItem
