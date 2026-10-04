@@ -1,6 +1,7 @@
 """Host lifecycle checks: tiny real QCOW2 images, stub services, no guest boot."""
 
 import fcntl
+import hashlib
 import json
 import os
 import shutil
@@ -31,7 +32,7 @@ class VmLifecycleTests(unittest.TestCase):
         (self.home / "keys" / "id_ed25519").write_text("stub-only key")
         self.bin = Path(self.directory.name) / "bin"
         self.bin.mkdir()
-        for name in ("ss", "qemu-system-x86_64", "systemd-run", "systemctl", "pc-workload", "socat", "ssh", "sleep"):
+        for name in ("ss", "qemu-system-x86_64", "systemd-run", "systemctl", "pc-workload", "socat", "ssh", "scp", "sleep"):
             wrapper = self.bin / name
             wrapper.write_text(f'#!/usr/bin/env bash\nexec python3 "{STUB}" {name} "$@"\n')
             wrapper.chmod(0o755)
@@ -128,6 +129,132 @@ class VmLifecycleTests(unittest.TestCase):
         self.make_base()
         self.ok("clone-create", "first")
 
+    def test_grown_clone_is_cow_and_preserves_sealed_base(self):
+        subprocess.run(["qemu-io", "-f", "qcow2", "-c", "write -P 17 0 4k", str(self.base)], check=True, capture_output=True)
+        self.base.chmod(0o444)
+        before = hashlib.sha256(self.base.read_bytes()).hexdigest()
+        self.ok("clone-create", "first", "2M")
+        disk = self.home / "vms" / "first" / "disk.qcow2"
+        info = json.loads(subprocess.check_output(["qemu-img", "info", "--output=json", str(disk)]))
+        self.assertEqual(info["virtual-size"], 2 * 1024 * 1024)
+        self.assertEqual(info["full-backing-filename"], str(self.base))
+        subprocess.run(["qemu-io", "-f", "qcow2", "-c", "read -P 17 0 4k", "-c", "write -P 85 0 4k", str(disk)], check=True, capture_output=True)
+        subprocess.run(["qemu-io", "-r", "-f", "qcow2", "-c", "read -P 17 0 4k", str(self.base)], check=True, capture_output=True)
+        self.assertEqual(hashlib.sha256(self.base.read_bytes()).hexdigest(), before)
+        self.assertEqual(self.base.stat().st_mode & 0o777, 0o444)
+        self.assertIn("limit=1, requested=2", self.run_cli("clone-create", "second", "4M").stderr)
+
+    def test_shrink_invalid_size_and_failed_resize_leave_no_partial_clone(self):
+        for size in ("512K", "+1M", "--shrink", "bogus"):
+            with self.subTest(size=size):
+                failed = self.run_cli("clone-create", "failed", size)
+                self.assertNotEqual(failed.returncode, 0)
+                self.assertFalse((self.home / "vms" / "failed").exists())
+        qemu_img = shutil.which("qemu-img")
+        wrapper = self.bin / "qemu-img"
+        wrapper.write_text(f'#!/usr/bin/env bash\nif [[ "$1" == resize ]]; then exit 23; fi\nexec "{qemu_img}" "$@"\n')
+        wrapper.chmod(0o755)
+        failed = self.run_cli("clone-create", "failed", "2M")
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("Cannot grow clone", failed.stderr)
+        self.assertFalse((self.home / "vms" / "failed").exists())
+        wrapper.unlink()
+        self.ok("clone-create", "first")
+        info = json.loads(subprocess.check_output(["qemu-img", "info", "--output=json", str(self.home / "vms" / "first" / "disk.qcow2")]))
+        self.assertEqual(info["virtual-size"], 1024 * 1024)
+
+    def test_public_scp_routes_clone_key_port_knownhosts_and_paths(self):
+        self.start()
+        source = Path(self.directory.name) / "payload file.txt"
+        source.write_text("test upload")
+        guest = "C:/ProgramData/qualification artifacts/payload.txt"
+        self.ok("upload", "first", str(source), guest)
+        upload = json.loads((self.home / "scp.json").read_text())
+        destination = Path(self.directory.name) / "evidence file.json"
+        self.ok("download", "first", guest, str(destination))
+        download = json.loads((self.home / "scp.json").read_text())
+        self.assertEqual(destination.read_bytes(), b"stub downloaded evidence")
+        for invocation in (upload, download):
+            self.assertEqual(invocation[invocation.index("-i") + 1], str(self.home / "keys" / "id_ed25519"))
+            self.assertEqual(invocation[invocation.index("-P") + 1], "2223")
+            self.assertIn(f"UserKnownHostsFile={self.runtime}/known_hosts", invocation)
+            self.assertIn("IdentitiesOnly=yes", invocation)
+            self.assertIn("BatchMode=yes", invocation)
+        self.assertEqual(upload[-3:], ["--", str(source), f"Administrator@127.0.0.1:{guest}"])
+        self.assertEqual(download[-3:], ["--", f"Administrator@127.0.0.1:{guest}", str(destination)])
+        (self.home / "scp-failed").touch()
+        self.assertIn("Upload failed for first", self.run_cli("upload", "first", str(source), guest).stderr)
+        self.assertIn("Download failed for first", self.run_cli("download", "first", guest, str(destination)).stderr)
+        self.assertIn("readable file", self.run_cli("upload", "first", str(source) + ".absent", guest).stderr)
+        self.ok("stop", "first")
+        self.assertIn("not running", self.run_cli("download", "first", guest, str(destination)).stderr)
+
+    def desktop_ready(self, policy=None):
+        (self.base.parent / "administrator-password.txt").write_text("scratch-ONLY-secret!\n")
+        if policy:
+            (self.home / "desktop-policy.json").write_text(json.dumps(policy))
+        return self.run_cli("desktop-ready", "first", "--boot-timeout", "2", "--restart-timeout", "1", "--command-timeout", "1", "--cleanup-timeout", "1")
+
+    def test_desktop_readiness_restarts_once_and_clears_temporary_credentials(self):
+        self.start()
+        before = hashlib.sha256(self.base.read_bytes()).hexdigest()
+        result = self.desktop_ready()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        diagnostic = json.loads((self.runtime / "desktop-ready.json").read_text())
+        model = json.loads((self.home / "desktop-model.json").read_text())
+        self.assertEqual(diagnostic["state"], "ready")
+        self.assertTrue(diagnostic["credentialsCleared"])
+        self.assertEqual(model["prepared"], 1)
+        self.assertFalse(model["credentials"])
+        self.assertEqual(model["passwordSha256"], hashlib.sha256(b"scratch-ONLY-secret!").hexdigest())
+        self.assertEqual(hashlib.sha256(self.base.read_bytes()).hexdigest(), before)
+        ssh = json.loads((self.home / "ssh.json").read_text())
+        self.assertEqual(ssh[ssh.index("-p") + 1], "2223")
+        self.assertIn(f"UserKnownHostsFile={self.runtime}/known_hosts", ssh)
+        for text in (result.stdout, result.stderr, (self.runtime / "desktop-ready.json").read_text(), (self.home / "ssh.json").read_text()):
+            self.assertNotIn("scratch-ONLY-secret!", text)
+
+    def test_desktop_readiness_rejects_locked_explorer_and_missing_restart(self):
+        self.start()
+        for policy in ({"locked": True}, {"noRestart": True}):
+            with self.subTest(policy=policy):
+                (self.home / "desktop-model.json").unlink(missing_ok=True)
+                result = self.desktop_ready(policy)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("restart deadline exceeded: limit=1s", result.stderr)
+                diagnostic = json.loads((self.runtime / "desktop-ready.json").read_text())
+                self.assertEqual(diagnostic["state"], "failed")
+                self.assertTrue(diagnostic["credentialsCleared"])
+                self.assertFalse(json.loads((self.home / "desktop-model.json").read_text())["credentials"])
+
+    def test_missing_bootstrap_is_observational_and_not_fabricated(self):
+        self.start()
+        result = self.desktop_ready({"missingBootstrap": True})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        diagnostic = json.loads((self.runtime / "desktop-ready.json").read_text())
+        self.assertEqual(diagnostic["state"], "ready")
+        self.assertTrue(all(observation["provisionReady"] is False for observation in diagnostic["observations"]))
+
+    def test_uncleared_credentials_fail_readiness(self):
+        self.start()
+        result = self.desktop_ready({"cleanupFails": True})
+        self.assertNotEqual(result.returncode, 0)
+        diagnostic = json.loads((self.runtime / "desktop-ready.json").read_text())
+        self.assertEqual(diagnostic["state"], "failed")
+        self.assertIn("credential removal", result.stderr)
+        self.assertFalse(diagnostic["credentialsCleared"])
+
+    def test_desktop_boot_and_cleanup_are_bounded_even_with_hung_ssh(self):
+        self.start()
+        started = time.monotonic()
+        result = self.desktop_ready({"hang": True})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("boot deadline exceeded: limit=2s", result.stderr)
+        self.assertLess(time.monotonic() - started, 5)
+        diagnostic = json.loads((self.runtime / "desktop-ready.json").read_text())
+        self.assertEqual(diagnostic["state"], "failed")
+        self.assertFalse(diagnostic["credentialsCleared"])
+
     def test_start_checks_old_home_budget(self):
         self.ok("clone-create", "first")
         shutil.copytree(self.home / "vms" / "first", self.home / "vms" / "second")
@@ -173,7 +300,11 @@ class VmLifecycleTests(unittest.TestCase):
         self.assertIn("--property=KillMode=mixed", launch)
         qemu = json.loads((self.home / "qemu.json").read_text())
         self.assertNotIn("-daemonize", qemu)
-        self.assertIn("format=qcow2,media=disk,if=ide", " ".join(qemu))
+        self.assertEqual(
+            qemu[qemu.index("-drive") + 1],
+            f"file={self.home}/vms/first/disk.qcow2,format=qcow2,media=disk,if=ide,"
+            "cache=none,throttling.bps-total=104857600",
+        )
         self.assertEqual(json.loads((self.home / "workload.json").read_text())[0], "--")
         unit = (self.runtime / "service.unit").read_text().strip()
         self.assertEqual((self.home / f"{unit}.state").read_text(), "active")
@@ -212,6 +343,25 @@ class VmLifecycleTests(unittest.TestCase):
         self.wait_for(lambda: (self.home / f"{unit}.state").read_text() == "inactive")
         self.assertTrue((self.home / "qemu-exited").exists())
         self.ok("destroy", "first")
+
+    def test_discard_quits_owned_qemu_without_waiting_for_guest_shutdown(self):
+        self.start()
+        (self.home / "ignore-powerdown").touch()
+        (self.home / "qmp-quit-resets").touch()
+        self.ok("discard", "first")
+        self.assertEqual(json.loads((self.home / "qmp.json").read_text())[-1], {"execute": "quit"})
+        self.assertTrue((self.home / "qemu-exited").exists())
+        self.assertFalse((self.home / "vms" / "first").exists())
+        self.assertTrue(self.base.is_file())
+
+    def test_discard_keeps_clone_if_qmp_quit_does_not_end_owned_process(self):
+        self.start()
+        (self.home / "ignore-quit").touch()
+        (self.home / "fast-wait").touch()
+        result = self.run_cli("discard", "first")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((self.home / "vms" / "first" / "disk.qcow2").is_file())
+        self.assertFalse((self.home / "qemu-exited").exists())
 
     def test_bounded_stop_preserves_running_vm_and_reports_unit_errors(self):
         self.start()

@@ -1,5 +1,6 @@
 """Scratch-only subprocess doubles used by test_vm_lifecycle.py."""
 
+import hashlib
 import json
 import os
 import signal
@@ -76,13 +77,68 @@ elif mode == "qemu-system-x86_64":
     (home / "qemu-exited").touch()
 elif mode == "socat":
     request = sys.stdin.read()
-    assert "system_powerdown" in request
-    if not (home / "ignore-powerdown").exists():
+    record("qmp", [json.loads(line) for line in request.splitlines()])
+    assert "system_powerdown" in request or '"quit"' in request
+    quitting = '"quit"' in request
+    if (quitting and not (home / "ignore-quit").exists()) or (not quitting and not (home / "ignore-powerdown").exists()):
         runtime = Path(args[-1].removeprefix("UNIX-CONNECT:")).parent
         os.kill(int((runtime / "qemu.pid").read_text()), signal.SIGTERM)
+    if quitting and (home / "qmp-quit-resets").exists():
+        sys.exit(1)
+elif mode == "scp":
+    record(mode, args)
+    if (home / "scp-failed").exists():
+        print("stub SCP transfer refused", file=sys.stderr)
+        sys.exit(1)
+    if args[-2].startswith("Administrator@"):
+        Path(args[-1]).write_bytes(b"stub downloaded evidence")
 elif mode == "ssh":
     record(mode, args)
-    print("stub guest response")
+    command = args[-1]
+    if "-EncodedCommand" in command or "-Mode" in command:
+        policy_path = home / "desktop-policy.json"
+        policy = json.loads(policy_path.read_text()) if policy_path.exists() else {}
+        if policy.get("hang"):
+            time.sleep(10)
+        state_path = home / "desktop-model.json"
+        state = json.loads(state_path.read_text()) if state_path.exists() else {
+            "installed": False, "prepared": 0, "credentials": False, "boot": "initial",
+        }
+        if "-EncodedCommand" in command:
+            state["installed"] = bool(sys.stdin.read())
+            print("installed")
+        else:
+            assert state["installed"]
+            operation = command.split("-Mode ")[1]
+            if operation == "Prepare":
+                password = sys.stdin.read()
+                expected = (home / "base" / "administrator-password.txt").read_text().strip()
+                assert password == expected
+                state["passwordSha256"] = hashlib.sha256(password.encode()).hexdigest()
+                state["prepared"] += 1
+                state["credentials"] = True
+                state["boot"] = "restarted" if not policy.get("noRestart") else "initial"
+            elif operation == "Cleanup":
+                state["credentials"] = bool(policy.get("cleanupFails"))
+            else:
+                assert operation == "Inspect"
+            ready = not policy.get("locked")
+            print(json.dumps({
+                "state": "restart-scheduled" if operation == "Prepare" else "ready" if ready else "waiting",
+                "bootTime": "initial" if operation == "Prepare" else state["boot"],
+                "provisionReady": not policy.get("missingBootstrap"),
+                "consoleSessionId": 1,
+                "consoleActive": True,
+                "consoleUnlocked": not policy.get("locked"),
+                "consoleAdministrator": True,
+                "explorerRunning": True,
+                "credentialsCleared": not state["credentials"],
+                "partitionBytes": 2097152,
+                "supportedMaxBytes": 2097152,
+            }))
+        state_path.write_text(json.dumps(state))
+    else:
+        print("stub guest response")
 elif mode == "sleep":
     seconds = float(args[0])
     time.sleep(0.001 if (home / "fast-wait").exists() else min(seconds, 0.02))
