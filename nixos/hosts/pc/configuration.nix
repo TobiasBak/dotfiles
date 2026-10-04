@@ -168,6 +168,7 @@ in
     pkgs.gnumake
     pkgs.google-cloud-sdk
     (pkgs.callPackage ../../packages/terraform { })
+    (pkgs.callPackage ../../packages/windows-vm { })
     pkgs.spotify
     pkgs.stremio-linux-shell
     pkgs.vesktop

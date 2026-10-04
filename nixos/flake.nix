@@ -39,6 +39,8 @@
     }:
     let
       system = "x86_64-linux";
+      pkgs = nixpkgs.legacyPackages.${system};
+      windowsVm = pkgs.callPackage ./packages/windows-vm { };
       mkDeveloperSystem =
         modules:
         nixpkgs.lib.nixosSystem {
@@ -48,7 +50,12 @@
         };
     in
     {
-      formatter.${system} = nixpkgs.legacyPackages.${system}.nixfmt;
+      formatter.${system} = pkgs.nixfmt;
+
+      packages.${system}.oip-windows-vm = windowsVm;
+      devShells.${system}.windows-vm = pkgs.mkShell {
+        packages = windowsVm.runtimeInputs ++ [ pkgs.shellcheck ];
+      };
 
       nixosConfigurations = {
         wsl = mkDeveloperSystem [
