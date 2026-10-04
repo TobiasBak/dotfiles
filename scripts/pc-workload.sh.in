@@ -10,7 +10,7 @@ usage() {
     'The scope inherits your cwd, environment, and terminal/stdin/stdout/stderr.' \
     'Niceness is adjusted by +10 for lower CPU priority than ordinary nice 0;' \
     'this is a policy choice, not a measured optimum.' \
-    'background.slice owns CPU/IO cgroup policy. Scope failures are not bypassed.'
+    'background.slice owns CPU cgroup policy. Scope failures are not bypassed.'
 }
 
 if [[ "$#" -eq 1 && "$1" == --help ]]; then

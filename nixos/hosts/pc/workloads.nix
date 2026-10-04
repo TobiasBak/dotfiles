@@ -15,9 +15,6 @@ let
   backgroundSlicePolicy = {
     # systemd's background CPU default is 30, below normal slice weight 100.
     CPUWeight = 30;
-    # Below default I/O weight 100, not a cap or a measured optimum.
-    # BFQ and io delegation make this effective; see workloads.md.
-    IOWeight = 10;
   };
 in
 {
@@ -36,20 +33,10 @@ in
     Slice = "background.slice";
   };
 
-  # Preserve systemd 260's default delegation and add I/O for user scopes.
-  systemd.services."user@".serviceConfig.Delegate = "cpu io memory pids";
-
   # A top-level system slice competes with user.slice. Lowering only the
   # daemon inside system.slice would leave system.slice's root share intact.
   systemd.slices.background.sliceConfig = backgroundSlicePolicy;
   systemd.user.slices.background.sliceConfig = backgroundSlicePolicy;
-
-  # Linux 6.18 on pc has BFQ=m and BFQ_GROUP_IOSCHED=y. The current NVMe
-  # scheduler 'none' ignores weights. systemd 260 writes io.bfq.weight.
-  boot.kernelModules = [ "bfq" ];
-  services.udev.extraRules = ''
-    ACTION=="add|change", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", KERNEL=="nvme*n*", ATTR{queue/scheduler}="bfq"
-  '';
 
   environment.systemPackages = [ pcWorkload ];
 }

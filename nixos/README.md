@@ -224,8 +224,9 @@ lspci -nnk | grep -A3 -E 'VGA|3D|Display'
 nvidia-smi
 ```
 
-The PC's background build and workload policy, launcher contract and activation
-checks are in [PC background workloads](hosts/pc/workloads.md).
+The PC's CPU-only background build and workload policy, foreground launcher
+contract and activation checks are in [PC background workloads](hosts/pc/workloads.md).
+This policy does not change I/O scheduling or promise I/O fairness.
 
 ### Servers / bare metal
 
