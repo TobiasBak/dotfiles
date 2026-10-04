@@ -42,7 +42,7 @@ function Remove-ItemProperty { param($Path, $Name, $ErrorAction) $global:Registr
 function shutdown.exe { param($r, $t, $seconds, $f) $global:RestartCount++; $global:LASTEXITCODE=0 }
 $script = $GuestScript
 $prepared = (& $script -Mode Prepare) | ConvertFrom-Json
-if ($prepared.state -ne 'restart-scheduled' -or $global:ResizeCount -ne 1 -or $global:RestartCount -ne 1) { throw 'Preparation did not grow and restart exactly once.' }
+if ($prepared.state -ne 'restart-scheduled' -or $global:ResizeCount -ne 0 -or $global:RestartCount -ne 1) { throw 'Desktop preparation must restart once without changing disk layout.' }
 if ($global:Registry.DefaultPassword -ne 'scratch-ONLY-secret!' -or $global:Registry.AutoAdminLogon -ne '1') { throw 'Preparation did not set autologon from stdin.' }
 $cleaned = (& $script -Mode Cleanup) | ConvertFrom-Json
 if (-not $cleaned.credentialsCleared -or $global:Registry.Count -ne 0 -or $cleaned.state -ne 'ready') { throw 'Cleanup did not prove readiness and remove all credential/default-logon keys.' }

@@ -57,6 +57,7 @@ stdenvNoCC.mkDerivation {
       ../../../tools/windows-vm/verify.ps1
       ../../../tools/windows-vm/desktop-ready.py
       ../../../tools/windows-vm/desktop-ready.ps1
+      ../../../tools/windows-vm/prepare-disk.ps1
       ../../../tools/windows-vm/base_image.py
     ];
   };
@@ -65,7 +66,7 @@ stdenvNoCC.mkDerivation {
   installPhase = ''
     runHook preInstall
     install -Dm755 oip-windows-vm "$out/libexec/windows-vm/oip-windows-vm"
-    cp -r bootstrap verify.ps1 desktop-ready.py desktop-ready.ps1 base_image.py "$out/libexec/windows-vm/"
+    cp -r bootstrap verify.ps1 desktop-ready.py desktop-ready.ps1 prepare-disk.ps1 base_image.py "$out/libexec/windows-vm/"
     patchShebangs "$out/libexec/windows-vm/oip-windows-vm"
     mkdir -p "$out/bin"
     makeWrapper "$out/libexec/windows-vm/oip-windows-vm" "$out/bin/oip-windows-vm" \

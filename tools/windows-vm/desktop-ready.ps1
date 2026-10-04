@@ -105,17 +105,6 @@ try {
     }
     $state = Get-DesktopState
     if ($Mode -eq 'Prepare') {
-        Update-HostStorageCache
-        $partition = Get-Partition -DriveLetter C
-        $supported = Get-PartitionSupportedSize -DriveLetter C
-        if ($partition.Size -lt $supported.SizeMax) {
-            Resize-Partition -DriveLetter C -Size $supported.SizeMax
-        }
-        $partition = Get-Partition -DriveLetter C
-        $supported = Get-PartitionSupportedSize -DriveLetter C
-        if ($partition.Size -ne $supported.SizeMax) {
-            throw 'C: did not reach its supported maximum.'
-        }
         $password = [Console]::In.ReadToEnd()
         if ([string]::IsNullOrEmpty($password) -or $password.Contains("`n") -or $password.Contains("`r")) {
             throw 'A single-line Administrator password is required on stdin.'
@@ -128,8 +117,6 @@ try {
         Set-ItemProperty -Path $WinlogonPath -Name AutoLogonCount -Value 1 -Type DWord
         Set-ItemProperty -Path $WinlogonPath -Name AutoAdminLogon -Value '1' -Type String
         $state.state = 'restart-scheduled'
-        $state.partitionBytes = $partition.Size
-        $state.supportedMaxBytes = $supported.SizeMax
         $state.credentialsCleared = $false
         $state | ConvertTo-Json -Compress
         [Console]::Out.Flush()

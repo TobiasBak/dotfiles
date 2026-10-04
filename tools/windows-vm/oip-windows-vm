@@ -68,6 +68,7 @@ Usage:
   oip-windows-vm ssh <name> [COMMAND [ARG...]]
   oip-windows-vm upload <name> <host-file> <guest-path>
   oip-windows-vm download <name> <guest-path> <host-file>
+  oip-windows-vm prepare-disk <preparation-name>
   oip-windows-vm desktop-ready <name> [--boot-timeout SECONDS] [--restart-timeout SECONDS]
                                       [--command-timeout SECONDS] [--cleanup-timeout SECONDS]
   oip-windows-vm guest-users <name>
@@ -516,6 +517,15 @@ transfer_clone_file() {
   fi
 }
 
+prepare_disk() {
+  local name="$1" path destination="C:/ProgramData/OipVmPrepareDisk.ps1"
+  path="$(require_vm "${name}")"
+  pid_is_running "${path}/runtime" || die "VM is not running: ${name}; start the preparation clone first."
+  copy_to_vm "${path}/runtime" "${SCRIPT_DIR}/prepare-disk.ps1" "${destination}"
+  ssh_command "${path}/runtime" "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${destination}" |
+    tee "${path}/runtime/prepared-disk.json"
+}
+
 desktop_ready() {
   local name="$1" path
   shift
@@ -889,6 +899,10 @@ dispatch() {
       [[ $# -eq 4 ]] || die "${command} requires a VM name, source file, and destination file."
       transfer_clone_file "${command}" "$2" "$3" "$4"
       ;;
+    prepare-disk)
+      [[ $# -eq 2 ]] || die "prepare-disk requires a preparation clone name."
+      prepare_disk "$2"
+      ;;
     desktop-ready)
       [[ $# -ge 2 ]] || die "desktop-ready requires a VM name."
       shift
@@ -935,7 +949,7 @@ dispatch() {
 
 main() {
   case "${1:-}" in
-    media|base-build|base-create|base-await|base-start|base-stop|base-seal|base-info|base-promote|base-confirm|base-rollback|clone-create|start|stop|destroy|desktop-ready)
+    media|base-build|base-create|base-await|base-start|base-stop|base-seal|base-info|base-promote|base-confirm|base-rollback|clone-create|start|stop|destroy|prepare-disk|desktop-ready)
       with_lifecycle_lock dispatch "$@"
       ;;
     *) dispatch "$@" ;;

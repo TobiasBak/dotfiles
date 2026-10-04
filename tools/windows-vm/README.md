@@ -64,8 +64,13 @@ image and guest operations:
 
 - `clone-create <name> [disk-size]` creates a fresh overlay and optionally grows its
   virtual disk. Shrinking the inherited base is rejected.
-- `desktop-ready <name>` extends C:, creates an unlocked Administrator console
-  session automatically, then removes temporary Winlogon credentials. It records
+- `prepare-disk <name>` expands C: once in the fresh preparation clone. It disables
+  WinRE and removes only its registered trailing Windows Recovery partition if
+  that partition blocks growth. Any other blocking layout fails visibly. The
+  promoted base is already large enough; disposable runs inherit it without resize
+  or partition surgery.
+- `desktop-ready <name>` creates an unlocked Administrator console session
+  automatically, then removes temporary Winlogon credentials. It records
   bounded readiness diagnostics under the clone's runtime directory. A historical
   missing provisioning marker is not a desktop readiness failure; `verify` still
   reports its separate provisioning checks.
