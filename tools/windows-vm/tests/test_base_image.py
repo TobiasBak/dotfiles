@@ -48,7 +48,13 @@ class BaseImageTests(unittest.TestCase):
 
     def test_flatten_retains_old_base_until_explicit_confirmation(self):
         old_inode = self.image.disk.stat().st_ino
-        result = self.promote()
+        with patch.object(base_image.subprocess, "run", wraps=subprocess.run) as run:
+            result = self.promote()
+        convert = next(call.args[0] for call in run.call_args_list if call.args[0][:2] == ["qemu-img", "convert"])
+        self.assertEqual(convert, [
+            "qemu-img", "convert", "-t", "none", "-T", "none", "-r", "104857600",
+            "-O", "qcow2", str(self.clone / "disk.qcow2"), str(self.image.base / "next.qcow2"),
+        ])
         self.assertFalse(self.clone.exists())
         self.assertEqual((self.image.previous / base_image.BASE_NAME).stat().st_ino, old_inode)
         self.assertEqual(self.image.info()["identity"]["recipeSha256"], "a" * 64)

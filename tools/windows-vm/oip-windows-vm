@@ -36,6 +36,10 @@ BASE_SPICE_PORT=5930
 DEFAULT_MEMORY_MIB=8192
 DEFAULT_CPUS=4
 DEFAULT_DISK_SIZE="80G"
+# Provisional user-requested 100 MiB/s starting point on Kingston NV3 after
+# unthrottled ~80 MB/s read + ~80 MB/s write and ~65% I/O full PSI.
+# Capped I/O pressure and desktop usability are not yet measured.
+GUEST_DISK_BYTES_PER_SECOND=104857600
 # Tobias's storage policy: one shared test VM, plus its sealed backing image.
 MAX_TEST_VMS=1
 # Host-side policy: allow 10 seconds to start QEMU and 120 seconds for Windows shutdown.
@@ -386,7 +390,7 @@ start_qemu() {
     -cpu host
     -smp "${DEFAULT_CPUS}"
     -m "${DEFAULT_MEMORY_MIB}"
-    -drive "file=${disk},format=qcow2,media=disk,if=ide"
+    -drive "file=${disk},format=qcow2,media=disk,if=ide,cache=none,throttling.bps-total=${GUEST_DISK_BYTES_PER_SECOND}"
     -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${ssh_port}-:22"
     -device "e1000,netdev=net0"
     -vga qxl

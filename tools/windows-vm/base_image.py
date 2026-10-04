@@ -11,6 +11,10 @@ from pathlib import Path
 
 BASE_NAME = "windows-server-2025-desktop-base.qcow2"
 EXPIRY_WARNING_DAYS = 30
+# Provisional user-requested 100 MiB/s starting point on Kingston NV3 after
+# unthrottled ~80 MB/s read + ~80 MB/s write and ~65% I/O full PSI.
+# Capped I/O pressure and desktop usability are not yet measured.
+CONVERT_BYTES_PER_SECOND = 104857600
 
 
 def qemu_json(*arguments: str) -> dict:
@@ -135,7 +139,10 @@ class BaseImage:
             raise ValueError(f"Unfinished flattened image exists: {candidate}; inspect and remove it before retrying")
         save(self.journal, {"phase": "preparing", "clone": name, "diskBudget": receipt})
         try:
-            subprocess.run(["qemu-img", "convert", "-O", "qcow2", str(source), str(candidate)], check=True)
+            subprocess.run([
+                "qemu-img", "convert", "-t", "none", "-T", "none",
+                "-r", str(CONVERT_BYTES_PER_SECOND), "-O", "qcow2", str(source), str(candidate),
+            ], check=True)
             subprocess.run(["qemu-img", "check", str(candidate)], check=True, stdout=sys.stderr)
             details = qemu_json("info", "--output=json", str(candidate))
             details["filename"] = str(self.disk)

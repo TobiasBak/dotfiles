@@ -300,7 +300,11 @@ class VmLifecycleTests(unittest.TestCase):
         self.assertIn("--property=KillMode=mixed", launch)
         qemu = json.loads((self.home / "qemu.json").read_text())
         self.assertNotIn("-daemonize", qemu)
-        self.assertIn("format=qcow2,media=disk,if=ide", " ".join(qemu))
+        self.assertEqual(
+            qemu[qemu.index("-drive") + 1],
+            f"file={self.home}/vms/first/disk.qcow2,format=qcow2,media=disk,if=ide,"
+            "cache=none,throttling.bps-total=104857600",
+        )
         self.assertEqual(json.loads((self.home / "workload.json").read_text())[0], "--")
         unit = (self.runtime / "service.unit").read_text().strip()
         self.assertEqual((self.home / f"{unit}.state").read_text(), "active")

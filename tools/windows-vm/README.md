@@ -42,6 +42,17 @@ whose sibling scope lives in `background.slice` at nice +10. Service and scope
 lifetime, not an early wrapper exit, bound the VM lifecycle. This requires a working
 user systemd manager and PR #1's host workload policy; failures are not bypassed.
 
+All owned guest disks, including preparation and qualification clones, use
+`cache=none` for direct I/O and `throttling.bps-total=104857600` for an aggregate
+read/write cap. Base flattening uses `qemu-img convert -t none -T none -r 104857600`
+for direct source/destination I/O and a logical conversion-rate cap. These are
+runtime host controls, not prerequisite recipe inputs; the existing base needs
+no rebuild. The 100 MiB/s defaults are provisional user-requested starting points
+on Kingston NV3 after unthrottled I/O showed about 80 MB/s read plus 80 MB/s write
+and 65% I/O full PSI. Capped I/O pressure and desktop usability are not yet
+measured. Conversion logical rate is not a cap on aggregate physical read/write
+traffic.
+
 `--help` lists the supported commands. Generic operations cover media download,
 base installation/provisioning/sealing, clone creation/start/stop/destroy, SPICE,
 SSH, host status, and guest verification. SSH accepts a remote command so import
