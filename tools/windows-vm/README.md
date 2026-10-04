@@ -30,8 +30,8 @@ bypass this budget. `OIP_WINDOWS_VM_HOME` is for explicitly isolated scratch tes
 Use `paths` to find the existing clone and coordinate with its owner. A stopped
 clone still occupies the slot until its owner releases it. Qualification uses a
 fresh copy-on-write clone for each main-to-staging promotion, not a shared dirty
-guest. Export evidence, complete normal shutdown, then explicitly destroy the
-run's clone. The tool never resets or deletes someone else's clone automatically.
+guest. After exporting and hash-verifying its evidence, use `discard` to quit QEMU
+and delete the throwaway clone without waiting for Windows servicing. The tool never resets or deletes someone else's clone automatically.
 
 Mutating lifecycle commands share the persisted `clone.lock`, preserving the
 orphan create/destroy lock identity while covering the whole lifecycle. Use only
@@ -75,6 +75,12 @@ image and guest operations:
   missing provisioning marker is not a desktop readiness failure; `verify` still
   reports its separate provisioning checks.
 - `upload` and `download` use the clone's SSH identity and assigned loopback port.
+- `discard <name>` sends QMP `quit` to the owned QEMU process, waits for its host
+  service/scope to finish, then deletes the clone. Use it only after verified
+  evidence export or for an explicitly disposable smoke test. No guest shutdown
+  is needed because its disk will be discarded. A failed host stop preserves it.
+  The preparation clone that becomes the base still requires normal shutdown;
+  `stop <name> --timeout-seconds N` allows a named longer servicing wait.
 - `base-info` returns the sealed-base identity, including the prerequisite recipe
   hash, installed tool versions and Windows evaluation expiry. Expired stamped
   bases fail; a warning within 30 days allows a month to refresh the release lab.

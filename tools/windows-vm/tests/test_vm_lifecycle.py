@@ -340,6 +340,15 @@ class VmLifecycleTests(unittest.TestCase):
         self.assertTrue((self.home / "qemu-exited").exists())
         self.ok("destroy", "first")
 
+    def test_discard_quits_owned_qemu_without_waiting_for_guest_shutdown(self):
+        self.start()
+        (self.home / "ignore-powerdown").touch()
+        self.ok("discard", "first")
+        self.assertEqual(json.loads((self.home / "qmp.json").read_text())[-1], {"execute": "quit"})
+        self.assertTrue((self.home / "qemu-exited").exists())
+        self.assertFalse((self.home / "vms" / "first").exists())
+        self.assertTrue(self.base.is_file())
+
     def test_bounded_stop_preserves_running_vm_and_reports_unit_errors(self):
         self.start()
         (self.home / "ignore-powerdown").touch()

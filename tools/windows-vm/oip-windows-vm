@@ -43,6 +43,8 @@ START_WAIT_STEPS=50
 STOP_WAIT_STEPS=120
 # Local QMP and the user manager should reply immediately; cap control calls at 5 seconds.
 CONTROL_TIMEOUT_SECONDS=5
+# QMP quit needs no guest cooperation; allow 10 seconds for host service/scope reaping.
+DISCARD_WAIT_SECONDS=10
 
 usage() {
   cat <<'EOF'
@@ -72,10 +74,11 @@ Usage:
   oip-windows-vm desktop-ready <name> [--boot-timeout SECONDS] [--restart-timeout SECONDS]
                                       [--command-timeout SECONDS] [--cleanup-timeout SECONDS]
   oip-windows-vm guest-users <name>
-  oip-windows-vm stop <name>
+  oip-windows-vm stop <name> [--timeout-seconds SECONDS]
   oip-windows-vm status <name>
   oip-windows-vm verify <name>
   oip-windows-vm destroy <name>
+  oip-windows-vm discard <name>  # QMP quit + delete; use only after verified export
   oip-windows-vm paths
 
 The VM runs rootlessly under QEMU/KVM. Its graphical console is local SPICE and
@@ -563,18 +566,18 @@ runtime_is_active() {
 }
 
 wait_for_shutdown() {
-  local runtime_dir="$1"
-  local step deadline=$((SECONDS + STOP_WAIT_STEPS))
-  for ((step=0; step<STOP_WAIT_STEPS && SECONDS<deadline; step++)); do
+  local runtime_dir="$1" timeout_seconds="${2:-${STOP_WAIT_STEPS}}"
+  local step deadline=$((SECONDS + timeout_seconds))
+  for ((step=0; step<timeout_seconds && SECONDS<deadline; step++)); do
     runtime_is_active "${runtime_dir}" || return 0
     sleep 1
   done
   runtime_is_active "${runtime_dir}" || return 0
-  die "Shutdown timed out after 120 seconds: QEMU process or service/scope remains active (${runtime_dir}). VM preserved; inspect status and journal, then retry stop."
+  die "Shutdown timed out after ${timeout_seconds} seconds: QEMU process or service/scope remains active (${runtime_dir}). VM preserved; inspect status and journal, then retry stop."
 }
 
 stop_vm() {
-  local runtime_dir="$1"
+  local runtime_dir="$1" timeout_seconds="${2:-${STOP_WAIT_STEPS}}"
   if pid_is_running "${runtime_dir}"; then
     local qmp_socket="${runtime_dir}/qmp.sock"
     [[ -S "${qmp_socket}" ]] || die "QMP socket is missing: ${qmp_socket}; VM preserved."
@@ -585,7 +588,7 @@ stop_vm() {
       die "QMP shutdown request failed; VM preserved."
     printf 'ACPI shutdown requested.\n'
   fi
-  wait_for_shutdown "${runtime_dir}"
+  wait_for_shutdown "${runtime_dir}" "${timeout_seconds}"
   printf 'VM is stopped; process and service/scope have finished.\n'
 }
 
@@ -794,6 +797,22 @@ destroy_clone() {
   printf 'destroyed clone: %s\n' "${name}"
 }
 
+discard_clone() {
+  local name="$1" path
+  path="$(require_vm "${name}")"
+  if pid_is_running "${path}/runtime"; then
+    local socket="${path}/runtime/qmp.sock"
+    [[ -S "${socket}" ]] || die "QMP socket is missing: ${socket}; clone preserved."
+    {
+      printf '{"execute":"qmp_capabilities"}\n'
+      printf '{"execute":"quit"}\n'
+    } | timeout "${CONTROL_TIMEOUT_SECONDS}" socat - "UNIX-CONNECT:${socket}" >/dev/null ||
+      die "QMP quit failed; clone preserved: ${name}"
+  fi
+  wait_for_shutdown "${path}/runtime" "${DISCARD_WAIT_SECONDS}"
+  destroy_clone "${name}"
+}
+
 base_image_operation() {
   runtime_is_active "${BASE_RUNTIME_DIR}" && die "Base VM is active; stop it before changing the sealed image."
   local path
@@ -915,10 +934,14 @@ dispatch() {
       guest_users "${path}/runtime"
       ;;
     stop)
-      [[ $# -eq 2 ]] || die "stop requires a VM name."
-      local path
+      [[ $# -eq 2 || $# -eq 4 ]] || die "stop requires a VM name and optional --timeout-seconds SECONDS."
+      local path timeout_seconds="${STOP_WAIT_STEPS}"
+      if [[ $# -eq 4 ]]; then
+        [[ "$3" == --timeout-seconds && "$4" =~ ^[1-9][0-9]*$ ]] || die "Shutdown timeout must be a positive number of seconds."
+        timeout_seconds="$4"
+      fi
       path="$(require_vm "$2")"
-      stop_vm "${path}/runtime"
+      stop_vm "${path}/runtime" "${timeout_seconds}"
       ;;
     status)
       [[ $# -eq 2 ]] || die "status requires a VM name."
@@ -933,6 +956,10 @@ dispatch() {
     destroy)
       [[ $# -eq 2 ]] || die "destroy requires a VM name."
       destroy_clone "$2"
+      ;;
+    discard)
+      [[ $# -eq 2 ]] || die "discard requires a clone name; export and verify its evidence first."
+      discard_clone "$2"
       ;;
     paths)
       paths
@@ -949,7 +976,7 @@ dispatch() {
 
 main() {
   case "${1:-}" in
-    media|base-build|base-create|base-await|base-start|base-stop|base-seal|base-info|base-promote|base-confirm|base-rollback|clone-create|start|stop|destroy|prepare-disk|desktop-ready)
+    media|base-build|base-create|base-await|base-start|base-stop|base-seal|base-info|base-promote|base-confirm|base-rollback|clone-create|start|stop|destroy|discard|prepare-disk|desktop-ready)
       with_lifecycle_lock dispatch "$@"
       ;;
     *) dispatch "$@" ;;

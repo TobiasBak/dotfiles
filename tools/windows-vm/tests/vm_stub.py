@@ -77,8 +77,9 @@ elif mode == "qemu-system-x86_64":
     (home / "qemu-exited").touch()
 elif mode == "socat":
     request = sys.stdin.read()
-    assert "system_powerdown" in request
-    if not (home / "ignore-powerdown").exists():
+    record("qmp", [json.loads(line) for line in request.splitlines()])
+    assert "system_powerdown" in request or '"quit"' in request
+    if '"quit"' in request or not (home / "ignore-powerdown").exists():
         runtime = Path(args[-1].removeprefix("UNIX-CONNECT:")).parent
         os.kill(int((runtime / "qemu.pid").read_text()), signal.SIGTERM)
 elif mode == "scp":
