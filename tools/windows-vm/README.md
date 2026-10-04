@@ -105,27 +105,22 @@ Dropped:
   Supervisor/Control Plane. They are not a generic import update path.
 
 PC installs the packaged command through `nixos/hosts/pc/configuration.nix`.
-The package and source shell reuse the unchanged `pc-workload` derivation,
-extracted from the parent PR's module. Activation is a separate, explicit user
-operation. Do not use the normal rebuild helper here: it also updates T3 Code.
-
-After separate approval, build the reviewed integrated checkout and stage its exact
-store path for the next boot. These commands are instructions, not migration checks:
+The package and source shell reuse the unchanged `pc-workload` derivation.
+Activation is a separate, explicit user operation. Do not use the normal rebuild
+helper here: it also updates T3 Code. Build the exact checkout and switch to its
+store path instead:
 
 ```sh
-repo=/home/tobias/.t3/worktrees/dotfiles/feat-maintained-windows-vm-lab
 system=$(nix build --no-write-lock-file --max-jobs 1 --cores 4 \
   --no-link --print-out-paths \
-  "$repo/nixos#nixosConfigurations.pc.config.system.build.toplevel") &&
-sudo /run/current-system/sw/bin/nixos-rebuild boot --store-path "$system"
+  "/home/tobias/code/dotfiles/nixos#nixosConfigurations.pc.config.system.build.toplevel") &&
+sudo /run/current-system/sw/bin/nixos-rebuild switch --no-reexec --store-path "$system"
 ```
 
-A planned reboot is recommended to activate the merged CPU-only workload policy
-and start future supervised VMs from a clean generation. This migration adds no
-BFQ, I/O weights, scheduler changes, or user-manager I/O delegation override.
-Coordinate completion and evidence export with **all VM users first**, including
-qualification #271 and #273, and obtain separate reboot approval. Do not stop the
-active VM or reboot from this migration. After reboot, check the applied policy in
-`nixos/hosts/pc/workloads.md`, command ownership with `command -v oip-windows-vm`,
-and the unchanged home with `oip-windows-vm paths`. Guest/service operation remains
-unverified until that coordinated activation check.
+`--no-reexec` is required: without it `nixos-rebuild` evaluates `<nixpkgs/nixos>`
+to re-exec itself and fails because `nixos-config` is not on this flake host's
+search path. A live switch needs no reboot. It restarts nix-daemon, which kills
+running Nix builds, so do not run it while Nix builds are in progress.
+Already-running processes keep their cgroups until they restart. Check the
+applied policy in `nixos/hosts/pc/workloads.md`, then confirm the command with
+`command -v oip-windows-vm` and `oip-windows-vm paths`.
