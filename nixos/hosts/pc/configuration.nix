@@ -126,6 +126,7 @@ in
     ../../modules/developer.nix
     ../../modules/desktop-niri.nix
     ./hardware-configuration.nix
+    ./workloads.nix
   ];
 
   services.voxtype = {

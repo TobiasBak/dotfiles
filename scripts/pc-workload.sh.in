@@ -1,0 +1,32 @@
+#!@bash@
+set -euo pipefail
+
+usage() {
+  printf '%s\n' \
+    'Usage: pc-workload -- COMMAND [ARG...]' \
+    'Run a foreground workload in a user scope under background.slice.' \
+    'The command must stay in the foreground until all its children finish.' \
+    'Daemonizing is unsupported, including QEMU with -daemonize.' \
+    'The scope inherits your cwd, environment, and terminal/stdin/stdout/stderr.' \
+    'Niceness is adjusted by +10 for lower CPU priority than ordinary nice 0;' \
+    'this is a policy choice, not a measured optimum.' \
+    'background.slice owns CPU/IO cgroup policy. Scope failures are not bypassed.'
+}
+
+if [[ "$#" -eq 1 && "$1" == --help ]]; then
+  usage
+  exit 0
+fi
+if [[ "${1:-}" != -- || "$#" -lt 2 ]]; then
+  usage >&2
+  exit 2
+fi
+shift
+
+IFS= read -r workload_uuid < /proc/sys/kernel/random/uuid
+
+# +10 lowers CPU priority relative to ordinary nice 0; not a measured optimum.
+nice_adjustment=10
+exec @systemd_run@ --user --scope --slice=background.slice --collect \
+  --expand-environment=no --unit="pc-workload-${workload_uuid}.scope" \
+  -- @nice@ --adjustment="$nice_adjustment" -- "$@"

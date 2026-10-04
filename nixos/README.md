@@ -224,6 +224,9 @@ lspci -nnk | grep -A3 -E 'VGA|3D|Display'
 nvidia-smi
 ```
 
+The PC's background build and workload policy, launcher contract and activation
+checks are in [PC background workloads](hosts/pc/workloads.md).
+
 ### Servers / bare metal
 
 The server has a fixed role and expected checkout path:
