@@ -58,10 +58,18 @@ Usage:
   oip-windows-vm base-stop
   oip-windows-vm base-status
   oip-windows-vm base-seal
-  oip-windows-vm clone-create <name>
+  oip-windows-vm base-info
+  oip-windows-vm base-promote <stopped-preparation-name> <identity-json>
+  oip-windows-vm base-confirm
+  oip-windows-vm base-rollback
+  oip-windows-vm clone-create <name> [disk-size]
   oip-windows-vm start <name>
   oip-windows-vm console <name>
   oip-windows-vm ssh <name> [COMMAND [ARG...]]
+  oip-windows-vm upload <name> <host-file> <guest-path>
+  oip-windows-vm download <name> <guest-path> <host-file>
+  oip-windows-vm desktop-ready <name> [--boot-timeout SECONDS] [--restart-timeout SECONDS]
+                                      [--command-timeout SECONDS] [--cleanup-timeout SECONDS]
   oip-windows-vm guest-users <name>
   oip-windows-vm stop <name>
   oip-windows-vm status <name>
@@ -71,7 +79,8 @@ Usage:
 
 The VM runs rootlessly under QEMU/KVM. Its graphical console is local SPICE and
 SSH is forwarded only to 127.0.0.1. Disposable VMs do not use RDP or Tailscale.
-Only one test VM may exist. Reuse it, or stop+destroy it before replacement.
+Only one test VM may exist. Coordinate the slot, export evidence, then stop+destroy.
+Qualification starts from a fresh clone of the recipe-stamped sealed base.
 Status is host-only; guest-users explicitly queries the current Windows session.
 The checkout needs dependencies on PATH; use the dotfiles windows-vm dev shell.
 OIP_WINDOWS_VM_HOME is only for explicitly isolated scratch tests, not extra VMs.
@@ -449,17 +458,8 @@ open_ssh() {
   local runtime_dir="$1"
   shift
   pid_is_running "${runtime_dir}" || die "VM is not running."
-  [[ -f "${SSH_PRIVATE_KEY}" ]] || die "VM SSH key is missing."
-  local ssh_port
-  ssh_port="$(read_runtime_port "${runtime_dir}" SSH_PORT)"
-  exec ssh \
-    -i "${SSH_PRIVATE_KEY}" \
-    -p "${ssh_port}" \
-    -o BatchMode=yes \
-    -o IdentitiesOnly=yes \
-    -o StrictHostKeyChecking=accept-new \
-    -o "UserKnownHostsFile=${runtime_dir}/known_hosts" \
-    "Administrator@127.0.0.1" "$@"
+  connection_options "${runtime_dir}" -p
+  exec ssh "${CONNECTION_OPTIONS[@]}" "Administrator@127.0.0.1" "$@"
 }
 
 guest_users() {
@@ -469,41 +469,64 @@ guest_users() {
     'powershell.exe -NoProfile -NonInteractive -Command "(Get-CimInstance Win32_ComputerSystem).UserName; quser.exe"'
 }
 
+connection_options() {
+  local runtime_dir="$1" port_flag="$2"
+  [[ -f "${SSH_PRIVATE_KEY}" ]] || die "VM SSH key is missing: ${SSH_PRIVATE_KEY}"
+  CONNECTION_OPTIONS=(
+    -i "${SSH_PRIVATE_KEY}"
+    "${port_flag}" "$(read_runtime_port "${runtime_dir}" SSH_PORT)"
+    -o BatchMode=yes
+    -o ConnectTimeout=5
+    -o ConnectionAttempts=1
+    -o IdentitiesOnly=yes
+    -o StrictHostKeyChecking=accept-new
+    -o "UserKnownHostsFile=${runtime_dir}/known_hosts"
+  )
+}
+
 ssh_command() {
   local runtime_dir="$1"
   shift
-  local ssh_port
-  ssh_port="$(read_runtime_port "${runtime_dir}" SSH_PORT)"
-  ssh \
-    -i "${SSH_PRIVATE_KEY}" \
-    -p "${ssh_port}" \
-    -o BatchMode=yes \
-    -o ConnectTimeout=5 \
-    -o ConnectionAttempts=1 \
-    -o IdentitiesOnly=yes \
-    -o StrictHostKeyChecking=accept-new \
-    -o "UserKnownHostsFile=${runtime_dir}/known_hosts" \
-    "Administrator@127.0.0.1" \
-    "$@"
+  connection_options "${runtime_dir}" -p
+  ssh "${CONNECTION_OPTIONS[@]}" "Administrator@127.0.0.1" "$@"
 }
 
 copy_to_vm() {
-  local runtime_dir="$1"
-  local source="$2"
-  local destination="$3"
-  local ssh_port
-  ssh_port="$(read_runtime_port "${runtime_dir}" SSH_PORT)"
-  scp \
-    -q \
-    -i "${SSH_PRIVATE_KEY}" \
-    -P "${ssh_port}" \
-    -o BatchMode=yes \
-    -o ConnectTimeout=5 \
-    -o IdentitiesOnly=yes \
-    -o StrictHostKeyChecking=accept-new \
-    -o "UserKnownHostsFile=${runtime_dir}/known_hosts" \
-    "${source}" \
-    "Administrator@127.0.0.1:${destination}"
+  local runtime_dir="$1" source="$2" destination="$3"
+  connection_options "${runtime_dir}" -P
+  scp -q "${CONNECTION_OPTIONS[@]}" -- "${source}" "Administrator@127.0.0.1:${destination}"
+}
+
+transfer_clone_file() {
+  local direction="$1" name="$2" source="$3" destination="$4" path
+  path="$(require_vm "${name}")"
+  pid_is_running "${path}/runtime" || die "VM is not running: ${name}"
+  [[ -n "${source}" && -n "${destination}" ]] || die "${direction} requires nonempty file paths."
+  if [[ "${direction}" == upload ]]; then
+    [[ -f "${source}" && -r "${source}" ]] || die "Upload source is not a readable file: ${source}"
+    source="$(realpath -- "${source}")"
+    copy_to_vm "${path}/runtime" "${source}" "${destination}" ||
+      die "Upload failed for ${name}: ${source} -> ${destination}"
+  else
+    [[ ! -d "${destination}" ]] || die "Download destination must be a file, not a directory: ${destination}"
+    destination="$(realpath -m -- "${destination}")"
+    connection_options "${path}/runtime" -P
+    scp -q "${CONNECTION_OPTIONS[@]}" -- "Administrator@127.0.0.1:${source}" "${destination}" ||
+      die "Download failed for ${name}: ${source} -> ${destination}"
+  fi
+}
+
+desktop_ready() {
+  local name="$1" path
+  shift
+  path="$(require_vm "${name}")"
+  pid_is_running "${path}/runtime" || die "VM is not running: ${name}; start it before desktop-ready."
+  connection_options "${path}/runtime" -p
+  python3 "${SCRIPT_DIR}/desktop-ready.py" \
+    --runtime "${path}/runtime" \
+    --password-file "${ADMINISTRATOR_PASSWORD_FILE}" \
+    --guest-script "${SCRIPT_DIR}/desktop-ready.ps1" \
+    "$@" -- ssh "${CONNECTION_OPTIONS[@]}" "Administrator@127.0.0.1"
 }
 
 unit_state() {
@@ -675,9 +698,12 @@ vm_path() {
 }
 
 clone_create() (
-  local name="$1"
+  local name="$1" disk_size="${2:-}"
   validate_vm_name "${name}"
   [[ -f "${BASE_MARKER}" ]] || die "Seal the Windows base before creating clones."
+  python3 "${SCRIPT_DIR}/base_image.py" "${VM_HOME}" info >/dev/null
+  [[ -z "${disk_size}" || "${disk_size}" =~ ^[0-9]+([.][0-9]+)?[KMGTPEkmgtpe]?$ ]] ||
+    die "disk-size must be an absolute QCOW2 virtual size, for example 120G (not a relative resize)."
   ensure_layout
   check_test_vm_budget 1 "${name}"
   local path
@@ -696,6 +722,10 @@ clone_create() (
     -F qcow2 \
     -b "${BASE_DISK}" \
     "${path}/disk.qcow2"
+  if [[ -n "${disk_size}" ]]; then
+    qemu-img resize "${path}/disk.qcow2" "${disk_size}" ||
+      die "Cannot grow clone to ${disk_size}; inherited base size cannot shrink."
+  fi
   trap - EXIT INT TERM
   printf 'clone created: %s\n' "${name}"
 )
@@ -713,6 +743,7 @@ start_clone() {
   local name="$1"
   local path
   path="$(require_vm "${name}")"
+  python3 "${SCRIPT_DIR}/base_image.py" "${VM_HOME}" info >/dev/null
   check_test_vm_budget 0 "${name}"
   start_qemu \
     "${name}" \
@@ -751,6 +782,16 @@ destroy_clone() {
   [[ "${path}" == "${VM_DIR}/"* ]] || die "Refusing to remove a path outside the VM directory."
   rm -rf -- "${path}"
   printf 'destroyed clone: %s\n' "${name}"
+}
+
+base_image_operation() {
+  runtime_is_active "${BASE_RUNTIME_DIR}" && die "Base VM is active; stop it before changing the sealed image."
+  local path
+  shopt -s nullglob
+  for path in "${VM_DIR}"/*; do
+    runtime_is_active "${path}/runtime" && die "Clone is active: ${path##*/}; stop it before changing the sealed image."
+  done
+  python3 "${SCRIPT_DIR}/base_image.py" "${VM_HOME}" "$@"
 }
 
 paths() {
@@ -811,9 +852,21 @@ dispatch() {
     base-seal)
       base_seal
       ;;
+    base-info)
+      [[ $# -eq 1 ]] || die "base-info takes no arguments."
+      python3 "${SCRIPT_DIR}/base_image.py" "${VM_HOME}" info
+      ;;
+    base-promote)
+      [[ $# -eq 3 ]] || die "base-promote requires a stopped preparation clone and identity JSON."
+      base_image_operation promote "$2" "$3"
+      ;;
+    base-confirm|base-rollback)
+      [[ $# -eq 1 ]] || die "${command} takes no arguments."
+      base_image_operation "${command#base-}"
+      ;;
     clone-create)
-      [[ $# -eq 2 ]] || die "clone-create requires a VM name."
-      clone_create "$2"
+      [[ $# -ge 2 && $# -le 3 ]] || die "clone-create requires a VM name and optional disk-size."
+      clone_create "$2" "${3:-}"
       ;;
     start)
       [[ $# -eq 2 ]] || die "start requires a VM name."
@@ -831,6 +884,15 @@ dispatch() {
       path="$(require_vm "$2")"
       shift 2
       open_ssh "${path}/runtime" "$@"
+      ;;
+    upload|download)
+      [[ $# -eq 4 ]] || die "${command} requires a VM name, source file, and destination file."
+      transfer_clone_file "${command}" "$2" "$3" "$4"
+      ;;
+    desktop-ready)
+      [[ $# -ge 2 ]] || die "desktop-ready requires a VM name."
+      shift
+      desktop_ready "$@"
       ;;
     guest-users)
       [[ $# -eq 2 ]] || die "guest-users requires a VM name."
@@ -873,7 +935,7 @@ dispatch() {
 
 main() {
   case "${1:-}" in
-    media|base-build|base-create|base-await|base-start|base-stop|base-seal|clone-create|start|stop|destroy)
+    media|base-build|base-create|base-await|base-start|base-stop|base-seal|base-info|base-promote|base-confirm|base-rollback|clone-create|start|stop|destroy|desktop-ready)
       with_lifecycle_lock dispatch "$@"
       ;;
     *) dispatch "$@" ;;

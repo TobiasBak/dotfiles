@@ -27,9 +27,11 @@ Tobias's storage policy, not a tunable concurrency limit. The sealed backing ima
 is separate and must remain. Do not change the VM home or invoke QEMU directly to
 bypass this budget. `OIP_WINDOWS_VM_HOME` is for explicitly isolated scratch tests.
 
-Use `paths` to find the existing clone and coordinate with its users. Reuse it.
-Replacement requires evidence export, a completed normal shutdown, then explicit
-`destroy`. The tool never resets or deletes someone else's clone automatically.
+Use `paths` to find the existing clone and coordinate with its owner. A stopped
+clone still occupies the slot until its owner releases it. Qualification uses a
+fresh copy-on-write clone for each main-to-staging promotion, not a shared dirty
+guest. Export evidence, complete normal shutdown, then explicitly destroy the
+run's clone. The tool never resets or deletes someone else's clone automatically.
 
 Mutating lifecycle commands share the persisted `clone.lock`, preserving the
 orphan create/destroy lock identity while covering the whole lifecycle. Use only
@@ -48,9 +50,51 @@ Supervisor or Runner code. Guest/user inspection is explicit, not part of host
 status. Stop waits for bounded shutdown completion and reports failure rather than
 allowing destruction while the VM still runs.
 
-The original IDE boot controller, QCOW2 backing format, cache policy, loopback SSH
-and SPICE forwarding, e1000 identity, provisioning, and sealed-base paths remain.
-No base regeneration, guest migration, or network change is required.
+The IDE boot controller, QCOW2 backing format, loopback SSH and SPICE forwarding,
+e1000 identity, and sealed-base path remain. Qualification prerequisites are
+installed once into a fresh preparation clone, then promoted into the sealed base.
+Never promote the historical staging clone: it contains application state and
+untracked edits.
+
+## Disposable qualification
+
+OIP owns the prerequisite recipe, exact-commit driver, evidence selection and the
+end-to-end command in `scripts/windows_qualification.py`. This tool owns generic
+image and guest operations:
+
+- `clone-create <name> [disk-size]` creates a fresh overlay and optionally grows its
+  virtual disk. Shrinking the inherited base is rejected.
+- `desktop-ready <name>` extends C:, creates an unlocked Administrator console
+  session automatically, then removes temporary Winlogon credentials. It records
+  bounded readiness diagnostics under the clone's runtime directory. A historical
+  missing provisioning marker is not a desktop readiness failure; `verify` still
+  reports its separate provisioning checks.
+- `upload` and `download` use the clone's SSH identity and assigned loopback port.
+- `base-info` returns the sealed-base identity, including the prerequisite recipe
+  hash, installed tool versions and Windows evaluation expiry. Expired stamped
+  bases fail; a warning within 30 days allows a month to refresh the release lab.
+
+OIP refuses to qualify when the recipe hash at the requested commit differs from
+that identity, and names the refresh command. No toolchain recipe lives in
+this repository. Evaluation renewal or a licensed replacement is separate from
+refreshing build prerequisites.
+
+## Base refresh and recovery
+
+OIP's `refresh-base` prepares and verifies its prerequisite recipe in a fresh clone.
+After normal shutdown, `base-promote <name> <identity-json>` flattens that named
+clone into a standalone QCOW2 base under the lifecycle lock. It rejects any active
+base/clone and any extra clone. Before flattening it checks host free bytes against
+`qemu-img measure`'s required allocation. The old base remains allocated through
+verification, retained by a hard link rather than another full copy. The disk
+budget receipt records both sizes.
+
+Promotion consumes the preparation clone. The previous base remains until OIP
+boots a fresh verification clone, checks its installed prerequisites and identity,
+shuts it down and destroys it, then calls `base-confirm`. `base-rollback` restores
+the retained base if verification fails. Both require an empty test slot. An
+interrupted image swap blocks `base-info` and names rollback rather than exposing
+a partial base as qualified. Do not remove the retained image manually.
 
 ## Focused verification
 
