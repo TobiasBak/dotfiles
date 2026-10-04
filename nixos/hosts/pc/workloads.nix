@@ -1,17 +1,7 @@
 { pkgs, ... }:
 
 let
-  pcWorkload = pkgs.replaceVarsWith {
-    name = "pc-workload";
-    src = ../../../scripts/pc-workload.sh.in;
-    dir = "bin";
-    isExecutable = true;
-    replacements = {
-      bash = "${pkgs.bash}/bin/bash";
-      systemd_run = "${pkgs.systemd}/bin/systemd-run";
-      nice = "${pkgs.coreutils}/bin/nice";
-    };
-  };
+  pcWorkload = pkgs.callPackage ../../packages/pc-workload { };
   backgroundSlicePolicy = {
     # systemd's background CPU default is 30, below normal slice weight 100.
     CPUWeight = 30;

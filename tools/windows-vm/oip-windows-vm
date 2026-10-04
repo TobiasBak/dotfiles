@@ -1,0 +1,883 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
+
+VM_HOME="${OIP_WINDOWS_VM_HOME:-${XDG_DATA_HOME:-${HOME}/.local/share}/oip-windows-vm}"
+MEDIA_DIR="${VM_HOME}/media"
+BASE_DIR="${VM_HOME}/base"
+VM_DIR="${VM_HOME}/vms"
+KEY_DIR="${VM_HOME}/keys"
+BASE_DISK="${BASE_DIR}/windows-server-2025-desktop-base.qcow2"
+BASE_MARKER="${BASE_DIR}/sealed"
+BASE_READY_STATUS="${BASE_DIR}/provisioning-ready.json"
+BASE_RUNTIME_DIR="${BASE_DIR}/runtime"
+BOOTSTRAP_ISO="${MEDIA_DIR}/oip-windows-bootstrap.iso"
+SSH_PRIVATE_KEY="${KEY_DIR}/id_ed25519"
+SSH_PUBLIC_KEY="${SSH_PRIVATE_KEY}.pub"
+ADMINISTRATOR_PASSWORD_FILE="${BASE_DIR}/administrator-password.txt"
+
+WINDOWS_ISO_NAME="windows-server-2025-eval-en-us.iso"
+WINDOWS_ISO="${MEDIA_DIR}/${WINDOWS_ISO_NAME}"
+WINDOWS_ISO_URL="https://software-static.download.prss.microsoft.com/dbazure/998969d5-f34g-4e03-ac9d-1f9786c66749/26100.32230.260111-0550.lt_release_svc_refresh_SERVER_EVAL_x64FRE_en-us.iso"
+WINDOWS_ISO_BYTES=8152356864
+WINDOWS_ISO_SHA256="7b052573ba7894c9924e3e87ba732ccd354d18cb75a883efa9b900ea125bfd51"
+
+VIRTIO_VERSION="0.1.285"
+VIRTIO_ISO_NAME="virtio-win-${VIRTIO_VERSION}.iso"
+VIRTIO_ISO="${MEDIA_DIR}/${VIRTIO_ISO_NAME}"
+VIRTIO_ISO_URL="https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-${VIRTIO_VERSION}-1/${VIRTIO_ISO_NAME}"
+VIRTIO_ISO_BYTES=789645312
+VIRTIO_ISO_SHA256="e14cf2b94492c3e925f0070ba7fdfedeb2048c91eea9c5a5afb30232a3976331"
+
+BASE_SSH_PORT=2222
+BASE_SPICE_PORT=5930
+DEFAULT_MEMORY_MIB=8192
+DEFAULT_CPUS=4
+DEFAULT_DISK_SIZE="80G"
+# Tobias's storage policy: one shared test VM, plus its sealed backing image.
+MAX_TEST_VMS=1
+# Host-side policy: allow 10 seconds to start QEMU and 120 seconds for Windows shutdown.
+START_WAIT_STEPS=50
+STOP_WAIT_STEPS=120
+# Local QMP and the user manager should reply immediately; cap control calls at 5 seconds.
+CONTROL_TIMEOUT_SECONDS=5
+
+usage() {
+  cat <<'EOF'
+Usage:
+  oip-windows-vm media
+  oip-windows-vm base-build
+  oip-windows-vm base-create
+  oip-windows-vm base-await
+  oip-windows-vm base-start
+  oip-windows-vm base-console
+  oip-windows-vm base-ssh [COMMAND [ARG...]]
+  oip-windows-vm base-guest-users
+  oip-windows-vm base-stop
+  oip-windows-vm base-status
+  oip-windows-vm base-seal
+  oip-windows-vm clone-create <name>
+  oip-windows-vm start <name>
+  oip-windows-vm console <name>
+  oip-windows-vm ssh <name> [COMMAND [ARG...]]
+  oip-windows-vm guest-users <name>
+  oip-windows-vm stop <name>
+  oip-windows-vm status <name>
+  oip-windows-vm verify <name>
+  oip-windows-vm destroy <name>
+  oip-windows-vm paths
+
+The VM runs rootlessly under QEMU/KVM. Its graphical console is local SPICE and
+SSH is forwarded only to 127.0.0.1. Disposable VMs do not use RDP or Tailscale.
+Only one test VM may exist. Reuse it, or stop+destroy it before replacement.
+Status is host-only; guest-users explicitly queries the current Windows session.
+The checkout needs dependencies on PATH; use the dotfiles windows-vm dev shell.
+OIP_WINDOWS_VM_HOME is only for explicitly isolated scratch tests, not extra VMs.
+EOF
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+with_lifecycle_lock() (
+  mkdir -p "${VM_HOME}"
+  exec 9>"${VM_HOME}/clone.lock"
+  flock 9
+  "$@"
+)
+
+check_test_vm_budget() {
+  local additional="$1"
+  local requested_name="$2"
+  local -a existing=()
+  local path
+  shopt -s nullglob
+  for path in "${VM_DIR}"/*; do
+    existing+=("${path##*/}")
+  done
+  local requested=$((${#existing[@]} + additional))
+  if (( requested > MAX_TEST_VMS )); then
+    die "test VM budget: limit=${MAX_TEST_VMS}, requested=${requested}, existing: ${existing[*]}, reuse it or stop+destroy (requested: ${requested_name})"
+  fi
+}
+
+ensure_layout() {
+  mkdir -p "${MEDIA_DIR}" "${BASE_DIR}" "${VM_DIR}" "${KEY_DIR}"
+}
+
+validate_vm_name() {
+  local name="$1"
+  [[ "${name}" =~ ^[a-z0-9][a-z0-9-]{0,39}$ ]] ||
+    die "VM name must contain 1-40 lowercase letters, digits, or hyphens."
+}
+
+download_exact_file() {
+  local url="$1"
+  local destination="$2"
+  local expected_bytes="$3"
+  local expected_sha256="$4"
+  local partial="${destination}.partial"
+
+  if [[ -f "${destination}" ]]; then
+    local existing_bytes
+    existing_bytes="$(stat -Lc '%s' "${destination}")"
+    [[ "${existing_bytes}" == "${expected_bytes}" ]] ||
+      die "Existing media has unexpected size: ${destination}"
+    printf '%s  %s\n' "${expected_sha256}" "${destination}" | sha256sum --check --status ||
+      die "Existing media has unexpected SHA-256: ${destination}"
+    printf 'media already present: %s\n' "${destination}"
+    return
+  fi
+
+  printf 'downloading %s\n' "$(basename "${destination}")"
+  aria2c \
+    --allow-overwrite=true \
+    --auto-file-renaming=false \
+    --console-log-level=warn \
+    --continue=true \
+    --dir="$(dirname "${partial}")" \
+    --max-connection-per-server=8 \
+    --min-split-size=10M \
+    --out="$(basename "${partial}")" \
+    --show-console-readout=false \
+    --split=8 \
+    --summary-interval=0 \
+    "${url}"
+  local downloaded_bytes
+  downloaded_bytes="$(stat -c '%s' "${partial}")"
+  [[ "${downloaded_bytes}" == "${expected_bytes}" ]] ||
+    die "Downloaded media has unexpected size: ${destination}"
+  printf '%s  %s\n' "${expected_sha256}" "${partial}" | sha256sum --check --status ||
+    die "Downloaded media has unexpected SHA-256: ${destination}"
+  mv "${partial}" "${destination}"
+  sha256sum "${destination}" >"${destination}.sha256"
+}
+
+ensure_ssh_key() {
+  if [[ ! -f "${SSH_PRIVATE_KEY}" ]]; then
+    ssh-keygen -q -t ed25519 -N "" -C "oip-windows-vm" -f "${SSH_PRIVATE_KEY}"
+    chmod 600 "${SSH_PRIVATE_KEY}"
+  fi
+}
+
+ensure_administrator_password() {
+  if [[ ! -f "${ADMINISTRATOR_PASSWORD_FILE}" ]]; then
+    local random_hex
+    random_hex="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+    printf '%sAa1!\n' "${random_hex}" >"${ADMINISTRATOR_PASSWORD_FILE}"
+  fi
+  chmod 600 "${ADMINISTRATOR_PASSWORD_FILE}"
+}
+
+build_bootstrap_iso() {
+  local staging
+  staging="$(mktemp -d)"
+  trap 'rm -rf -- "${staging}"' RETURN
+  cp "${SCRIPT_DIR}/bootstrap/bootstrap.cmd" "${staging}/bootstrap.cmd"
+  cp "${SCRIPT_DIR}/bootstrap/provision.ps1" "${staging}/provision.ps1"
+  cp "${SSH_PUBLIC_KEY}" "${staging}/oip_windows_vm.pub"
+  cp \
+    "${SCRIPT_DIR}/bootstrap/Autounattend.xml.in" \
+    "${staging}/Autounattend.xml"
+
+  local administrator_password
+  administrator_password="$(<"${ADMINISTRATOR_PASSWORD_FILE}")"
+  [[ -n "${administrator_password}" ]] ||
+    die "Administrator password file is empty: ${ADMINISTRATOR_PASSWORD_FILE}"
+  [[ "${administrator_password}" != *$'\n'* ]] ||
+    die "Administrator password must be a single line."
+  xmlstarlet edit \
+    --inplace \
+    -N "u=urn:schemas-microsoft-com:unattend" \
+    -u "//u:Password/u:Value" \
+    -v "${administrator_password}" \
+    -u "//u:AdministratorPassword/u:Value" \
+    -v "${administrator_password}" \
+    "${staging}/Autounattend.xml"
+  xmlstarlet validate "${staging}/Autounattend.xml" >/dev/null
+  ! grep -Fq '@@ADMINISTRATOR_PASSWORD@@' "${staging}/Autounattend.xml" ||
+    die "Failed to render the unattended Administrator password."
+
+  cat >"${staging}/README.txt" <<'EOF'
+Windows Setup reads Autounattend.xml automatically. After the first login,
+bootstrap.cmd registers the resumable SYSTEM provisioning task. No manual action
+is required.
+EOF
+  genisoimage \
+    -quiet \
+    -J \
+    -R \
+    -V "OIP_BOOTSTRAP" \
+    -o "${BOOTSTRAP_ISO}" \
+    "${staging}"
+  chmod 600 "${BOOTSTRAP_ISO}"
+  trap - RETURN
+  rm -rf -- "${staging}"
+}
+
+media() {
+  ensure_layout
+  download_exact_file \
+    "${WINDOWS_ISO_URL}" \
+    "${WINDOWS_ISO}" \
+    "${WINDOWS_ISO_BYTES}" \
+    "${WINDOWS_ISO_SHA256}"
+  download_exact_file \
+    "${VIRTIO_ISO_URL}" \
+    "${VIRTIO_ISO}" \
+    "${VIRTIO_ISO_BYTES}" \
+    "${VIRTIO_ISO_SHA256}"
+  ensure_ssh_key
+  ensure_administrator_password
+  build_bootstrap_iso
+  printf 'media ready in %s\n' "${MEDIA_DIR}"
+}
+
+require_media() {
+  [[ -f "${WINDOWS_ISO}" ]] || die "Run 'oip-windows-vm media' first."
+  [[ -f "${VIRTIO_ISO}" ]] || die "Run 'oip-windows-vm media' first."
+  [[ -f "${BOOTSTRAP_ISO}" ]] || die "Run 'oip-windows-vm media' first."
+}
+
+write_runtime_config() {
+  local runtime_dir="$1"
+  local ssh_port="$2"
+  local spice_port="$3"
+  mkdir -p "${runtime_dir}"
+  {
+    printf 'SSH_PORT=%q\n' "${ssh_port}"
+    printf 'SPICE_PORT=%q\n' "${spice_port}"
+  } >"${runtime_dir}/ports.conf"
+}
+
+read_runtime_port() {
+  local runtime_dir="$1"
+  local field="$2"
+  local config="${runtime_dir}/ports.conf"
+  [[ -f "${config}" ]] || die "VM runtime configuration is missing: ${config}"
+  local value
+  value="$(sed -n "s/^${field}=//p" "${config}")"
+  [[ "${value}" =~ ^[0-9]+$ ]] || die "Invalid ${field} in ${config}"
+  printf '%s\n' "${value}"
+}
+
+port_available() {
+  local port="$1"
+  ! ss -H -ltn "sport = :${port}" | grep -q .
+}
+
+port_reserved() {
+  local port="$1"
+  local config
+  while IFS= read -r -d '' config; do
+    grep -Eq "^(SSH_PORT|SPICE_PORT)=${port}$" "${config}" && return 0
+  done < <(
+    find "${BASE_RUNTIME_DIR}" "${VM_DIR}" \
+      -type f \
+      -name ports.conf \
+      -print0 2>/dev/null
+  )
+  return 1
+}
+
+allocate_port_pair() {
+  local index
+  for index in $(seq 1 200); do
+    local ssh_port=$((BASE_SSH_PORT + index))
+    local spice_port=$((BASE_SPICE_PORT + index))
+    if port_available "${ssh_port}" &&
+      port_available "${spice_port}" &&
+      ! port_reserved "${ssh_port}" &&
+      ! port_reserved "${spice_port}"; then
+      printf '%s %s\n' "${ssh_port}" "${spice_port}"
+      return
+    fi
+  done
+  die "Could not allocate local SSH and SPICE ports."
+}
+
+pid_is_running() {
+  local runtime_dir="$1"
+  local pid_file="${runtime_dir}/qemu.pid"
+  [[ -f "${pid_file}" ]] || return 1
+  local pid
+  pid="$(<"${pid_file}")"
+  [[ "${pid}" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "${pid}" 2>/dev/null || return 1
+  [[ -r "/proc/${pid}/cmdline" ]] || return 1
+  tr '\0' ' ' <"/proc/${pid}/cmdline" | grep -Fq -- "${runtime_dir}"
+}
+
+run_vm_service() {
+  local runtime_dir="$1"
+  shift
+  local workload_pid termination_requested=0
+  terminate_vm_service() {
+    # QEMU lives in a sibling scope. Keep its waiter alive until QEMU has exited.
+    while kill -0 "${workload_pid}" 2>/dev/null && ! pid_is_running "${runtime_dir}"; do
+      sleep 0.2
+    done
+    if pid_is_running "${runtime_dir}"; then
+      kill -TERM "$(<"${runtime_dir}/qemu.pid")" 2>/dev/null || true
+    fi
+    while kill -0 "${workload_pid}" 2>/dev/null; do
+      wait "${workload_pid}" || true
+    done
+    while pid_is_running "${runtime_dir}"; do
+      sleep 0.2
+    done
+    exit 143
+  }
+  trap 'termination_requested=1' TERM INT HUP
+  pc-workload -- "$@" &
+  workload_pid=$!
+  local result=0
+  if (( termination_requested )); then
+    terminate_vm_service
+  fi
+  wait "${workload_pid}" || result=$?
+  if (( termination_requested )) || pid_is_running "${runtime_dir}"; then
+    terminate_vm_service
+  fi
+  trap - TERM INT HUP
+  return "${result}"
+}
+
+start_qemu() {
+  local name="$1"
+  local disk="$2"
+  local runtime_dir="$3"
+  local ssh_port="$4"
+  local spice_port="$5"
+  local media_mode="$6"
+
+  runtime_is_active "${runtime_dir}" && die "VM is already running or shutting down: ${name}"
+  port_available "${ssh_port}" || die "SSH port is already in use: ${ssh_port}"
+  port_available "${spice_port}" || die "SPICE port is already in use: ${spice_port}"
+  rm -f -- \
+    "${runtime_dir}/qga.sock" \
+    "${runtime_dir}/qmp.sock" \
+    "${runtime_dir}/qemu.pid"
+
+  local qemu
+  qemu="$(command -v qemu-system-x86_64)" || die "Missing dependency: qemu-system-x86_64"
+  local -a qemu_command=(
+    "${qemu}"
+    -name "${name}"
+    -enable-kvm
+    -machine "pc,accel=kvm"
+    -cpu host
+    -smp "${DEFAULT_CPUS}"
+    -m "${DEFAULT_MEMORY_MIB}"
+    -drive "file=${disk},format=qcow2,media=disk,if=ide"
+    -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${ssh_port}-:22"
+    -device "e1000,netdev=net0"
+    -vga qxl
+    -display none
+    -spice "addr=127.0.0.1,port=${spice_port},disable-ticketing=on"
+    -device virtio-serial-pci
+    -chardev "spicevmc,id=vdagent,name=vdagent"
+    -device "virtserialport,chardev=vdagent,name=com.redhat.spice.0"
+    -chardev "socket,path=${runtime_dir}/qga.sock,server=on,wait=off,id=qga0"
+    -device "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0"
+    -qmp "unix:${runtime_dir}/qmp.sock,server=on,wait=off"
+    -pidfile "${runtime_dir}/qemu.pid"
+  )
+
+  if [[ "${media_mode}" == "install" ]]; then
+    qemu_command+=(
+      -drive "file=${WINDOWS_ISO},media=cdrom,readonly=on"
+      -drive "file=${VIRTIO_ISO},media=cdrom,readonly=on"
+      -drive "file=${BOOTSTRAP_ISO},media=cdrom,readonly=on"
+      -boot "order=d,menu=on"
+    )
+  elif [[ "${media_mode}" == "bootstrap" ]]; then
+    qemu_command+=(
+      -drive "file=${VIRTIO_ISO},media=cdrom,readonly=on"
+      -drive "file=${BOOTSTRAP_ISO},media=cdrom,readonly=on"
+      -boot "order=c,menu=on"
+    )
+  else
+    qemu_command+=(-boot "order=c,menu=on")
+  fi
+
+  local unit identity
+  command -v pc-workload >/dev/null || die "Missing dependency: pc-workload"
+  identity="$(printf '%s' "${runtime_dir}" | sha256sum)"
+  unit="oip-windows-vm-${identity%% *}.service"
+  printf '%s\n' "${unit}" >"${runtime_dir}/service.unit"
+  rm -f -- "${runtime_dir}/scope.unit"
+  local -a service_environment=(--setenv="PATH=${PATH}" --setenv="HOME=${HOME}")
+  local variable
+  for variable in XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS; do
+    [[ ! -v "${variable}" ]] || service_environment+=(--setenv="${variable}=${!variable}")
+  done
+  # Only the supervisor receives SIGTERM. No timeout may kill its scope waiter early.
+  systemd-run --user --collect --service-type=exec --expand-environment=no --unit="${unit}" \
+    --working-directory="${runtime_dir}" "${service_environment[@]}" \
+    --property=KillMode=mixed --property=TimeoutStopSec=infinity \
+    -- "$(command -v bash)" "${SCRIPT_PATH}" __run-vm-service "${runtime_dir}" "${qemu_command[@]}" 9>&-
+
+  local step scope
+  for ((step=0; step<START_WAIT_STEPS; step++)); do
+    if pid_is_running "${runtime_dir}"; then
+      scope="$(grep -oE '[^/]+\.scope$' "/proc/$(<"${runtime_dir}/qemu.pid")/cgroup" || true)"
+      [[ -z "${scope}" ]] || printf '%s\n' "${scope}" >"${runtime_dir}/scope.unit"
+      break
+    fi
+    runtime_is_active "${runtime_dir}" || die "VM service exited before QEMU started: ${unit}. Inspect journalctl --user -u ${unit}."
+    sleep 0.2
+  done
+  pid_is_running "${runtime_dir}" || die "QEMU startup timed out after 10 seconds: ${unit}. Inspect journalctl --user -u ${unit}; stop before retrying."
+  printf 'started %s: console=spice://127.0.0.1:%s ssh=127.0.0.1:%s\n' \
+    "${name}" "${spice_port}" "${ssh_port}"
+}
+
+open_console() {
+  local runtime_dir="$1"
+  pid_is_running "${runtime_dir}" || die "VM is not running."
+  local spice_port
+  spice_port="$(read_runtime_port "${runtime_dir}" SPICE_PORT)"
+  remote-viewer "spice://127.0.0.1:${spice_port}"
+}
+
+open_ssh() {
+  local runtime_dir="$1"
+  shift
+  pid_is_running "${runtime_dir}" || die "VM is not running."
+  [[ -f "${SSH_PRIVATE_KEY}" ]] || die "VM SSH key is missing."
+  local ssh_port
+  ssh_port="$(read_runtime_port "${runtime_dir}" SSH_PORT)"
+  exec ssh \
+    -i "${SSH_PRIVATE_KEY}" \
+    -p "${ssh_port}" \
+    -o BatchMode=yes \
+    -o IdentitiesOnly=yes \
+    -o StrictHostKeyChecking=accept-new \
+    -o "UserKnownHostsFile=${runtime_dir}/known_hosts" \
+    "Administrator@127.0.0.1" "$@"
+}
+
+guest_users() {
+  local runtime_dir="$1"
+  pid_is_running "${runtime_dir}" || die "VM is not running."
+  ssh_command "${runtime_dir}" \
+    'powershell.exe -NoProfile -NonInteractive -Command "(Get-CimInstance Win32_ComputerSystem).UserName; quser.exe"'
+}
+
+ssh_command() {
+  local runtime_dir="$1"
+  shift
+  local ssh_port
+  ssh_port="$(read_runtime_port "${runtime_dir}" SSH_PORT)"
+  ssh \
+    -i "${SSH_PRIVATE_KEY}" \
+    -p "${ssh_port}" \
+    -o BatchMode=yes \
+    -o ConnectTimeout=5 \
+    -o ConnectionAttempts=1 \
+    -o IdentitiesOnly=yes \
+    -o StrictHostKeyChecking=accept-new \
+    -o "UserKnownHostsFile=${runtime_dir}/known_hosts" \
+    "Administrator@127.0.0.1" \
+    "$@"
+}
+
+copy_to_vm() {
+  local runtime_dir="$1"
+  local source="$2"
+  local destination="$3"
+  local ssh_port
+  ssh_port="$(read_runtime_port "${runtime_dir}" SSH_PORT)"
+  scp \
+    -q \
+    -i "${SSH_PRIVATE_KEY}" \
+    -P "${ssh_port}" \
+    -o BatchMode=yes \
+    -o ConnectTimeout=5 \
+    -o IdentitiesOnly=yes \
+    -o StrictHostKeyChecking=accept-new \
+    -o "UserKnownHostsFile=${runtime_dir}/known_hosts" \
+    "${source}" \
+    "Administrator@127.0.0.1:${destination}"
+}
+
+unit_state() {
+  local unit="$1"
+  timeout "${CONTROL_TIMEOUT_SECONDS}" systemctl --user show --property=ActiveState --value -- "${unit}" ||
+    die "Cannot inspect VM unit ${unit}; refusing to assume it stopped."
+}
+
+runtime_is_active() {
+  local runtime_dir="$1"
+  pid_is_running "${runtime_dir}" && return 0
+  local file state
+  for file in service.unit scope.unit; do
+    if [[ -f "${runtime_dir}/${file}" ]]; then
+      state="$(unit_state "$(<"${runtime_dir}/${file}")")" ||
+        die "Cannot establish VM lifetime: ${runtime_dir}"
+      case "${state}" in
+        inactive|failed) ;;
+        *) return 0 ;;
+      esac
+    fi
+  done
+  return 1
+}
+
+wait_for_shutdown() {
+  local runtime_dir="$1"
+  local step deadline=$((SECONDS + STOP_WAIT_STEPS))
+  for ((step=0; step<STOP_WAIT_STEPS && SECONDS<deadline; step++)); do
+    runtime_is_active "${runtime_dir}" || return 0
+    sleep 1
+  done
+  runtime_is_active "${runtime_dir}" || return 0
+  die "Shutdown timed out after 120 seconds: QEMU process or service/scope remains active (${runtime_dir}). VM preserved; inspect status and journal, then retry stop."
+}
+
+stop_vm() {
+  local runtime_dir="$1"
+  if pid_is_running "${runtime_dir}"; then
+    local qmp_socket="${runtime_dir}/qmp.sock"
+    [[ -S "${qmp_socket}" ]] || die "QMP socket is missing: ${qmp_socket}; VM preserved."
+    {
+      printf '{"execute":"qmp_capabilities"}\n'
+      printf '{"execute":"system_powerdown"}\n'
+    } | timeout "${CONTROL_TIMEOUT_SECONDS}" socat - "UNIX-CONNECT:${qmp_socket}" >/dev/null ||
+      die "QMP shutdown request failed; VM preserved."
+    printf 'ACPI shutdown requested.\n'
+  fi
+  wait_for_shutdown "${runtime_dir}"
+  printf 'VM is stopped; process and service/scope have finished.\n'
+}
+
+print_status() {
+  local name="$1"
+  local runtime_dir="$2"
+  if pid_is_running "${runtime_dir}"; then
+    printf '%s is running: pid=%s console=spice://127.0.0.1:%s ssh=127.0.0.1:%s\n' \
+      "${name}" "$(<"${runtime_dir}/qemu.pid")" \
+      "$(read_runtime_port "${runtime_dir}" SPICE_PORT)" \
+      "$(read_runtime_port "${runtime_dir}" SSH_PORT)"
+  elif runtime_is_active "${runtime_dir}"; then
+    printf '%s has an active service/scope; not stopped.\n' "${name}"
+  else
+    printf '%s is stopped.\n' "${name}"
+  fi
+  local file unit state main_pid
+  for file in service.unit scope.unit; do
+    if [[ -f "${runtime_dir}/${file}" ]]; then
+      unit="$(<"${runtime_dir}/${file}")"
+      state="$(unit_state "${unit}")"
+      main_pid="$(timeout "${CONTROL_TIMEOUT_SECONDS}" systemctl --user show --property=MainPID --value -- "${unit}")" ||
+        die "Cannot inspect MainPID for ${unit}."
+      printf '%s: %s state=%s main-pid=%s\n' "${file%.unit}" "${unit}" "${state}" "${main_pid}"
+    fi
+  done
+}
+
+base_create() {
+  ensure_layout
+  require_media
+  [[ ! -e "${BASE_DISK}" ]] || die "Base disk already exists: ${BASE_DISK}"
+  qemu-img create -f qcow2 "${BASE_DISK}" "${DEFAULT_DISK_SIZE}"
+  rm -f -- "${BASE_READY_STATUS}" "${BASE_RUNTIME_DIR}/known_hosts"
+  write_runtime_config "${BASE_RUNTIME_DIR}" "${BASE_SSH_PORT}" "${BASE_SPICE_PORT}"
+  start_qemu \
+    "oip-windows-base" \
+    "${BASE_DISK}" \
+    "${BASE_RUNTIME_DIR}" \
+    "${BASE_SSH_PORT}" \
+    "${BASE_SPICE_PORT}" \
+    install
+  printf 'Unattended Windows installation started. Run base-await to finish and seal it.\n'
+}
+
+base_start() {
+  require_media
+  [[ -f "${BASE_DISK}" ]] || die "Run 'oip-windows-vm base-create' first."
+  [[ ! -f "${BASE_MARKER}" ]] || die "The base is sealed and read-only."
+  start_qemu \
+    "oip-windows-base" \
+    "${BASE_DISK}" \
+    "${BASE_RUNTIME_DIR}" \
+    "$(read_runtime_port "${BASE_RUNTIME_DIR}" SSH_PORT)" \
+    "$(read_runtime_port "${BASE_RUNTIME_DIR}" SPICE_PORT)" \
+    install
+}
+
+base_await() {
+  [[ -f "${BASE_DISK}" ]] || die "Run 'oip-windows-vm base-create' first."
+  [[ ! -f "${BASE_MARKER}" ]] || die "The base is already sealed."
+  pid_is_running "${BASE_RUNTIME_DIR}" ||
+    die "The base VM is stopped. Run 'oip-windows-vm base-start' first."
+
+  local previous_status=""
+  printf 'Waiting for unattended Windows installation and provisioning.\n'
+  printf 'You may interrupt this command and resume it later with base-await.\n'
+  while pid_is_running "${BASE_RUNTIME_DIR}"; do
+    local guest_status=""
+    guest_status="$(
+      ssh_command \
+        "${BASE_RUNTIME_DIR}" \
+        'cmd.exe /d /c type C:\ProgramData\OipVmBootstrap\status.json' \
+        2>/dev/null
+    )" || true
+
+    if [[ -n "${guest_status}" && "${guest_status}" != "${previous_status}" ]]; then
+      printf 'guest: %s\n' "${guest_status}"
+      previous_status="${guest_status}"
+    fi
+    if grep -Fq '"state":"failed"' <<<"${guest_status}"; then
+      die "Guest provisioning failed. Open base-console and inspect C:\\ProgramData\\OipVmBootstrap\\provision.log."
+    fi
+    if grep -Fq '"state":"ready"' <<<"${guest_status}"; then
+      printf '%s\n' "${guest_status}" >"${BASE_READY_STATUS}"
+      ssh_command "${BASE_RUNTIME_DIR}" 'shutdown.exe /s /t 0' >/dev/null 2>&1 || true
+      wait_for_shutdown "${BASE_RUNTIME_DIR}"
+      base_seal
+      return
+    fi
+    sleep 5
+  done
+
+  die "The base VM stopped before guest provisioning completed."
+}
+
+base_build() {
+  media
+  base_create
+  base_await
+}
+
+base_seal() {
+  [[ -f "${BASE_DISK}" ]] || die "Base disk does not exist."
+  runtime_is_active "${BASE_RUNTIME_DIR}" && die "Shut down the base VM and wait for its service before sealing it."
+  [[ -f "${BASE_READY_STATUS}" ]] ||
+    die "Provisioning has not reported success. Run base-await before sealing."
+  qemu-img check "${BASE_DISK}"
+  chmod 444 "${BASE_DISK}"
+  {
+    printf 'sealed_at=%s\n' "$(date --iso-8601=seconds)"
+    qemu-img info --output=json "${BASE_DISK}"
+  } >"${BASE_MARKER}"
+  printf 'base sealed: %s\n' "${BASE_DISK}"
+}
+
+vm_path() {
+  local name="$1"
+  printf '%s/%s\n' "${VM_DIR}" "${name}"
+}
+
+clone_create() (
+  local name="$1"
+  validate_vm_name "${name}"
+  [[ -f "${BASE_MARKER}" ]] || die "Seal the Windows base before creating clones."
+  ensure_layout
+  check_test_vm_budget 1 "${name}"
+  local path
+  path="$(vm_path "${name}")"
+  [[ ! -e "${path}" ]] || die "VM already exists: ${name}"
+  trap 'rm -rf -- "${path}"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  mkdir -p "${path}/runtime"
+  local ports ssh_port spice_port
+  ports="$(allocate_port_pair)"
+  read -r ssh_port spice_port <<<"${ports}"
+  write_runtime_config "${path}/runtime" "${ssh_port}" "${spice_port}"
+  qemu-img create \
+    -f qcow2 \
+    -F qcow2 \
+    -b "${BASE_DISK}" \
+    "${path}/disk.qcow2"
+  trap - EXIT INT TERM
+  printf 'clone created: %s\n' "${name}"
+)
+
+require_vm() {
+  local name="$1"
+  validate_vm_name "${name}"
+  local path
+  path="$(vm_path "${name}")"
+  [[ -d "${path}" && -f "${path}/disk.qcow2" ]] || die "VM does not exist: ${name}"
+  printf '%s\n' "${path}"
+}
+
+start_clone() {
+  local name="$1"
+  local path
+  path="$(require_vm "${name}")"
+  check_test_vm_budget 0 "${name}"
+  start_qemu \
+    "${name}" \
+    "${path}/disk.qcow2" \
+    "${path}/runtime" \
+    "$(read_runtime_port "${path}/runtime" SSH_PORT)" \
+    "$(read_runtime_port "${path}/runtime" SPICE_PORT)" \
+    none
+}
+
+verify_clone() {
+  local name="$1"
+  local path
+  path="$(require_vm "${name}")"
+  pid_is_running "${path}/runtime" || die "VM is not running: ${name}"
+  local destination="C:/ProgramData/OipVmVerify.ps1"
+  copy_to_vm "${path}/runtime" "${SCRIPT_DIR}/verify.ps1" "${destination}"
+  local result=0
+  ssh_command \
+    "${path}/runtime" \
+    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ${destination}" ||
+    result=$?
+  ssh_command \
+    "${path}/runtime" \
+    "powershell.exe -NoProfile -Command Remove-Item -LiteralPath ${destination} -Force" \
+    >/dev/null ||
+    true
+  [[ "${result}" -eq 0 ]] || die "VM verification failed: ${name}"
+}
+
+destroy_clone() {
+  local name="$1"
+  local path
+  path="$(require_vm "${name}")"
+  runtime_is_active "${path}/runtime" && die "Stop the VM and wait for its process and service before destroying it."
+  [[ "${path}" == "${VM_DIR}/"* ]] || die "Refusing to remove a path outside the VM directory."
+  rm -rf -- "${path}"
+  printf 'destroyed clone: %s\n' "${name}"
+}
+
+paths() {
+  cat <<EOF
+VM home:       ${VM_HOME}
+Media:         ${MEDIA_DIR}
+Base disk:     ${BASE_DISK}
+SSH key:       ${SSH_PRIVATE_KEY}
+Admin password:${ADMINISTRATOR_PASSWORD_FILE}
+Test VMs:      ${VM_DIR} (limit ${MAX_TEST_VMS})
+Lifecycle lock:${VM_HOME}/clone.lock
+EOF
+  if [[ -d "${VM_DIR}" ]]; then
+    find "${VM_DIR}" -mindepth 1 -maxdepth 1 -type d -printf '  %f\n'
+  fi
+}
+
+dispatch() {
+  local command="${1:-}"
+  case "${command}" in
+    __run-vm-service)
+      [[ $# -ge 3 ]] || die "Internal VM service requires a runtime directory and command."
+      shift
+      run_vm_service "$@"
+      ;;
+    media)
+      media
+      ;;
+    base-build)
+      base_build
+      ;;
+    base-create)
+      base_create
+      ;;
+    base-await)
+      base_await
+      ;;
+    base-start)
+      base_start
+      ;;
+    base-console)
+      open_console "${BASE_RUNTIME_DIR}"
+      ;;
+    base-ssh)
+      shift
+      open_ssh "${BASE_RUNTIME_DIR}" "$@"
+      ;;
+    base-guest-users)
+      [[ $# -eq 1 ]] || die "base-guest-users takes no arguments."
+      guest_users "${BASE_RUNTIME_DIR}"
+      ;;
+    base-stop)
+      stop_vm "${BASE_RUNTIME_DIR}"
+      ;;
+    base-status)
+      print_status "oip-windows-base" "${BASE_RUNTIME_DIR}"
+      ;;
+    base-seal)
+      base_seal
+      ;;
+    clone-create)
+      [[ $# -eq 2 ]] || die "clone-create requires a VM name."
+      clone_create "$2"
+      ;;
+    start)
+      [[ $# -eq 2 ]] || die "start requires a VM name."
+      start_clone "$2"
+      ;;
+    console)
+      [[ $# -eq 2 ]] || die "console requires a VM name."
+      local path
+      path="$(require_vm "$2")"
+      open_console "${path}/runtime"
+      ;;
+    ssh)
+      [[ $# -ge 2 ]] || die "ssh requires a VM name."
+      local path
+      path="$(require_vm "$2")"
+      shift 2
+      open_ssh "${path}/runtime" "$@"
+      ;;
+    guest-users)
+      [[ $# -eq 2 ]] || die "guest-users requires a VM name."
+      local path
+      path="$(require_vm "$2")"
+      guest_users "${path}/runtime"
+      ;;
+    stop)
+      [[ $# -eq 2 ]] || die "stop requires a VM name."
+      local path
+      path="$(require_vm "$2")"
+      stop_vm "${path}/runtime"
+      ;;
+    status)
+      [[ $# -eq 2 ]] || die "status requires a VM name."
+      local path
+      path="$(require_vm "$2")"
+      print_status "$2" "${path}/runtime"
+      ;;
+    verify)
+      [[ $# -eq 2 ]] || die "verify requires a VM name."
+      verify_clone "$2"
+      ;;
+    destroy)
+      [[ $# -eq 2 ]] || die "destroy requires a VM name."
+      destroy_clone "$2"
+      ;;
+    paths)
+      paths
+      ;;
+    --help|-h)
+      usage
+      ;;
+    *)
+      usage
+      [[ -z "${command}" ]] || exit 1
+      ;;
+  esac
+}
+
+main() {
+  case "${1:-}" in
+    media|base-build|base-create|base-await|base-start|base-stop|base-seal|clone-create|start|stop|destroy)
+      with_lifecycle_lock dispatch "$@"
+      ;;
+    *) dispatch "$@" ;;
+  esac
+}
+
+main "$@"

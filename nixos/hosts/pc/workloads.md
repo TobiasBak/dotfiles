@@ -4,7 +4,6 @@
 
 ```sh
 pc-workload -- cargo test --jobs 4
-pc-workload -- qemu-system-x86_64 -enable-kvm -smp 4 -m 8G ...
 ```
 
 The launcher preserves the caller's working directory, argument boundaries,
@@ -13,6 +12,10 @@ prints scope creation errors. Each invocation creates a uniquely named
 `pc-workload-*.scope` in the user manager's `background.slice`, a sibling of
 `app.slice`, not a descendant of `t3code.service`. It does not escape the user
 manager's limits or provide a security sandbox.
+
+The [Windows VM lab](../../../tools/windows-vm/README.md) owns its singleton
+budget and supervised lifetime. Use `oip-windows-vm start <existing-name>` for
+that lab, not a direct QEMU invocation that bypasses its lifecycle lock.
 
 ## Foreground contract
 
