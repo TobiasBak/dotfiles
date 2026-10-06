@@ -33,12 +33,18 @@ cancellation, wait for their termination before cleanup, and own any detached
 job's lifetime. This generic wrapper provides no VM lifecycle management.
 
 The launcher does not choose worker counts, serialize native runs or reserve
-CPUs. Use four native workers and one four-vCPU VM for the approved overlap
-budget. Nix's `cores = 4` supplies `NIX_BUILD_CORES`; builders can ignore it,
-and trusted users can override Nix settings. These are cooperative worker
-settings, not CPU quotas. On the observed 16-logical-CPU, 30-GiB host, one
-four-worker Nix build, one four-vCPU/8-GiB VM and one four-worker native run
-leave four logical threads unassigned by those settings, not reserved.
+CPUs. Use four native workers and one eight-vCPU/8-GiB VM. Tobias authorized
+raising the qualification VM's CPU share on 6 October 2026. On the observed
+16-logical-CPU, 30-GiB host, the VM may overlap either one four-worker Nix build
+or one four-worker native run, not both. These settings leave four logical
+threads unassigned, not reserved. VM timing comparisons run without either
+heavy Linux workload. The memory budget remains 8 GiB; the CPU change does not
+authorize more memory or a second VM. The [VM receipt](../../../tools/windows-vm/README.md#qualification-sizing)
+owns the measured sizing basis.
+
+Nix's `cores = 4` supplies `NIX_BUILD_CORES`; builders can ignore it, and trusted
+users can override Nix settings. These are cooperative worker settings, not CPU
+quotas.
 There are no new memory caps. T3 retains its existing 24-GiB memory and 4-GiB
 swap limits and its existing scheduling priority.
 

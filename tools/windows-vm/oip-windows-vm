@@ -34,7 +34,7 @@ VIRTIO_ISO_SHA256="e14cf2b94492c3e925f0070ba7fdfedeb2048c91eea9c5a5afb30232a3976
 BASE_SSH_PORT=2222
 BASE_SPICE_PORT=5930
 DEFAULT_MEMORY_MIB=8192
-DEFAULT_CPUS=4
+DEFAULT_CPUS=8
 DEFAULT_DISK_SIZE="80G"
 # Provisional user-requested 100 MiB/s starting point on Kingston NV3 after
 # unthrottled ~80 MB/s read + ~80 MB/s write and ~65% I/O full PSI.

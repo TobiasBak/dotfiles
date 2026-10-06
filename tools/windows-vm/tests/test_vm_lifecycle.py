@@ -300,6 +300,8 @@ class VmLifecycleTests(unittest.TestCase):
         self.assertIn("--property=KillMode=mixed", launch)
         qemu = json.loads((self.home / "qemu.json").read_text())
         self.assertNotIn("-daemonize", qemu)
+        self.assertEqual(qemu[qemu.index("-smp") + 1], "8")
+        self.assertEqual(qemu[qemu.index("-m") + 1], "8192")
         self.assertEqual(
             qemu[qemu.index("-drive") + 1],
             f"file={self.home}/vms/first/disk.qcow2,format=qcow2,media=disk,if=ide,"
