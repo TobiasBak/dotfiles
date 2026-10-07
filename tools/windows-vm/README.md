@@ -67,6 +67,24 @@ installed once into a fresh preparation clone, then promoted into the sealed bas
 Never promote the historical staging clone: it contains application state and
 untracked edits.
 
+## Qualification sizing
+
+`DEFAULT_CPUS=8` and `DEFAULT_MEMORY_MIB=8192` apply to every managed guest.
+Tobias authorized eight vCPUs on 6 October 2026 to measure cold native builds.
+The host has 16 logical CPUs and 30 GiB RAM. Eight vCPUs consume half its logical
+CPU count; the approved overlap is one four-worker Nix build or one four-worker
+native run, not both. The unchanged 8 GiB VM budget leaves the existing desktop
+and agent memory budgets intact. See [PC workloads](../../nixos/hosts/pc/workloads.md).
+Two cold four-worker baselines took 2239.337s and 2647.252s for OIP's artifacts
+job. One combined exclusions/eight-worker run took 1895.674s and retained a sampled
+minimum 2.28 GiB free guest memory. The baseline spread was 18.2%; the combined
+run was 15.3% below the faster baseline, so this is not a confident speedup claim
+or individual CPU/Defender attribution. The eight-worker cap uses the authorized
+host share and observed memory fit, not a measured optimum. Native builds stay
+serial inside the guest. Exact source/base identities, phase timings, variance
+and background-servicing caveats are in OIP's
+[CI performance receipt](https://github.com/JoergenDahl/order-integration-platform/blob/perf/windows-qualification-base-speed/docs/ci-performance.md).
+
 ## Disposable qualification
 
 OIP owns the prerequisite recipe, exact-commit driver, evidence selection and the
