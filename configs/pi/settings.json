@@ -1,4 +1,5 @@
 {
+  "defaultProjectTrust": "always",
   "defaultTools": [
     "+codemode"
   ],

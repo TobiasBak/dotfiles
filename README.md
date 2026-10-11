@@ -55,7 +55,9 @@ Inside NixOS WSL, refresh the system profile and Home Manager user config with:
 Pi uses upstream defaults without third-party extensions, custom themes,
 keybindings, or prompt templates. It shares the global agent instructions and
 discovers the shared skills in `~/.agents/skills`. Built-in codemode is enabled
-alongside the normal tools, not as their replacement.
+alongside the normal tools, not as their replacement. Managed settings trust
+project resources by default so noninteractive T3 sessions load repository-local
+skills and settings too. This also permits project extensions and packages.
 
 ### Native NixOS
 
