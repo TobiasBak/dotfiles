@@ -4,7 +4,7 @@ model_reasoning_summary = "concise"
 model_verbosity = "low"
 personality = "none"
 approvals_reviewer = "user"
-service_tier = "fast"
+service_tier = "default"
 
 [analytics]
 enabled = false
@@ -75,6 +75,9 @@ trust_level = "trusted"
 [projects."/tmp/sol61-preflight-anh4e8sr"]
 trust_level = "trusted"
 
+[projects."/home/tobias/code/CanineArchive"]
+trust_level = "trusted"
+
 [notice]
 hide_rate_limit_model_nudge = true
 
@@ -86,6 +89,7 @@ screen_reader_detection_done = true
 [tui.model_availability_nux]
 "gpt-5.6-sol" = 4
 gpt-6-astra = 4
+"gpt-6.1-sol" = 3
 
 [mcp_servers.openaiDeveloperDocs]
 url = "https://developers.openai.com/mcp"
