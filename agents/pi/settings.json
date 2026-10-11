@@ -4,6 +4,6 @@
     "+codemode"
   ],
   "extensions": [
-    "~/code/pi-workspace-view/src/snapshot.ts"
+    "{siblings}/pi-workspace-view/src/snapshot.ts"
   ]
 }

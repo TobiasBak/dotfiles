@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Move T3 Code's CLI and its background service to the newest nightly. The
-# t3code-update timer runs this daily; bootstrap.sh runs it with
+# t3code-update timer runs this daily; `./dot apply` runs it with
 # --install-service the first time. Safe to rerun: when nothing changed it
 # installs nothing and leaves the service running.
 #
@@ -59,5 +59,5 @@ elif $install_service; then
   log "Installing T3 Code's background service (t3@$version)"
   "$t3" service install
 else
-  log "No t3code.service installed; omarchy/bootstrap.sh installs it."
+  log "No t3code.service installed; ./dot apply installs it."
 fi

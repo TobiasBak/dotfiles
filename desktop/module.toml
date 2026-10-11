@@ -1,0 +1,49 @@
+# Only deltas belong here. Omarchy retains ownership of stock config and themes.
+[links]
+"~/.config/hypr/dotfiles.lua" = "desktop/hypr/dotfiles.lua"
+"~/.config/omarchy/backgrounds/tokyo-night/dark-foliage.jpg" = "desktop/backgrounds/tokyo-night/dark-foliage.jpg"
+"~/.config/omarchy/hooks/post-update.d/dotfiles-desktop" = "desktop/omarchy/post-update.sh"
+"~/.local/bin/stremio-ffmpeg" = "desktop/stremio/ffmpeg"
+"~/.config/systemd/user/stremio.service" = "desktop/systemd/stremio.service"
+"~/.config/systemd/user/taildrop-receiver.service" = "desktop/systemd/taildrop-receiver.service"
+
+[omarchy]
+append = { "hypr/hyprland.lua" = 'require("hypr.dotfiles")' }
+merge = { "omarchy/shell.json" = "desktop/omarchy/shell.json" }
+# Chromium rewrites its seeded mutable profile state; it is not declarative config.
+ignore = ["chromium/Default/Preferences"]
+
+[systemd]
+enable = ["stremio.service", "taildrop-receiver.service"]
+
+# omarchy-default-agent writes this mutable file and also installs/launches the
+# agent. Set only the selection here; never launch Pi or touch global mise.
+[[assert]]
+name = "Pi is the default Omarchy agent"
+check = 'cmp -s "{repo}/desktop/omarchy/default-agent" "{home}/.config/omarchy/defaults/agent"'
+apply = 'install -Dm644 "{repo}/desktop/omarchy/default-agent" "{home}/.config/omarchy/defaults/agent"'
+
+# This is a hash-gated migration of two known persisted legacy overrides,
+# not permission to restore arbitrary edited seed files. Unknown deltas stay visible.
+[[assert]]
+name = "legacy Hyprland overrides moved to dotfiles.lua"
+check = 'defaults="${OMARCHY_PATH:-/usr/share/omarchy}/config/hypr"; cmp -s "$defaults/monitors.lua" "{home}/.config/hypr/monitors.lua" && cmp -s "$defaults/looknfeel.lua" "{home}/.config/hypr/looknfeel.lua"'
+apply = 'bash "{repo}/desktop/hypr/normalize-legacy.sh"'
+
+[[assert]]
+name = "Stremio autostarts retired in favor of systemd"
+check = 'for name in com.stremio.service.desktop stremio-service.desktop; do path="{home}/.config/autostart/$name"; test ! -e "$path" && test ! -L "$path" || exit 1; done'
+apply = 'bash "{repo}/desktop/stremio/migrate-autostart.sh"'
+
+# Do not reapply the theme. Its stock Tokyo Night files remain Omarchy-owned.
+# Resolve both paths so ~/.dotfiles moving to another checkout is still detected.
+[[assert]]
+name = "desktop wallpaper selected"
+check = 'test "$(realpath -e "{home}/.local/state/omarchy/current/background")" = "$(realpath -e "{repo}/desktop/backgrounds/tokyo-night/dark-foliage.jpg")"'
+apply = 'omarchy theme bg set "{home}/.config/omarchy/backgrounds/tokyo-night/dark-foliage.jpg"'
+
+# A responding old manual server must not make a failed systemd handoff look healthy.
+[[assert]]
+name = "systemd Stremio owns its responding endpoint"
+check = 'systemctl --user is-active --quiet stremio.service && pid=$(systemctl --user show -p MainPID --value stremio.service) && test "$pid" -gt 0 && ss -H -ltnp "sport = :11470" | grep -q "pid=$pid," && curl --fail --silent --show-error --max-time 5 http://127.0.0.1:11470/settings >/dev/null'
+fix = 'journalctl --user -u stremio.service -n 50 --no-pager; ss -ltnp "sport = :11470" # resolve any existing-server conflict explicitly, then run ~/.dotfiles/dot apply desktop'

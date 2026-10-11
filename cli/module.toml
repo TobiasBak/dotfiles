@@ -1,0 +1,8 @@
+[links]
+"~/.config/hunk/config.toml" = "cli/hunk/config.toml"
+"~/.gitconfig" = "cli/git/config"
+
+[[assert]]
+name = "Git config contains only current Omarchy defaults"
+check = "cmp -s /usr/share/omarchy/config/git/config {home}/.config/git/config"
+apply = "python3 {repo}/cli/migrate-git.py"

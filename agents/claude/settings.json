@@ -11,9 +11,6 @@
     "claude-opus-5-5": {
       "autoCompactWindow": 433000
     },
-    "claude-sonnet-5-5": {
-      "autoCompactWindow": 200000
-    },
     "claude-haiku-5-5": {
       "autoCompactWindow": 100000
     }
@@ -23,7 +20,7 @@
   "spinnerTipsEnabled": false,
   "statusLine": {
     "type": "command",
-    "command": "~/.dotfiles/configs/claude/statusline.sh"
+    "command": "~/.dotfiles/agents/claude/statusline.sh"
   },
   "hooks": {
     "PreToolUse": [
@@ -32,13 +29,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.dotfiles/configs/claude/route-subagents.sh"
+            "command": "~/.dotfiles/agents/claude/route-subagents.sh"
           }
         ]
       }
     ]
   },
   "skipWebFetchPreflight": true,
-  "theme": "dark",
   "autoUpdatesChannel": "latest"
 }

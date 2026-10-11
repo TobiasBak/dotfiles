@@ -5,6 +5,6 @@ StartLimitBurst=3
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/bash %h/.dotfiles/omarchy/t3-nightly.sh
+ExecStart=/usr/bin/bash %h/.dotfiles/agents/t3/nightly.sh
 Restart=on-failure
 RestartSec=15min

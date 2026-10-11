@@ -1,0 +1,23 @@
+[tools]
+"aqua:modem-dev/hunk" = "latest"
+"cargo:cargo-mutants" = "27.1.0"
+claude = "latest"
+codex = "latest"
+gcloud = "latest"
+gh = "latest"
+go = "latest"
+"npm:@playwright/cli" = "latest"
+"npm:vite-plus" = "latest"
+pi = "latest"
+pnpm = "11"
+terraform = "latest"
+uv = "latest"
+
+[settings.npm]
+package_manager = "pnpm"
+
+[settings.upgrade]
+auto_prune = false
+
+[env]
+PLAYWRIGHT_MCP_EXECUTABLE_PATH = "/usr/bin/chromium"

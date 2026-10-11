@@ -6,8 +6,8 @@ Docker, Samba, SSH, Tailscale, Hermes and Kanban. Hermes is documented in
 by `../dot`, never by this flake, and the Omarchy workstation never runs Nix.
 
 `flake.nix` still declares the inputs `hunk`, `nixos-wsl`, `home-manager` and
-`voxtype`, which no output uses. They stay until `nix flake lock` prunes them
-on serv01, because `flake.lock` is generated and only changes through Nix.
+`voxtype`, which no output uses. They stay until a deliberate input cleanup
+on serv01. `flake.lock` is generated and only changes through Nix.
 
 ## Source of truth
 

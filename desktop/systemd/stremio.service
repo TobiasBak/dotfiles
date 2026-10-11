@@ -1,0 +1,16 @@
+[Unit]
+Description=Stremio local streaming server
+After=network-online.target
+
+[Service]
+Environment=FFMPEG_BIN=%h/.local/bin/stremio-ffmpeg
+Environment=FFPROBE_BIN=/usr/bin/ffprobe
+ExecStartPre=/usr/bin/bash %h/.dotfiles/desktop/stremio/prepare-service.sh
+ExecStart=/usr/share/stremio-service/stremio-runtime /usr/share/stremio-service/server.js
+ExecStartPost=/usr/bin/bash %h/.dotfiles/desktop/stremio/wait-ready.sh $MAINPID
+Restart=on-failure
+RestartSec=5
+SendSIGKILL=no
+
+[Install]
+WantedBy=default.target

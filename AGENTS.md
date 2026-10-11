@@ -1,39 +1,49 @@
 # AGENTS.md
 
-Guidance for agents working in this dotfiles repo.
+## Where to work
 
-## Active configuration
+Omarchy is the only workstation target. `agents/`, `desktop/` and `cli/` own
+its modules; `packages.toml` and `mise.toml` own extra packages and global tools.
+`nixos/` owns only tobias-serv01. Before server work, read `nixos/README.md`
+and follow its detached remote activation procedure. Never run Nix on Omarchy.
 
-Files under `configs/` affect a machine only through managed links. Verify the effective target before assuming an edit is active. For long-running applications, also exercise the user's real launch path against the existing process; a valid file or fresh config-inspection process does not prove that the running application loaded it.
+## Commands
 
-For agent context only on any Unix workstation, use `python3 scripts/install-agent-context.py`; it needs no Nix or OS bootstrap. It resolves sibling repositories independently of username and hostname, backs up conflicting entries, preserves existing skills, and merges Pi settings rather than linking mutable local state into Git.
+- `./verify`: repository gate, including black-box tests in fake homes.
+- `./dot check --json`: read-only live drift. Exit 0 clean, 1 drift, 2 error.
+- `./dot apply --dry-run`: live diff and proposed actions without mutations.
+- `./dot apply`: apply from the stable checkout, only with explicit approval.
+- Add `agents`, `desktop`, `cli`, `packages` or `mise` to scope a command.
 
-NixOS and Home Manager links are declared under `nixos/home/tobias/`; Windows links are declared in `windows/configuration.winget`. If an expected target is a real file or directory instead of a link, report it and recommend the appropriate rebuild rather than overwriting it.
+Live links go through `~/.dotfiles`, normally `~/code/dotfiles`. Worktree
+edits are not live. Verify effective targets and existing running processes;
+config parsing or a fresh inspection process does not prove runtime adoption.
+Mutable app settings are merged, never linked into Git.
 
-## Agent skills
+## Boundaries
 
-Vault-maintained agent skills live in the sibling `../vault-public` repository under `skills/`, not here. Its `scripts/install-skills.sh` links them into `~/.agents/skills`; use `scripts/install-agent-context.py` for agent-only installs, or the WSL/native NixOS rebuild entrypoint when rebuilding those systems. Package-provided skills such as `playwright-cli` are declared in `nixos/home/tobias/common.nix` under the same shared user directory. Codex and Pi discover it directly; `~/.claude/skills` links to it.
+Read `omarchy/README.md` and the Omarchy skill before desktop or system changes.
+Store only overrides, never copies of Omarchy defaults. Never edit
+`/usr/share/omarchy`. Unknown live customizations are capture drift; do not
+reset them. The migration helpers accept only audited legacy content and
+back it up before restoring installed defaults.
 
-## NixOS servers
+Packages go through Omarchy. Agents use background
+`pkexec /usr/share/omarchy/bin/omarchy-pkg-add <pkgs>`; Tobias approves polkit.
+AUR builds require Tobias's terminal. Global tools go through mise and pnpm.
+Long jobs use `systemd-run --user --slice=app-t3code-agents.slice`; scratch
+files live under `~/.cache/agent-tmp`, not RAM-backed `/tmp`.
 
-Before changing or remotely rebuilding a NixOS server, read `nixos/README.md` and follow its remote server operation guidance. It is authoritative for SSH, Tailscale, and rebuild safety.
+T3 owns its service and runtime. This repo owns its drop-in, memory slice
+and update timer. Never restart or update T3 without Tobias: every hosted
+agent is interrupted. The detached nightly updater is
+`systemctl --user start --no-block t3code-update.service`.
 
-## Omarchy
+Vault skills live in the sibling `vault-public/skills`; Pi's workspace
+extension lives in sibling `pi-workspace-view/src/snapshot.ts`.
+`./dot apply agents` installs context through the same module, preserving
+Omarchy's skills. No separate bootstrap or installer.
 
-Omarchy and NixOS are separate setups. `omarchy/bootstrap.sh` uses mise, Omarchy's `omarchy pkg` commands and native systemd user units in `omarchy/systemd/`; it must not install Nix or activate Home Manager. `nixos/` is only for NixOS and WSL. Share program configuration and agent instructions through `configs/` and `scripts/`, not OS modules. Before changing Omarchy setup, read `omarchy/README.md`. Omarchy owns desktop configuration; do not manage Hyprland or other Omarchy-owned files from this repository. Agents install system packages with `pkexec /usr/share/omarchy/bin/omarchy-pkg-add <pkgs>`, run in the background while Tobias approves the polkit dialog; see `omarchy/README.md`. T3's nightly service updater is `t3code-update.timer`.
-
-## Installed T3 Code service
-
-The NixOS `pc` host uses T3 Code's official pinned per-user background service on the nightly channel. NixOS owns user lingering and the Tailnet-only port `3773` firewall rule; it does not own the service unit or runtime. OS rebuilds do not update T3. Update it separately through `npx --yes t3@nightly update --channel nightly --yes`, not a source checkout.
-
-An agent running inside T3 Code must detach the update from `t3code.service` so stopping that service does not kill the updater. Use this one command:
-
-```sh
-systemd-run --user --collect --unit=t3code-update --service-type=exec --working-directory=/home/tobias -- /run/current-system/sw/bin/npx --yes t3@nightly update --channel nightly --yes
-```
-
-The thread will disconnect briefly while the service replaces itself; reconnect to the same thread after `pc:3773` returns. Inspect the live unit and process before other operational changes, and account for any update or restart terminating hosted coding-agent sessions.
-
-## Installers and rebuilds
-
-Do not run installers, rebuild entrypoints, or Windows winget configuration without explicit user approval. They install packages and mutate user or system configuration.
+Keep secrets and mutable runtime state out of Git. Never hand-edit generated
+files or `CHANGELOG.md`. Server hardware files and `flake.lock` remain
+generated. Installers, applies and server activations require explicit approval.

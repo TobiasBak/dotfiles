@@ -6,6 +6,10 @@
 # Local temp workspace
 /tmp/
 
+# Python runtime caches
+__pycache__/
+*.pyc
+
 # playwright-cli session logs
 .playwright-cli/
 

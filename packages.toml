@@ -1,0 +1,22 @@
+[repo]
+boost = "stepkit-geometry: gappa build"
+freerdp = "RDP to tailnet devices and the Omarchy Windows VM"
+libfaketime = "orderready: deterministic clock tests"
+nasm = "orderready: native build"
+tailscale = "T3 tailnet access and Taildrop"
+xorg-server-xvfb = "Agents: headless desktop verification"
+
+[aur]
+spotify = "Desktop music player"
+stremio-service-bin = "Stremio Web local streaming companion; desktop/stremio owns the FFmpeg shim"
+t3code-nightly-bin = { reason = "T3 nightly desktop client", install = "bash ~/.dotfiles/agents/t3/install-desktop.sh" }
+
+[installer]
+amd-ucode = "Omarchy installation: AMD CPU microcode"
+efibootmgr = "Omarchy installation: EFI boot entries"
+mkinitcpio = "Omarchy installation: initramfs"
+omarchy = "Omarchy installation: OS defaults and commands"
+omarchy-keyring = "Omarchy installation: repository trust"
+omarchy-settings = "Omarchy installation: desktop settings"
+sudo = "Omarchy installation: interactive privilege elevation"
+voxtype-bin = "Omarchy dictation installer"
