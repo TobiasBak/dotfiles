@@ -12,7 +12,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
-DATA_DIR=/mnt/data-2tb
 # T3 pins the version it installs; later updates go through `t3 update`.
 T3_VERSION="${T3_VERSION:-nightly}"
 
@@ -87,19 +86,13 @@ fi
 sudo systemctl enable --now tailscaled.service
 sudo tailscale set --operator="$USER"
 if ! tailscale status >/dev/null 2>&1; then
-  needs_human "Join the tailnet: sudo tailscale up (or migrate-home.sh --tailscale at cut-over)"
+  needs_human "Join the tailnet as pc: sudo tailscale up --hostname=pc (see omarchy/README.md)"
 fi
 
 # T3 Code runs from the user manager, which must start at boot without a login.
 sudo loginctl enable-linger "$USER"
 # T3 Code is reachable from localhost and the Tailnet, but not the LAN.
 sudo ufw allow in on tailscale0 to any port 3773 proto tcp comment 'T3 Code' >/dev/null
-
-# Orderready's worktrees keep the path they had on the NixOS data disk, which
-# T3's database records. Omarchy has no data disk, so it is a plain directory.
-if [ ! -O "$DATA_DIR" ]; then
-  sudo install -d -o "$USER" -g "$(id -gn)" "$DATA_DIR"
-fi
 
 bash "$REPO_DIR/scripts/bootstrap-developer-tools.sh"
 
@@ -167,7 +160,7 @@ else
 fi
 
 [ -f "$HOME/.config/restic/t3-password" ] ||
-  needs_human "Restore ~/.config/restic/t3-password for the nightly T3 backup (migrate-home.sh copies it)"
+  needs_human "Restore ~/.config/restic/t3-password for the nightly T3 backup (cold storage: ~/.config/restic on the NixOS root)"
 gh auth status >/dev/null 2>&1 || needs_human "Sign in to GitHub: gh auth login"
 
 log "T3 Code: $(systemctl --user is-active t3code.service)"

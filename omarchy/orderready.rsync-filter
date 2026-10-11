@@ -1,6 +1,11 @@
-# What to park and migrate from /mnt/data-2tb/orderready (rsync filter rules,
-# first match wins). Build output is rebuildable, except the mutation receipts
-# and run records under target/or/artifacts that evidence files cite by path.
+# What to park from /mnt/data-2tb/orderready into NixOS cold storage (rsync
+# filter rules, first match wins). Build output and caches are rebuildable,
+# except the mutation receipts and run records under target/or/artifacts that
+# evidence files cite by path. The denied fixtures are mode 000 test dirs.
+- /cache/
+- /oip-parity/
+- /oip-r1/
+- /wt/*/target/or/artifacts/mutants/*/*/runtime/state/denied/
 + /wt/*/target/
 + /wt/*/target/or/
 + /wt/*/target/or/artifacts/***
