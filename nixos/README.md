@@ -203,11 +203,25 @@ mutable agent CLIs and skill links:
 ~/.dotfiles/rebuild-nixos.sh --bootstrap
 ```
 
-On `pc`, the rebuild script starts T3 Code's nightly updater as a detached
-user service after the rebuild and optional bootstrap finish. The update can
-disconnect hosted agent sessions. Follow its result with
-`journalctl --user -u t3code-update.service`. Boot and plain Home Manager or
-`nixos-rebuild` activation do not update T3 Code.
+OS rebuilds, Home Manager activation and boot do not update T3 Code. Update
+its official nightly service separately when interrupting hosted work is safe:
+
+```bash
+systemd-run --user --collect --unit=t3code-update --service-type=exec \
+  --working-directory="$HOME" -- \
+  /run/current-system/sw/bin/npx --yes t3@nightly update --channel nightly --yes
+```
+
+The updater runs outside T3's service so restarting T3 cannot kill it. The
+first `--yes` approves npm fetching; the last permits T3's unattended restart.
+Follow its result with `journalctl --user -u t3code-update.service`.
+
+Browser sessions retain their permission grants across updates. If newly
+separated features are unavailable, pair the affected client again with current
+permissions. Standard pairing restores ordinary client features but excludes
+Connections administration. Administrative pairings must explicitly include
+all standard scopes plus `access:read`, `access:write` and `relay:write`.
+Repeated `--scope` options replace the defaults rather than extending them.
 
 Add host-specific output blocks to `hosts/<host>/niri.kdl` only after checking
 the identifiers reported by:

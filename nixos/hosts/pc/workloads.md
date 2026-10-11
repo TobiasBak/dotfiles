@@ -104,9 +104,9 @@ A daemon restart does not migrate those builders. The existing user manager
 has `restartIfChanged = false` and is not restarted by this change. Verify
 that its new background slice policy is loaded and applied; do not infer
 that from a successful system activation. Restarting the user manager would
-terminate T3 and its agent sessions. Do not use the normal PC rebuild
-entrypoint during hosted work: it also runs T3's updater. Existing workloads
-are not migrated. This change has not been activated or benchmarked.
+terminate T3 and its agent sessions. OS rebuilds no longer run T3's updater;
+app updates are a separate operation. Existing workloads are not migrated.
+This change has not been activated or benchmarked.
 
 After approved activation, check these before calling the CPU policy effective:
 
