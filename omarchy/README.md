@@ -7,8 +7,10 @@ It never installs Nix, changes the login shell or touches disks.
 ## Setup and apply
 
 Requires an installed Omarchy desktop with Python 3.14+, Git and mise.
-Clone `dotfiles`, `vault-public` and `pi-workspace-view` as siblings. The
-workspace extension is private, so authenticate GitHub first.
+Clone `dotfiles` and `vault-public` as siblings. Keep any existing
+`pi-workspace-view` checkout for context-construction experiments, but do not
+install its retired v3 snapshot extension or the prototype. The agents module
+removes only the retired snapshot entry from mutable Pi settings.
 
 ```sh
 cd ~/code/dotfiles

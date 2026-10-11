@@ -55,6 +55,11 @@ check = "test -f {home}/.config/systemd/user/t3code.service"
 apply = "bash {repo}/agents/t3/nightly.sh --install-service"
 
 [[assert]]
+name = "retired Pi workspace-view snapshot extension disabled"
+check = 'python3 "{repo}/agents/pi/disable-workspace-view.py" --check "{siblings}/pi-workspace-view/src/snapshot.ts"'
+apply = 'python3 "{repo}/agents/pi/disable-workspace-view.py" "{siblings}/pi-workspace-view/src/snapshot.ts"'
+
+[[assert]]
 name = "unused Claude Sonnet compaction override removed"
 check = "python3 {repo}/agents/claude/drop-sonnet.py --check"
 apply = "python3 {repo}/agents/claude/drop-sonnet.py"

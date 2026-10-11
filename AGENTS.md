@@ -39,10 +39,12 @@ and update timer. Never restart or update T3 without Tobias: every hosted
 agent is interrupted. The detached nightly updater is
 `systemctl --user start --no-block t3code-update.service`.
 
-Vault skills live in the sibling `vault-public/skills`; Pi's workspace
-extension lives in sibling `pi-workspace-view/src/snapshot.ts`.
-`./dot apply agents` installs context through the same module, preserving
-Omarchy's skills. No separate bootstrap or installer.
+Vault skills live in the sibling `vault-public/skills`.
+Pi's retired workspace-view v3 snapshot extension stays disabled. The sibling
+`pi-workspace-view` repo owns context-construction experiments; its prototype
+is not installed by this repo. `./dot apply agents` removes only the retired
+snapshot entry, preserving other Pi extensions and Omarchy's skills.
+No separate bootstrap or installer.
 
 Keep secrets and mutable runtime state out of Git. Never hand-edit generated
 files or `CHANGELOG.md`. Server hardware files and `flake.lock` remain
