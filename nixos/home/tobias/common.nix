@@ -11,6 +11,9 @@ let
 in
 
 {
+  # Other home modules link repository files the same way.
+  lib.dotfiles.link = linkFromDotfiles;
+
   home = {
     username = "tobias";
     homeDirectory = "/home/tobias";

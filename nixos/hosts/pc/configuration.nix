@@ -148,6 +148,8 @@ in
     enable = true;
   };
 
+  home-manager.users.tobias.imports = [ ../../home/tobias/t3-backup.nix ];
+
   # Keep the user manager available for T3 Code's official per-user background service.
   users.users.tobias.linger = true;
 
