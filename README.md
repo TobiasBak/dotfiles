@@ -52,8 +52,11 @@ Inside NixOS WSL, refresh the system profile and Home Manager user config with:
 ./rebuild-wsl.sh
 ```
 
-Pi uses upstream defaults without third-party extensions, custom themes,
-keybindings, or prompt templates. It shares the global agent instructions and
+Pi uses upstream defaults without custom themes, keybindings, or prompt
+templates. Its one personal extension is the workspace view from the local
+checkout `~/code/pi-workspace-view` (`src/snapshot.ts`); without that checkout
+Pi starts normally without it. Remove the `extensions` entry in
+`configs/pi/settings.json` to roll it back. It shares the global agent instructions and
 discovers the shared skills in `~/.agents/skills`. Built-in codemode is enabled
 alongside the normal tools, not as their replacement. Managed settings trust
 project resources by default so noninteractive T3 sessions load repository-local
