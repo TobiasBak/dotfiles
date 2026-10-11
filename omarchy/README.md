@@ -14,8 +14,8 @@ same Home Manager modules NixOS uses.
   installs T3's service. `--tpm2` also switches to the systemd initramfs that
   TPM2 unlock needs. Safe to rerun. Exits 2 while human steps remain.
 - `migrate-home.sh`: copies agent state, `~/code` and credentials from the
-  read-only NixOS root at the same paths, and restores the parked Orderready. `--tailscale` also takes
-  over NixOS's Tailscale identity.
+  read-only NixOS root at the same paths, and restores the parked Orderready.
+  `--tailscale` also takes over NixOS's Tailscale identity. Runs once.
 - `orderready.rsync-filter`: what Orderready parking and migration copy.
 
 Proven in a VM: the Omarchy installer flow and its quirks below, package
@@ -36,8 +36,8 @@ Identify disks by model and serial, never by `nvme` index:
 
 ## 1. Before the window (agents, on NixOS)
 
-1. Orderready pushes its branches, commits dirty work to WIP branches and
-   pauses.
+1. Orderready pushes its committed branches and pauses its workers. Dirty
+   worktrees stay as they are; the park copies them.
 2. Park Orderready in the NixOS home. This needs no root:
 
    ```sh
@@ -101,8 +101,8 @@ Identify disks by model and serial, never by `nvme` index:
    pi
    ```
 
-   In Pi, run `/login`. If `npm` is missing, use
-   `npx -y @earendil-works/pi-coding-agent`.
+   In Pi, run `/login`. If `npm` is missing, install Node first with
+   `mise use -g node@latest && mise reshim`, then retry.
 4. Get the dotfiles. The repository is public, so cloning needs no auth:
 
    ```sh
@@ -117,14 +117,16 @@ Identify disks by model and serial, never by `nvme` index:
 
    It prints the remaining human steps. Push access comes later with
    `gh auth login`.
-6. Mount the NixOS root read-only and migrate. The NixOS root is the ext4
-   partition labelled `root` on the SNV3S1000G disk
-   (`lsblk -o NAME,MODEL,SIZE,FSTYPE,LABEL`). `--tailscale` makes this
-   install the tailnet's `pc`:
+6. Mount the NixOS root read-only, without replaying its journal, and
+   migrate. This runs once; a rerun needs `--force` and overwrites anything
+   changed on Omarchy since. Keep T3's and Orderready's agents paused until it
+   prints `Done`. The NixOS root is the ext4 partition labelled `root` on the
+   SNV3S1000G disk (`lsblk -o NAME,MODEL,SIZE,FSTYPE,LABEL`). `--tailscale`
+   makes this install the tailnet's `pc`:
 
    ```sh
    sudo mkdir -p /mnt/nixos
-   sudo mount -o ro /dev/<SNV3S1000G root partition> /mnt/nixos
+   sudo mount -o ro,noload /dev/<SNV3S1000G root partition> /mnt/nixos
    ~/code/dotfiles/omarchy/migrate-home.sh --source /mnt/nixos --tailscale
    ```
 

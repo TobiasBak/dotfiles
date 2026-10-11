@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Copy Tobias's agent state, code, credentials and the parked Orderready
 # worktrees from the NixOS root into this Omarchy install, at the same paths.
-# Run as tobias after bootstrap.sh, with the NixOS root mounted read-only.
-# Safe to rerun; each run brings the copies up to date with the source.
+# Run as tobias after bootstrap.sh, with the NixOS root mounted read-only and
+# without journal replay. It runs once: a rerun would overwrite work done on
+# Omarchy since, so it refuses unless given --force.
 #
-#   sudo mount -o ro /dev/<NixOS root partition> /mnt/nixos
-#   omarchy/migrate-home.sh --source /mnt/nixos [--tailscale]
+#   sudo mount -o ro,noload /dev/<NixOS root partition> /mnt/nixos
+#   omarchy/migrate-home.sh --source /mnt/nixos [--tailscale] [--force]
 #
 # --tailscale also takes over NixOS's Tailscale identity, so this install
 # becomes the tailnet's "pc". Do it once, at cut-over.
@@ -16,6 +17,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 TAILSCALE_STATE=var/lib/tailscale/tailscaled.state
+MARKER="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/migrate-home.done"
 # Orderready's worktrees, parked in the NixOS home before the data disk was
 # wiped. They return to the path they had there, which T3's database records.
 ORDERREADY_PARK=orderready-park
@@ -36,16 +38,18 @@ paths=(
   .config/restic
 )
 
-usage() { echo "Usage: $0 --source <read-only NixOS root> [--tailscale]" >&2; exit 2; }
+usage() { echo "Usage: $0 --source <read-only NixOS root> [--tailscale] [--force]" >&2; exit 2; }
 log() { printf '\033[0;36m[migrate]\033[0m %s\n' "$*"; }
 die() { printf '\033[0;31m[migrate]\033[0m %s\n' "$*" >&2; exit 1; }
 
 source_root=""
 tailscale=false
+force=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --source) [ "$#" -ge 2 ] || usage; source_root="${2%/}"; shift ;;
     --tailscale) tailscale=true ;;
+    --force) force=true ;;
     *) usage ;;
   esac
   shift
@@ -53,9 +57,14 @@ done
 [ -n "$source_root" ] || usage
 
 [ "$(id -u)" -ne 0 ] || die "run as your user, not root"
+if [ -e "$MARKER" ] && ! $force; then
+  die "already migrated on $(cat "$MARKER"); a rerun overwrites changes made here since. Pass --force to do it anyway"
+fi
 [ -e "$source_root/etc/NIXOS" ] || die "$source_root is not a NixOS root"
-findmnt -no OPTIONS --target "$source_root" | tr , '\n' | grep -qx ro ||
-  die "$source_root must be mounted read-only"
+# ext4 replays its journal even on a read-only mount unless told not to.
+source_options="$(findmnt -no OPTIONS --target "$source_root" | tr , '\n')"
+grep -qx ro <<<"$source_options" && grep -qxE 'noload|norecovery' <<<"$source_options" ||
+  die "$source_root must be mounted with -o ro,noload"
 source_home="$source_root$HOME"
 [ -d "$source_home" ] || die "$source_home does not exist"
 
@@ -111,4 +120,6 @@ fi
 # Restore the links the copies replaced and restart the user units.
 bash "$SCRIPT_DIR/bootstrap.sh" || [ "$?" -eq 2 ]
 systemctl --user restart t3code.service
+mkdir -p "$(dirname "$MARKER")"
+date -Is >"$MARKER"
 log "Done. T3 Code: $(systemctl --user is-active t3code.service)"

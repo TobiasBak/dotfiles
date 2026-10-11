@@ -13,7 +13,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 DATA_DIR=/mnt/data-2tb
-LUKS_NAME=omarchy_root
 # T3 pins the version it installs; later updates go through `t3 update`.
 T3_VERSION="${T3_VERSION:-nightly}"
 
@@ -113,24 +112,53 @@ if $tpm2; then
   # Untested: the systemd initramfs and TPM2 unlock never booted in the VM.
   # Replace the busybox initramfs with systemd's so sd-encrypt can unlock the
   # root with the TPM. Without an enrolled TPM it still asks for the passphrase.
+  # busybox's encrypt hook reads cryptdevice= from the kernel command line;
+  # sd-encrypt reads only crypttab.initramfs. The installer's layouts differ
+  # (Full disk maps "root" with no crypttab), so take the mapping from the
+  # running system and write the entry before switching hooks.
+  root_source="$(findmnt -nvo SOURCE /)"
+  case "$root_source" in
+    /dev/mapper/*) luks_name="${root_source#/dev/mapper/}" ;;
+    *) die "/ is on $root_source, not a LUKS mapping" ;;
+  esac
+  luks_device="$(sudo cryptsetup status "$luks_name" | awk '$1 == "device:" { print $2 }')"
+  sudo cryptsetup isLuks "$luks_device" || die "$luks_device (behind $root_source) is not LUKS"
+  luks_uuid="$(sudo cryptsetup luksUUID "$luks_device")"
+  # The kernel's root= must keep naming the mapping sd-encrypt creates.
+  root_arg="$(tr ' ' '\n' </proc/cmdline | sed -n 's/^root=//p')"
+  case "$root_arg" in
+    "$root_source" | UUID=* | PARTUUID=*) ;;
+    *) die "kernel root=$root_arg does not match $root_source; leaving the initramfs alone" ;;
+  esac
+  crypttab=/etc/crypttab.initramfs
+  entry="$luks_name UUID=$luks_uuid none luks,discard,tpm2-device=auto"
   regenerate=false
+  if ! sudo grep -qxF "$entry" "$crypttab" 2>/dev/null; then
+    staged="$(mktemp)"
+    { sudo awk -v name="$luks_name" '$1 != name' "$crypttab" 2>/dev/null || true; echo "$entry"; } >"$staged"
+    sudo install -m 0600 "$staged" "$crypttab"
+    rm -f "$staged"
+    regenerate=true
+  fi
+  # Validate before the hooks change: the entry must resolve to the device
+  # that holds the running root.
+  [ "$(sudo awk -v name="$luks_name" '$1 == name' "$crypttab" | wc -l)" -eq 1 ] ||
+    die "$crypttab must have exactly one $luks_name line"
+  [ "$(readlink -f "/dev/disk/by-uuid/$luks_uuid")" = "$(readlink -f "$luks_device")" ] ||
+    die "UUID=$luks_uuid does not resolve to $luks_device; leaving the initramfs alone"
   hooks=/etc/mkinitcpio.conf.d/zz-tpm2-unlock.conf
   if ! cmp -s "$SCRIPT_DIR/mkinitcpio-tpm2.conf" "$hooks"; then
     sudo install -m 0644 "$SCRIPT_DIR/mkinitcpio-tpm2.conf" "$hooks"
     regenerate=true
   fi
-  # The installer writes crypttab.initramfs; sd-encrypt reads it from the initramfs.
-  if ! sudo awk -v name="$LUKS_NAME" '$1 == name && $4 ~ /tpm2-device=auto/ { found = 1 } END { exit !found }' /etc/crypttab.initramfs; then
-    sudo sed -i -E "/^$LUKS_NAME[[:space:]]/ s/([[:space:]]+)([^[:space:]]+)\$/\1\2,tpm2-device=auto/" /etc/crypttab.initramfs
-    sudo awk -v name="$LUKS_NAME" '$1 == name && $4 ~ /tpm2-device=auto/ { found = 1 } END { exit !found }' /etc/crypttab.initramfs ||
-      die "/etc/crypttab.initramfs has no $LUKS_NAME line to extend"
-    regenerate=true
-  fi
   if $regenerate; then
-    log "Rebuilding the initramfs and boot entries"
-    sudo limine-mkinitcpio
+    log "Rebuilding the initramfs and boot entries for $luks_name (UUID=$luks_uuid)"
+    if ! sudo limine-mkinitcpio; then
+      sudo rm -f "$hooks"
+      sudo limine-mkinitcpio || true
+      die "limine-mkinitcpio failed; removed $hooks and rebuilt with the old hooks"
+    fi
   fi
-  luks_device="$(sudo cryptsetup status "$LUKS_NAME" | awk '$1 == "device:" { print $2 }')"
   if ! sudo cryptsetup luksDump "$luks_device" | grep -q systemd-tpm2; then
     needs_human "Unlock the disk with the TPM at boot (asks for the LUKS passphrase): sudo systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7 $luks_device"
   fi
