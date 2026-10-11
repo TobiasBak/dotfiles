@@ -6,8 +6,11 @@ activates Home Manager, changes the login shell or touches a disk. `nixos/`
 owns NixOS and WSL; its modules are not used here. Both may reuse files under
 `configs/` and the agent-only installer under `scripts/`.
 
-Omarchy owns the desktop, terminal and its updates. User monitor and other
-Hyprland settings remain in `~/.config/hypr/`, not managed by this repo.
+Omarchy owns the desktop, terminal and its updates. Install system packages
+with `omarchy pkg add`, or `omarchy pkg aur add` for AUR-only ones, not raw
+pacman or yay. The bootstrap's T3 desktop build is the one exception; its
+comment says why. User monitor and other Hyprland settings remain in
+`~/.config/hypr/`, not managed by this repo.
 
 ## Setup
 

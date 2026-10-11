@@ -12,7 +12,7 @@ die() { printf '[omarchy] %s\n' "$*" >&2; exit 1; }
 # shellcheck disable=SC1091
 source /etc/os-release
 [[ ${ID:-} == omarchy ]] || die 'This entrypoint is only for Omarchy; use the rebuild scripts on NixOS'
-for tool in mise yay pacman python3 systemctl tailscale git makepkg ss chromium; do
+for tool in mise omarchy yay pacman python3 systemctl tailscale git makepkg ss chromium; do
   command -v "$tool" >/dev/null || die "Required tool is missing: $tool"
 done
 if pgrep -u "$(id -u)" -f '^(/usr/lib/t3code[^/]*|/opt/t3code-nightly-bin)/' >/dev/null; then
@@ -97,6 +97,10 @@ PY
 
 # Install the AUR release, not the older package in Omarchy's repository.
 # Build before removing stable, so a download/build failure leaves it installed.
+# `omarchy pkg aur add` cannot do this: it does nothing when the package is
+# already installed, and its yay resolves the same-named package from Omarchy's
+# repository before the AUR. It accepts no `aur/` prefix. Hence the raw AUR
+# queries, makepkg and `pacman -U` of the built file.
 aur_version="$(yay -Si aur/t3code-nightly-bin | awk -F': *' '$1 ~ /^Version/ { print $2 }')"
 [[ -n $aur_version ]] || die 'Could not determine the AUR nightly desktop version'
 installed_version="$(pacman -Q t3code-nightly-bin 2>/dev/null | awk '{ print $2 }' || true)"
@@ -108,9 +112,7 @@ if [[ -z $installed_version ]] || [[ $(vercmp "$aur_version" "$installed_version
   mapfile -t packages < <(cd "$build_dir" && makepkg --packagelist)
   [[ ${#packages[@]} == 1 && -f ${packages[0]} ]] || die 'Expected one built nightly desktop package'
   sudo -v
-  if pacman -Q t3code-bin >/dev/null 2>&1; then
-    sudo pacman -R --noconfirm t3code-bin
-  fi
+  omarchy pkg drop t3code-bin
   sudo pacman -U --noconfirm "${packages[0]}"
 fi
 
