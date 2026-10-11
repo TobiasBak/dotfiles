@@ -95,6 +95,10 @@ pi['enabled'] = True
 settings.write_text(json.dumps(value, indent=2) + '\n')
 PY
 
+# System packages agents need. xorg-server-xvfb provides xvfb-run for headless
+# desktop-app smoke tests, such as Orderready's `tools/or dev`.
+omarchy pkg add xorg-server-xvfb
+
 # Install the AUR release, not the older package in Omarchy's repository.
 # Build before removing stable, so a download/build failure leaves it installed.
 # `omarchy pkg aur add` cannot do this: it does nothing when the package is
@@ -123,7 +127,11 @@ install -m 644 "$SCRIPT_DIR/systemd/t3code-local.conf" "$HOME/.config/systemd/us
 for unit in app-t3code.slice t3code-update.service t3code-update.timer; do
   install -m 644 "$SCRIPT_DIR/systemd/$unit" "$HOME/.config/systemd/user/$unit"
 done
+mkdir -p "$HOME/.config/user-tmpfiles.d"
+install -m 644 "$SCRIPT_DIR/systemd/agent-tmp.conf" "$HOME/.config/user-tmpfiles.d/agent-tmp.conf"
+systemd-tmpfiles --user --create agent-tmp.conf
 systemctl --user daemon-reload
+systemctl --user enable --now systemd-tmpfiles-clean.timer
 bash "$SCRIPT_DIR/t3-nightly.sh" --install-service
 # A running server keeps its old environment and slice until restarted. Hosted
 # agents were stopped before setup, so restarting here interrupts nothing.

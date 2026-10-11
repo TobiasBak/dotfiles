@@ -6,11 +6,17 @@ activates Home Manager, changes the login shell or touches a disk. `nixos/`
 owns NixOS and WSL; its modules are not used here. Both may reuse files under
 `configs/` and the agent-only installer under `scripts/`.
 
-Omarchy owns the desktop, terminal and its updates. Install system packages
-with `omarchy pkg add`, or `omarchy pkg aur add` for AUR-only ones, not raw
-pacman or yay. The bootstrap's T3 desktop build is the one exception; its
-comment says why. User monitor and other Hyprland settings remain in
-`~/.config/hypr/`, not managed by this repo.
+Omarchy owns the desktop, terminal and its updates. User monitor and other
+Hyprland settings remain in `~/.config/hypr/`, not managed by this repo.
+
+Install system packages with Omarchy's commands, not raw pacman or yay. In a
+terminal, use `omarchy pkg add <pkgs>`, or `omarchy pkg aur add <pkgs>` for
+AUR-only ones; both prompt for sudo there. Agents have no terminal, so they
+run `pkexec /usr/share/omarchy/bin/omarchy-pkg-add <pkgs>` as a background
+command. Polkit shows a password dialog on the desktop, and the script runs
+pacman directly as root. makepkg refuses to build as root, so AUR-only
+packages need `omarchy pkg aur add` in Tobias's terminal. The bootstrap's T3 desktop build
+bypasses these commands; its comment says why.
 
 ## Setup
 
@@ -41,10 +47,17 @@ user and home directory, not a fixed username or hostname.
      `~/.local/state/t3-migration/`.
    - Disables the desktop app's own backend and enables T3's Pi provider,
      which T3 disables by default.
+   - Installs `xorg-server-xvfb` with `omarchy pkg add`, so agents can run
+     desktop apps headless under `xvfb-run`.
    - Builds the current AUR `t3code-nightly-bin` before replacing stable.
    - Installs T3's official background service on the nightly channel.
    - Installs this directory's resource slice, service drop-in and
      nightly-update timer, then restarts the server so it loads them.
+   - Points T3's and its agents' `TMPDIR` at `~/.cache/agent-tmp` on disk,
+     because `/tmp` is a RAM-backed tmpfs with a per-user quota. A
+     systemd-tmpfiles user rule removes files there unused for 3 days, by
+     timestamp, even under a running process. Keep long-lived build state
+     elsewhere.
    - Enables user lingering and publishes the loopback server through
      Tailscale Serve. If Tailscale is logged out, it exits 2 with instructions.
 4. Open **T3 Code Nightly**, run `t3 pair` in a terminal, and add the resulting

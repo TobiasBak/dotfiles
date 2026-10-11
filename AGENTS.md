@@ -20,7 +20,7 @@ Before changing or remotely rebuilding a NixOS server, read `nixos/README.md` an
 
 ## Omarchy
 
-Omarchy and NixOS are separate setups. `omarchy/bootstrap.sh` uses mise, Omarchy's `omarchy pkg` commands and native systemd user units in `omarchy/systemd/`; it must not install Nix or activate Home Manager. `nixos/` is only for NixOS and WSL. Share program configuration and agent instructions through `configs/` and `scripts/`, not OS modules. Before changing Omarchy setup, read `omarchy/README.md`. Omarchy owns desktop configuration; do not manage Hyprland or other Omarchy-owned files from this repository. T3's nightly service updater is `t3code-update.timer`.
+Omarchy and NixOS are separate setups. `omarchy/bootstrap.sh` uses mise, Omarchy's `omarchy pkg` commands and native systemd user units in `omarchy/systemd/`; it must not install Nix or activate Home Manager. `nixos/` is only for NixOS and WSL. Share program configuration and agent instructions through `configs/` and `scripts/`, not OS modules. Before changing Omarchy setup, read `omarchy/README.md`. Omarchy owns desktop configuration; do not manage Hyprland or other Omarchy-owned files from this repository. Agents install system packages with `pkexec /usr/share/omarchy/bin/omarchy-pkg-add <pkgs>`, run in the background while Tobias approves the polkit dialog; see `omarchy/README.md`. T3's nightly service updater is `t3code-update.timer`.
 
 ## Installed T3 Code service
 
