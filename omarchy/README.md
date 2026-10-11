@@ -28,12 +28,20 @@ user and home directory, not a fixed username or hostname.
    Enter your sudo password when asked. The script:
    - Installs global instructions, vault skills and Pi settings without Nix.
    - Sets mise's package manager to pnpm and selects pnpm 11 for T3 installs.
+   - Installs `uv`, `go`, `vp` (vite-plus) and `playwright-cli` through mise,
+     points playwright-cli at Omarchy's Chromium and links its agent skill.
+     Omarchy's `~/.local/bin` wrappers install Claude, Codex, Pi and `gh` on
+     first use.
+   - Routes GitHub SSH remotes to HTTPS with `gh` credentials. The machine has
+     no SSH key for GitHub.
    - Saves a private copy of T3's existing state under
      `~/.local/state/t3-migration/`.
-   - Disables the desktop app's own backend.
+   - Disables the desktop app's own backend and enables T3's Pi provider,
+     which T3 disables by default.
    - Builds the current AUR `t3code-nightly-bin` before replacing stable.
    - Installs T3's official background service on the nightly channel.
-   - Installs this directory's resource slice and nightly-update timer.
+   - Installs this directory's resource slice, service drop-in and
+     nightly-update timer, then restarts the server so it loads them.
    - Enables user lingering and publishes the loopback server through
      Tailscale Serve. If Tailscale is logged out, it exits 2 with instructions.
 4. Open **T3 Code Nightly**, run `t3 pair` in a terminal, and add the resulting
@@ -68,8 +76,10 @@ systemctl --user start --no-block t3code-update.service
 journalctl --user -u t3code-update.service
 ```
 
-The service runtime and the desktop package update separately. Quit the app
-and rerun the bootstrap to update the AUR desktop package. Omarchy also has a
+The timer covers the CLI and the service runtime, not the desktop app. Quit the
+app and rerun the bootstrap to update the AUR desktop package. Rerun it also
+after upgrading playwright-cli, whose skill link points into the installed
+version. Omarchy also has a
 repository package with the same name; an Omarchy update may replace the AUR
 build once its version is newer. `mise use -g` and `mise settings set` own mise
 configuration; do not hand-edit Omarchy's global mise config.

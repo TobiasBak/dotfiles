@@ -1,5 +1,5 @@
-# Developer command-line tools shared by NixOS hosts and standalone Home Manager.
-# NixOS installs them system-wide; Omarchy installs them into the user profile.
+# Developer command-line tools installed system-wide on NixOS hosts. Omarchy
+# installs its equivalents through mise in omarchy/bootstrap.sh.
 { hunk, pkgs }:
 
 let

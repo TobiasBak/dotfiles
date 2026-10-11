@@ -12,7 +12,7 @@ die() { printf '[omarchy] %s\n' "$*" >&2; exit 1; }
 # shellcheck disable=SC1091
 source /etc/os-release
 [[ ${ID:-} == omarchy ]] || die 'This entrypoint is only for Omarchy; use the rebuild scripts on NixOS'
-for tool in mise yay pacman python3 systemctl tailscale git makepkg ss; do
+for tool in mise yay pacman python3 systemctl tailscale git makepkg ss chromium; do
   command -v "$tool" >/dev/null || die "Required tool is missing: $tool"
 done
 if pgrep -u "$(id -u)" -f '^(/usr/lib/t3code[^/]*|/opt/t3code-nightly-bin)/' >/dev/null; then
@@ -28,11 +28,38 @@ fi
 if [[ -e $HOME/.dotfiles && ! -L $HOME/.dotfiles ]]; then
   die "$HOME/.dotfiles is a real directory; move it aside before setup"
 fi
+if [[ -e $HOME/.agents/skills/playwright-cli && ! -L $HOME/.agents/skills/playwright-cli ]]; then
+  die "$HOME/.agents/skills/playwright-cli is a real directory; move it aside before setup"
+fi
 ln -sfn "$REPO_DIR" "$HOME/.dotfiles"
 python3 "$REPO_DIR/scripts/install-agent-context.py"
 mise settings set npm.package_manager pnpm
 # pnpm 11 is the supported installer for the nightly CLI.
 mise use --global --quiet pnpm@11.13.1
+# Developer CLIs that NixOS hosts get from nixos/packages/developer-cli.nix.
+# Omarchy's ~/.local/bin wrappers install the agent CLIs on first use.
+MISE_MINIMUM_RELEASE_AGE=0 mise use --global --quiet \
+  uv@latest go@latest npm:vite-plus@latest npm:@playwright/cli@latest
+# playwright-cli has no bundled browser; it drives Omarchy's Chromium.
+mise set --global PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/bin/chromium
+# The skill ships inside the installed version. Rerun setup after upgrading it.
+# playwright-cli prints its path, relative to the cwd, only to coding agents.
+playwright_skill="$(cd / && CLAUDECODE=1 mise exec npm:@playwright/cli -- playwright-cli --help | sed -n 's/^ *Agent skill: //p')"
+playwright_skill="$(cd / && realpath -e "${playwright_skill:-missing}")" ||
+  die 'playwright-cli did not report its agent skill'
+ln -sfnT "$(dirname "$playwright_skill")" "$HOME/.agents/skills/playwright-cli"
+
+# GitHub goes over HTTPS with gh's credentials; no SSH key is installed, so
+# rewrite SSH remotes. Resolve gh through PATH: `gh auth setup-git` pins the
+# current mise install path, which a gh upgrade deletes.
+git config --global --unset-all url.https://github.com/.insteadOf || true
+git config --global --add url.https://github.com/.insteadOf git@github.com:
+git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/
+for host in github.com gist.github.com; do
+  git config --global --unset-all "credential.https://$host.helper" || true
+  git config --global --add "credential.https://$host.helper" ''
+  git config --global --add "credential.https://$host.helper" '!gh auth git-credential'
+done
 
 # Backup all app state before changing its settings or starting a newer server.
 python3 - <<'PY'
@@ -58,6 +85,13 @@ state.mkdir(parents=True, exist_ok=True)
 settings = state / 'desktop-settings.json'
 value = json.loads(settings.read_text()) if settings.exists() else {}
 value['localEnvironmentEnabled'] = False
+settings.write_text(json.dumps(value, indent=2) + '\n')
+# T3 disables Pi unless configured; agent teams delegate to it. The server
+# watches this file, so a rerun applies without a restart.
+settings = state / 'settings.json'
+value = json.loads(settings.read_text()) if settings.exists() else {}
+pi = value.setdefault('providerInstances', {}).setdefault('pi', {'driver': 'pi', 'config': {}})
+pi['enabled'] = True
 settings.write_text(json.dumps(value, indent=2) + '\n')
 PY
 
@@ -89,6 +123,9 @@ for unit in app-t3code.slice t3code-update.service t3code-update.timer; do
 done
 systemctl --user daemon-reload
 bash "$SCRIPT_DIR/t3-nightly.sh" --install-service
+# A running server keeps its old environment and slice until restarted. Hosted
+# agents were stopped before setup, so restarting here interrupts nothing.
+systemctl --user try-restart t3code.service
 sudo loginctl enable-linger "$(id -un)"
 sudo systemctl enable --now tailscaled.service
 sudo tailscale set --operator="$(id -un)"

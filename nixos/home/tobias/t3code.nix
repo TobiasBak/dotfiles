@@ -1,7 +1,7 @@
 { config, ... }:
 
-# T3 Code's installed per-user service: local unit overrides and its memory
-# budget. Free of NixOS options so non-NixOS Home Manager hosts can import it.
+# T3 Code's installed per-user service on NixOS workstations: local unit
+# overrides and its memory budget. Omarchy ships its own in omarchy/systemd/.
 {
   home.file.".config/systemd/user/t3code.service.d/local.conf" = {
     source = config.lib.file.mkOutOfStoreSymlink "${config.home.homeDirectory}/.dotfiles/configs/t3code/service.conf";

@@ -1,4 +1,4 @@
-# Home config for every desktop workstation, whether NixOS or Omarchy owns the desktop.
+# Home config for every NixOS desktop workstation.
 { config, pkgs, ... }:
 
 let
