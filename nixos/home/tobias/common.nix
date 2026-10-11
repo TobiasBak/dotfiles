@@ -35,7 +35,7 @@ in
         source = config.lib.file.mkOutOfStoreSymlink "${config.home.homeDirectory}/.agents/skills";
         force = true;
       };
-      ".codex/skills/playwright-cli".source =
+      ".agents/skills/playwright-cli".source =
         "${playwrightCli}/lib/node_modules/playwright-cli-wrapper/node_modules/@playwright/cli/skills/playwright-cli";
     };
   };

@@ -10,7 +10,7 @@ NixOS and Home Manager links are declared under `nixos/home/tobias/`; Windows li
 
 ## Agent skills
 
-Agent skills live in the sibling `../vault-public` repository under `skills/`, not here. Its `scripts/install-skills.sh` links them into `~/.agents/skills`; use this repository's WSL or native NixOS rebuild entrypoint to refresh installed links.
+Vault-maintained agent skills live in the sibling `../vault-public` repository under `skills/`, not here. Its `scripts/install-skills.sh` links them into `~/.agents/skills`; use this repository's WSL or native NixOS rebuild entrypoint to refresh installed links. Package-provided skills such as `playwright-cli` are declared in `nixos/home/tobias/common.nix` under the same shared user directory. Codex and Pi discover it directly; `~/.claude/skills` links to it.
 
 ## NixOS servers
 
