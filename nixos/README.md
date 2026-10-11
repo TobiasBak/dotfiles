@@ -242,6 +242,49 @@ The PC's CPU-only background build and workload policy, foreground launcher
 contract and activation checks are in [PC background workloads](hosts/pc/workloads.md).
 This policy does not change I/O scheduling or promise I/O fairness.
 
+### T3 backups on PC
+
+Home Manager's existing restic module backs up T3 and Pi to the NAS over SFTP.
+The daily timer runs at 04:00 and catches up after missed runs. It retains seven
+daily and four weekly snapshots, encrypts the repository, and checks its metadata
+following each backup. SQLite's online backup supplies a consistent copy of the
+active database; live database files and disposable logs/caches are excluded.
+Pi's managed settings and instructions are copied with their symlinks resolved.
+
+The password lives outside Git at `~/.config/restic/t3-password`. Keep its recovery
+copy in the NAS host's private home, outside the shared NAS directory. Preserve
+that copy before reinstalling the PC; without it, encrypted backups cannot be
+restored. The repository is `/srv/nas/files/.backups/t3-pc` on `tobias-serv01`.
+
+```bash
+systemctl --user start restic-backups-t3.service
+journalctl --user -u restic-backups-t3.service
+restic-t3 snapshots
+```
+
+The verified 15.2 GiB database/configuration restore on 2026-10-08 took under
+three minutes but exceeded a 1 GiB cgroup cap. Use a 2 GiB cap with early reclaim
+and a 20-minute timeout for recovery; check available RAM and disk space first.
+
+```bash
+restore_dir=$(mktemp -d "$HOME/t3-restore.XXXXXX")
+systemd-run --user --wait --pipe --collect --service-type=exec \
+  --unit="t3-restore-$(date +%s)" --slice=background.slice \
+  --property=MemoryHigh=1G --property=MemoryMax=2G --property=MemorySwapMax=0 \
+  --property=RuntimeMaxSec=20min --property=TimeoutStopSec=20s \
+  --property=KillMode=control-group --property=UMask=0077 \
+  --setenv=GOMAXPROCS=2 --setenv=GOMEMLIMIT=512MiB -- \
+  "$HOME/.local/bin/restic-t3" -o sftp.connections=1 \
+  restore latest --verify --target "$restore_dir"
+```
+
+If the requesting tool times out first, stop the named unit and verify its cgroup
+is empty before retrying or removing the restore directory. The database snapshot
+is under `home/tobias/.local/state/t3-backup/statev2.sqlite` inside that restore
+tree; never restore over the running T3 home. The backup service has a one-hour
+timeout, a 1 GiB memory ceiling and whole-cgroup cancellation. Failed jobs remain visible through
+systemd and do not silently count as successful backups.
+
 ### Servers / bare metal
 
 The server has a fixed role and expected checkout path:
