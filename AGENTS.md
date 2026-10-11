@@ -7,6 +7,9 @@ its modules; `packages.toml` and `mise.toml` own extra packages and global tools
 `nixos/` owns only tobias-serv01. Before server work, read `nixos/README.md`
 and follow its detached remote activation procedure. Never run Nix on Omarchy.
 
+Work directly on `main`, with no feature branches or pull requests. Commit
+and push to `main` after review and a green `./verify`.
+
 ## Commands
 
 - `./verify`: repository gate, including black-box tests in fake homes.

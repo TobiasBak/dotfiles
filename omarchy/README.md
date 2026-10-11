@@ -54,8 +54,8 @@ normal application launch paths, not just a fresh parser.
 `agents/AGENTS.md` owns the shared leadership and delegation policy, linked
 into Claude, Codex and Pi. The existing Claude routing hook fills explicit
 T3 task targets; it does not replace the policy or add role enforcement.
-Policy edits reach the stable links after merge; already-loaded instructions
-need a new session to adopt them. Do not restart running jobs for this.
+Policy edits reach the stable links once they land on `main`;
+already-loaded instructions need a new session to adopt them. Do not restart running jobs for this.
 
 T3's official service owns its unit and runtime. The repo owns its drop-in,
 55%/70% memory slice, update timer, Pi provider enablement and desktop-client
