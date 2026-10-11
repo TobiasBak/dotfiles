@@ -170,6 +170,7 @@
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFEvr2qCdxh7peyDqmauJKmLiql3e77uo8+IrkmSwRDe tobias@windows"
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPwf+bDRHxfll2vHjpPt33kQyFacdcr/wuXqJvUVKNx+ tobias@DESKTOP-LOEC6VP"
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDcfYHFOxRxSQzxA9AixpvoJTW5xF16LVvIgkkBiEl5F tobias-nixos-wsl"
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIELje1iiMGlVUqbyP+jVfESDcXrlN6HXhxY92Ckq6wUi tb@tb-omarchy"
     ];
   };
 

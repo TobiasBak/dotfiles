@@ -106,10 +106,14 @@ No native NAS mount or remote T3 backup is installed yet. Restore credentials
 first, then port and verify those services. Do not claim backups work until a
 real backup and restore pass.
 
-- Restore or create an SSH key authorized for `tobias@tobias-serv01`.
-  Verify normal OpenSSH over Tailscale before changing remote services.
-- Restore `~/.config/restic/t3-password` privately, with restrictive permissions.
-  The old encrypted repository is `/srv/nas/files/.backups/t3-pc` on serv01.
+- Create `~/.ssh/id_ed25519` with `ssh-keygen -t ed25519`, then
+  `ssh-copy-id tobias@tobias-serv01` and check
+  `ssh -o BatchMode=yes tobias@tobias-serv01 true`. Add the public key to
+  `tobias`'s `openssh.authorizedKeys.keys` in
+  `../nixos/hosts/tobias-serv01/configuration.nix` so the next activation keeps it.
+- Copy `.config/restic/t3-password` from the cold disk's `/home/tobias` to
+  `~/.config/restic/t3-password` with mode 600. The old encrypted repository is
+  `/srv/nas/files/.backups/t3-pc` on serv01.
 - Build and activate the retained serv01 configuration on serv01 itself using
   `../nixos/README.md`. Its import graph and lockfile stayed byte-identical;
   this workstation cannot run its Nix build.
@@ -117,6 +121,7 @@ real backup and restore pass.
 Cold storage is the 1 TB KINGSTON SNV3S1000G with the old NixOS home at
 `/home/tobias`; active Omarchy is on the 2 TB KINGSTON SFYRD2000G, serial
 ending `9170A9`. Identify disks by model and serial, never NVMe index.
-If recovery is requested, mount the ext4 root read-only without journal replay
-using `mount -o ro,noload`. Disk access requires separate privileged approval.
+Mount its ext4 root (label `root`) read-only without a prompt:
+`udisksctl mount -b /dev/disk/by-id/nvme-KINGSTON_SNV3S1000G_50026B7383F38C89-part2 -o ro`,
+then `udisksctl unmount` the same device when done.
 Never print or commit recovered passwords, private keys or pairing credentials.

@@ -93,7 +93,7 @@ fix = "sudo systemctl enable --now tailscaled && sudo tailscale set --operator=\
 [[assert]]
 name = "SSH key for tobias-serv01 restored"
 check = "test -f {home}/.ssh/id_ed25519"
-fix = "restore or create an SSH key authorized on tobias-serv01 (README: Manual restore)"
+fix = "create an SSH key and ssh-copy-id it to tobias-serv01 (README: Manual restore)"
 
 [[assert]]
 name = "T3 restic password restored"
