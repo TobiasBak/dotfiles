@@ -3,8 +3,7 @@
   "defaultTools": [
     "+codemode"
   ],
-  "lastChangelogVersion": "1.0.0",
   "extensions": [
-    "/home/tobias/code/pi-workspace-view/src/snapshot.ts"
+    "~/code/pi-workspace-view/src/snapshot.ts"
   ]
 }

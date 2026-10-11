@@ -33,4 +33,5 @@ Talk like a sharp technical friend, not corporate support. Lead with the answer 
 
 - **Fight for the "obvious" solution:** the simplest resulting system that fully meets current requirements, not the smallest diff. No speculative abstraction, configuration, or indirection.
 - **Backward compatibility is opt-in.** No legacy paths, shims, fallbacks, or dual formats without an explicit contract, known external consumer, persisted data, or deployment constraint. Make the clean break and update every usage.
+- **JavaScript packages go through pnpm** (`pnpm dlx` for one-offs), never npm or npx. Where mise manages tools, install global CLIs with mise; it uses pnpm for npm packages.
 - **Validate in proportion to risk.** No tests for speculative edge cases, coverage for its own sake, or prose and source structure. A few public-interface or real-use checks usually suffice; follow stricter repo rules.

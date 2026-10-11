@@ -1,7 +1,10 @@
-# pacman packages bootstrap.sh installs on top of Omarchy. Everything else
-# comes from Nix through Home Manager (nixos/home/tobias/omarchy.nix).
+# pacman packages bootstrap.sh installs on top of Omarchy. Developer CLIs come
+# from mise, everything else from Nix through Home Manager
+# (nixos/home/tobias/omarchy.nix). bootstrap.sh installs the T3 Code desktop app
+# separately, from the AUR's t3code-nightly-bin.
 base-devel
 git
+jq
 nix
 openssh
 rsync

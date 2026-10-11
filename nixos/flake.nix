@@ -57,11 +57,18 @@
         packages = windowsVm.runtimeInputs ++ [ pkgs.shellcheck ];
       };
 
-      homeConfigurations."tobias@omarchy" = home-manager.lib.homeManagerConfiguration {
-        inherit pkgs;
-        extraSpecialArgs = { inherit hunk; };
-        modules = [ ./home/tobias/omarchy.nix ];
-      };
+      # Standalone Home Manager for Omarchy, one per Linux user. bootstrap.sh
+      # activates "$USER@omarchy". The installed pc runs as tb.
+      homeConfigurations = nixpkgs.lib.genAttrs' [ "tobias" "tb" ] (
+        username:
+        nixpkgs.lib.nameValuePair "${username}@omarchy" (
+          home-manager.lib.homeManagerConfiguration {
+            inherit pkgs;
+            extraSpecialArgs = { inherit hunk username; };
+            modules = [ ./home/tobias/omarchy.nix ];
+          }
+        )
+      );
 
       nixosConfigurations = {
         wsl = mkDeveloperSystem [

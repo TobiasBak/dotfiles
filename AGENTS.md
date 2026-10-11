@@ -6,11 +6,13 @@ Guidance for agents working in this dotfiles repo.
 
 Files under `configs/` affect a machine only through managed links. Verify the effective target before assuming an edit is active. For long-running applications, also exercise the user's real launch path against the existing process; a valid file or fresh config-inspection process does not prove that the running application loaded it.
 
+For agent context only on any Unix workstation, use `python3 scripts/install-agent-context.py`; it needs no Nix or OS bootstrap. It resolves sibling repositories independently of username and hostname, backs up conflicting entries, preserves existing skills, and merges Pi settings rather than linking mutable local state into Git.
+
 NixOS and Home Manager links are declared under `nixos/home/tobias/`; Windows links are declared in `windows/configuration.winget`. If an expected target is a real file or directory instead of a link, report it and recommend the appropriate rebuild rather than overwriting it.
 
 ## Agent skills
 
-Vault-maintained agent skills live in the sibling `../vault-public` repository under `skills/`, not here. Its `scripts/install-skills.sh` links them into `~/.agents/skills`; use this repository's WSL or native NixOS rebuild entrypoint to refresh installed links. Package-provided skills such as `playwright-cli` are declared in `nixos/home/tobias/common.nix` under the same shared user directory. Codex and Pi discover it directly; `~/.claude/skills` links to it.
+Vault-maintained agent skills live in the sibling `../vault-public` repository under `skills/`, not here. Its `scripts/install-skills.sh` links them into `~/.agents/skills`; use `scripts/install-agent-context.py` for agent-only installs, or the WSL/native NixOS rebuild entrypoint when rebuilding those systems. Package-provided skills such as `playwright-cli` are declared in `nixos/home/tobias/common.nix` under the same shared user directory. Codex and Pi discover it directly; `~/.claude/skills` links to it.
 
 ## NixOS servers
 
@@ -18,11 +20,11 @@ Before changing or remotely rebuilding a NixOS server, read `nixos/README.md` an
 
 ## Omarchy
 
-The `pc` can also run Omarchy from the standalone Home Manager configuration `tobias@omarchy`. Before changing it or its bootstrap, read `omarchy/README.md`. Omarchy owns its desktop configuration; do not manage Hyprland, Waybar or other Omarchy-owned files from this repository.
+The `pc` can also run Omarchy (host `tb-omarchy`, user `tb`) from the standalone Home Manager configuration `<user>@omarchy`. Before changing it or its bootstrap, read `omarchy/README.md`. Omarchy owns its desktop configuration; do not manage Hyprland, Waybar or other Omarchy-owned files from this repository. On Omarchy, mise owns Node, pnpm and the agent CLIs, and T3 updates itself through `t3code-update.timer`; the NixOS instructions below do not apply there.
 
 ## Installed T3 Code service
 
-The `pc` host uses T3 Code's official pinned per-user background service on the nightly channel. NixOS owns user lingering and the Tailnet-only port `3773` firewall rule; it does not own the service unit or runtime. OS rebuilds do not update T3. Update it separately through `npx --yes t3@nightly update --channel nightly --yes`, not a source checkout.
+The NixOS `pc` host uses T3 Code's official pinned per-user background service on the nightly channel. NixOS owns user lingering and the Tailnet-only port `3773` firewall rule; it does not own the service unit or runtime. OS rebuilds do not update T3. Update it separately through `npx --yes t3@nightly update --channel nightly --yes`, not a source checkout.
 
 An agent running inside T3 Code must detach the update from `t3code.service` so stopping that service does not kill the updater. Use this one command:
 

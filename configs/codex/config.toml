@@ -78,6 +78,21 @@ trust_level = "trusted"
 [projects."/home/tobias/code/CanineArchive"]
 trust_level = "trusted"
 
+[projects."/home/tb"]
+trust_level = "trusted"
+
+[projects."/home/tb/code"]
+trust_level = "trusted"
+
+[projects."/home/tb/code/dotfiles"]
+trust_level = "trusted"
+
+[projects."/home/tb/code/vault-public"]
+trust_level = "trusted"
+
+[projects."/home/tb/vault"]
+trust_level = "trusted"
+
 [notice]
 hide_rate_limit_model_nudge = true
 

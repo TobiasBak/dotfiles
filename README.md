@@ -16,6 +16,35 @@ This repository contains configuration files for Windows, native NixOS developer
 
 ## Usage
 
+### Agent context only (any Unix workstation, no Nix)
+
+Keep `dotfiles`, `vault-public`, and `pi-workspace-view` as sibling checkouts.
+The username, hostname, and parent directory do not matter. Clone missing
+repositories first (the workspace extension is private):
+
+```sh
+gh repo clone TobiasBak/vault-public ../vault-public
+gh repo clone TobiasBak/pi-workspace-view ../pi-workspace-view
+python3 scripts/install-agent-context.py
+```
+
+Run clone commands only for repositories that are missing. Use `--vault PATH`
+and `--workspace PATH` if the checkouts are not siblings. Requires Python 3.9+
+and an existing Pi installation compatible with the workspace extension
+(currently Pi 1.1.0 and Node 24+).
+
+This installs global instructions for Pi, Claude and Codex, links every vault
+skill into the shared and Claude skill directories, and merges repository Pi
+settings into local settings. Local model/theme preferences and unrelated
+extensions survive; repository policy settings take precedence. Conflicts are
+renamed to timestamped `.backup-*` paths. Omarchy skills remain untouched.
+Pi settings stay a local file, not a writable symlink into the repo; rerun this
+installer to apply shared settings changes.
+
+No packages, shell changes, Nix activation, desktop configuration or services
+are involved. The workspace extension loads TypeScript directly and needs no
+build. Run `/reload` in Pi after installation; restart Claude/Codex sessions.
+
 ### Windows
 
 Run the root rebuild script from Windows PowerShell:
