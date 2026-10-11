@@ -11,3 +11,6 @@
 *.woff2 binary
 *.ttf binary
 *.otf binary
+
+# cmd.exe mis-parses labels in LF-only batch files.
+*.bat text eol=crlf

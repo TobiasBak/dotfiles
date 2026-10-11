@@ -1,0 +1,641 @@
+#!/usr/bin/env python3
+"""Headless control of Omarchy's Windows VM. Guest setup: bootstrap --stage-only."""
+import argparse
+import base64
+from contextlib import contextmanager
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.request
+import uuid
+import xml.etree.ElementTree as ET
+
+HOME = Path.home()
+KEYS = HOME / ".keys"
+CACHE = HOME / ".cache/win-vm"
+MARKER = CACHE / "started-by-win-vm"
+SOURCE = Path(__file__).resolve().parent
+CONTAINER = "omarchy-windows"
+COMPOSE = "/var/lib/omarchy/windows/docker-compose.yml"
+VM_LOCK = "/run/lock/omarchy-windows-vm/."
+ROOT = r"C:\ProgramData\win-vm"
+WINAPP = r"C:\Program Files\winapp\winapp.exe"
+ARTIFACTS = {
+    "OpenSSH-Win64-v10.0.0.0.msi": (
+        "https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.0.0.0p2-Preview/OpenSSH-Win64-v10.0.0.0.msi",
+        "ddec9c53864280759cf9f74791cefd387100e3946aa849a1c138a4ed1b96b7d9",
+    ),
+    "winappcli-x64.zip": (
+        "https://github.com/microsoft/winappCli/releases/download/v0.7.1/winappcli-x64.zip",
+        "d925d1e32cdc320b6d271f653fd2cd3c05b5d7558deb20d1b548bead77900fcf",
+    ),
+    "vc_redist.x64.exe": (
+        "https://aka.ms/vs/17/release/vc_redist.x64.exe",
+        "cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b",
+    ),
+}
+
+
+class Failure(Exception):
+    pass
+
+
+def run(argv, **kwargs):
+    return subprocess.run(argv, **kwargs)
+
+
+def docker_access():
+    if os.access("/var/run/docker.sock", os.W_OK):
+        return
+    groups = run(["id", "-nG", "tb"], capture_output=True, text=True)
+    if groups.returncode or "docker" not in groups.stdout.split():
+        raise Failure("tb is not configured in group docker; enable Omarchy sudoless Docker first")
+    if os.environ.get("WIN_VM_NEWGRP"):
+        raise Failure("Docker socket is still not writable after newgrp docker")
+    # Bridge the existing session until the next reboot applies tb's new group.
+    env = dict(os.environ, WIN_VM_NEWGRP="1")
+    command = shlex.join([sys.executable, str(SOURCE / "win-vm"), *sys.argv[1:]])
+    stdin = os.dup(0)
+    try:
+        result = run(["newgrp", "docker"], input=f"exec {command} <&{stdin} {stdin}<&-\n",
+                     text=True, env=env, pass_fds=(stdin,))
+    finally:
+        os.close(stdin)
+    sys.exit(result.returncode)
+
+
+def docker_state():
+    template = "{{.State.Status}}|{{.State.StartedAt}}|{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}"
+    result = run(["docker", "inspect", "-f", template, CONTAINER], capture_output=True, text=True)
+    if result.returncode:
+        if "no such" in result.stderr.lower():
+            return {"container": "absent", "ip": None, "started_at": None}
+        raise Failure(result.stderr.strip() or "docker inspect failed")
+    state, started_at, addresses = result.stdout.strip().split("|")
+    ips = addresses.split()
+    if len(ips) > 1:
+        raise Failure("VM has multiple network IPs; refusing an ambiguous SSH target")
+    return {"container": state, "ip": ips[0] if ips else None, "started_at": started_at}
+
+
+def owned(state):
+    return (state["container"] == "running" and MARKER.is_file()
+            and MARKER.read_text().strip() == state["started_at"])
+
+
+def credentials():
+    data = {}
+    for line in (KEYS / "windows-vm.env").read_text().splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            data[key] = value
+    user = data.get("WINDOWS_VM_USERNAME", "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,20}", user):
+        raise Failure("invalid WINDOWS_VM_USERNAME in ~/.keys/windows-vm.env")
+    return user, data.get("WINDOWS_VM_PASSWORD", "")
+
+
+def ps_string(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def ssh_options():
+    return ["-i", str(KEYS / "windows-vm-agent"), "-o", "IdentitiesOnly=yes",
+            "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+            "-o", "HostKeyAlias=omarchy-windows-vm",
+            "-o", f"UserKnownHostsFile={KEYS / 'windows-vm-known_hosts'}",
+            "-o", "StrictHostKeyChecking=accept-new"]
+
+
+def decode_clixml(raw):
+    text = raw.decode("utf-8", errors="replace")
+    if "#< CLIXML" not in text:
+        return text
+    prefix, _, xml = text.partition("#< CLIXML")
+    try:
+        root = ET.fromstring(xml.strip())
+        messages = []
+        for node in root:
+            if node.attrib.get("S", "").lower() == "progress":
+                continue
+            if node.tag.rsplit("}", 1)[-1] == "S" and node.text:
+                messages.append(re.sub(r"_x([0-9A-Fa-f]{4})_", lambda m: chr(int(m[1], 16)), node.text))
+        return prefix + "".join(messages)
+    except ET.ParseError:
+        return prefix + xml
+
+
+def stderr_stream(stream):
+    clixml = bytearray()
+    for line in iter(stream.readline, b""):
+        if clixml or line.startswith(b"#< CLIXML"):
+            clixml.extend(line)
+        else:
+            sys.stderr.buffer.write(line)
+            sys.stderr.buffer.flush()
+    if clixml:
+        sys.stderr.write(decode_clixml(bytes(clixml)))
+        sys.stderr.flush()
+
+
+def powershell(ip, script, stream=False):
+    user, _ = credentials()
+    if not ip:
+        raise Failure("Windows VM has no container IP; run win-vm up")
+    script = "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; " + script
+    encoded = base64.b64encode(script.encode("utf-16le")).decode()
+    argv = ["ssh", *ssh_options(), f"{user}@{ip}",
+            "powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
+    if stream:
+        process = subprocess.Popen(argv, stderr=subprocess.PIPE)
+        reader = threading.Thread(target=stderr_stream, args=(process.stderr,))
+        reader.start()
+        code = process.wait()
+        reader.join()
+        return code
+    try:
+        result = run(argv, capture_output=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        raise Failure("guest SSH control command timed out after 30s") from None
+    return result.returncode, result.stdout.decode("utf-8-sig", errors="replace"), decode_clixml(result.stderr)
+
+
+def remote(ip, script):
+    code, out, err = powershell(ip, "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; " + script)
+    if code:
+        raise Failure(err.strip() or out.strip() or f"SSH PowerShell exited {code}")
+    return out.strip()
+
+
+def session(ip):
+    user, _ = credentials()
+    code, out, err = powershell(ip, "& query.exe session 2>&1; exit 0")
+    if code:
+        return False, None
+    matches = []
+    for line in out.splitlines():
+        fields = line.lstrip(" >").split()
+        for i, field in enumerate(fields):
+            if field.lower() == user.lower() and len(fields) > i + 2 and fields[i + 1].isdigit():
+                name = fields[i - 1] if i else ""
+                state = fields[i + 2].lower()
+                kind = "disconnected" if state in ("disc", "disconnected") else (
+                    "console" if name == "console" and state == "active" else "rdp")
+                matches.append({"state": kind, "id": int(fields[i + 1]), "name": name})
+    if not matches:
+        return True, {"state": "none", "id": None, "name": None}
+    matches.sort(key=lambda s: {"console": 0, "rdp": 1, "disconnected": 2}[s["state"]])
+    return True, matches[0]
+
+
+def status(state=None):
+    state = state or docker_state()
+    ssh, sess = session(state["ip"]) if state["container"] == "running" and state["ip"] else (False, None)
+    return {"container": state["container"], "ip": state["ip"], "ssh": ssh,
+            "session": sess, "started_by_win_vm": owned(state)}
+
+
+@contextmanager
+def lifecycle_lock():
+    try:
+        fd = os.open(VM_LOCK, os.O_RDONLY | os.O_DIRECTORY)
+    except FileNotFoundError:
+        yield False
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield True
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def private_lock(name):
+    CACHE.mkdir(parents=True, exist_ok=True)
+    fd = os.open(CACHE / name, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def record_start(state):
+    if state["container"] != "running":
+        raise Failure("Omarchy bring-up returned but the VM is not running")
+    CACHE.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=".started-by-win-vm-", dir=CACHE)
+    try:
+        with os.fdopen(fd, "w") as file:
+            file.write(state["started_at"] + "\n")
+        os.replace(name, MARKER)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
+def mounts_ready():
+    anchor = Path(f"/var/lib/omarchy/windows/mounts/users/{os.getuid()}")
+    result = run(["docker-compose", "-f", COMPOSE, "config", "--format", "json"],
+                 capture_output=True, text=True)
+    if result.returncode:
+        return False
+    try:
+        services = json.loads(result.stdout)["services"]
+        volumes = [volume for service in services.values() for volume in service.get("volumes", [])]
+        for target, name in [("/storage", "storage"), ("/shared", "shared")]:
+            matches = [volume for volume in volumes if volume.get("target") == target]
+            if (len(matches) != 1 or matches[0].get("type") != "bind"
+                    or matches[0].get("source") != str(anchor / name)):
+                return False
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return False
+    for name, source in [("storage", HOME / ".windows"), ("shared", HOME / "Windows")]:
+        target = anchor / name
+        result = run(["findmnt", "-J", "-M", str(target), "-o", "TARGET,SOURCE,FSROOT"],
+                     capture_output=True, text=True)
+        if result.returncode:
+            return False
+        records = json.loads(result.stdout).get("filesystems", [])
+        if len(records) != 1 or records[0]["target"] != str(target):
+            return False
+        try:
+            if not os.path.samestat(source.stat(), target.stat()):
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def up(timeout):
+    # Serializes win-vm starts, including the pkexec fallback that must run outside Omarchy's lock.
+    with private_lock("up.lock"):
+        with lifecycle_lock() as locked:
+            before = docker_state()
+            already = before["container"] == "running"
+            direct = not already and locked and mounts_ready()
+            if direct:
+                result = run(["docker-compose", "-f", COMPOSE, "up", "-d"], stdout=sys.stderr)
+                if result.returncode:
+                    return result.returncode
+                record_start(docker_state())
+        if not already and not direct:
+            print("Omarchy bind mounts need restoring (normally after reboot). Approve the one polkit dialog to start the VM.", file=sys.stderr, flush=True)
+            result = run(["pkexec", "/usr/bin/omarchy-windows-vm", "__priv", "up"], stdout=sys.stderr)
+            if result.returncode:
+                return result.returncode
+            with lifecycle_lock() as locked:
+                if not locked:
+                    raise Failure("Omarchy bring-up did not create its lifecycle lock")
+                state = docker_state()
+                # Claim only a new incarnation. Other win-vm callers wait on up.lock, so only an
+                # Omarchy launch racing the polkit dialog could have started it instead.
+                if state["container"] != "running" or state["started_at"] == before["started_at"]:
+                    print("win-vm: VM was not freshly started by this up; leaving it unowned", file=sys.stderr)
+                else:
+                    record_start(state)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        state = docker_state()
+        info = status(state)
+        if info["ssh"] and info["session"]["state"] == "disconnected":
+            require_session(state["ip"], min(120, max(1, deadline - time.monotonic())))
+            info = status(state)
+        if info["ssh"] and info["session"]["state"] in ("console", "rdp"):
+            print(json.dumps({"already_running": already, "ip": info["ip"], "ssh": True, "session": info["session"]}))
+            return 0
+        time.sleep(min(2, max(0, deadline - time.monotonic())))
+    raise Failure("timed out waiting for SSH and tb's active console or RDP session; run the bootstrap once (autologon?)")
+
+
+def down(force):
+    with lifecycle_lock() as locked:
+        state = docker_state()
+        if not force and not owned(state):
+            print(json.dumps({"stopped": False, "reason": "VM wasn't started by win-vm; leaving it alone"}))
+            return 0
+        argv = (["docker-compose", "-f", COMPOSE, "down"] if locked
+                else ["omarchy-windows-vm", "stop"])
+        result = run(argv, stdout=sys.stderr)
+        if result.returncode == 0:
+            MARKER.unlink(missing_ok=True)
+    print(json.dumps({"stopped": result.returncode == 0, "exit_code": result.returncode}))
+    return result.returncode
+
+
+def scp(ip, src, dst, upload):
+    user, _ = credentials()
+    if not ip:
+        raise Failure("Windows VM has no container IP")
+    path = dst if upload else src
+    path = path.replace("\\", "/")
+    if re.match(r"^[A-Za-z]:/", path):
+        path = "/" + path
+    remote_path = f"{user}@{ip}:{path}"
+    local_path = str(Path(src if upload else dst).expanduser().absolute())
+    argv = ["scp", *ssh_options(), "--"] + ([local_path, remote_path] if upload else [remote_path, local_path])
+    return run(argv).returncode
+
+
+def job(ip, script, timeout, download=None):
+    ident = uuid.uuid4().hex
+    folder = ROOT + "\\jobs\\" + ident
+    task = "win-vm-" + ident
+    user, _ = credentials()
+    script = "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding;\n" + script
+    runner = (SOURCE / "run-job.ps1").read_bytes()
+    digest = hashlib.sha256(runner).hexdigest()
+    prepare = f"""
+$r={ps_string(ROOT)}; $d={ps_string(folder)}
+New-Item -ItemType Directory -Force -Path $r | Out-Null
+$acl=[Security.AccessControl.DirectorySecurity]::new()
+$acl.SetAccessRuleProtection($true,$false)
+$acl.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+foreach($sid in @('S-1-5-32-544','S-1-5-18')) {{
+ $rule=[Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid),'FullControl','ContainerInherit,ObjectInherit','None','Allow')
+ $acl.AddAccessRule($rule)
+}}
+Set-Acl -LiteralPath $r -AclObject $acl
+New-Item -ItemType Directory -Force -Path $d | Out-Null
+$needed=!(Test-Path "$r\\run-job.ps1") -or (Get-FileHash "$r\\run-job.ps1" -Algorithm SHA256).Hash -ne '{digest}'
+$needed | ConvertTo-Json -Compress
+"""
+    setup = f"""
+$n={ps_string(task)}
+$a=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\\ProgramData\\win-vm\\run-job.ps1 -Id {ident}'
+$p=New-ScheduledTaskPrincipal -UserId {ps_string(user)} -LogonType Interactive -RunLevel Highest
+$s=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds {int(timeout) + 30}) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+Register-ScheduledTask -TaskName $n -Action $a -Principal $p -Settings $s | Out-Null
+$before=(Get-ScheduledTaskInfo -TaskName $n).LastRunTime.Ticks
+Start-ScheduledTask -TaskName $n
+[Console]::Write($before)
+"""
+    try:
+        if json.loads(remote(ip, prepare)):
+            code = scp(ip, str(SOURCE / "run-job.ps1"), ROOT + "\\run-job.ps1", True)
+            if code:
+                return code
+        scratch = HOME / ".cache/agent-tmp"
+        scratch.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="win-vm-", dir=scratch) as local:
+            path = Path(local) / "job.ps1"
+            path.write_text(script, encoding="utf-8-sig")
+            code = scp(ip, str(path), folder + "\\job.ps1", True)
+            if code:
+                return code
+        before = int(remote(ip, setup))
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            poll = f"""
+$i=Get-ScheduledTaskInfo -TaskName {ps_string(task)}
+$t=Get-ScheduledTask -TaskName {ps_string(task)}
+$e={ps_string(folder + chr(92) + 'exit.txt')}
+$started=$i.LastRunTime.Ticks -ne {before}
+$active=$t.State -in @('Queued','Running')
+if ($started -and !$active) {{
+ if (!(Test-Path $e)) {{ throw "Task ended without exit.txt (result $($i.LastTaskResult))" }}
+ $o=[Convert]::ToBase64String([IO.File]::ReadAllBytes({ps_string(folder + chr(92) + 'stdout.txt')}))
+ $err=[Convert]::ToBase64String([IO.File]::ReadAllBytes({ps_string(folder + chr(92) + 'stderr.txt')}))
+ @{{done=$true;code=[int](Get-Content $e);stdout=$o;stderr=$err}} | ConvertTo-Json -Compress
+}} else {{ @{{done=$false}} | ConvertTo-Json -Compress }}
+"""
+            result = json.loads(remote(ip, poll))
+            if result["done"]:
+                if download and result["code"] == 0:
+                    code = scp(ip, folder + "\\capture.png", download, False)
+                    if code:
+                        return code
+                    with Path(download).expanduser().open("rb") as image:
+                        if image.read(8) != b"\x89PNG\r\n\x1a\n":
+                            raise Failure("guest screenshot is not a PNG")
+                sys.stdout.buffer.write(base64.b64decode(result["stdout"]))
+                sys.stdout.buffer.flush()
+                sys.stderr.write(decode_clixml(base64.b64decode(result["stderr"])))
+                return result["code"]
+            time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+        raise Failure(f"in-session job timed out after {timeout:g}s")
+    finally:
+        failed = sys.exc_info()[0] is not None
+        # Always stop/wait before removal; Start-ScheduledTask is asynchronous.
+        cleanup = f"""
+$n={ps_string(task)}; $d={ps_string(folder)}
+$t=Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue
+if ($t) {{
+ if ($t.State -in @('Queued','Running')) {{ Stop-ScheduledTask -TaskName $n }}
+ $until=(Get-Date).AddSeconds(15)
+ do {{
+  $t=Get-ScheduledTask -TaskName $n
+  if ($t.State -notin @('Queued','Running')) {{ break }}
+  Start-Sleep -Milliseconds 200
+ }} while ((Get-Date) -lt $until)
+ if ($t.State -in @('Queued','Running')) {{ throw 'Task still active; retained task and job directory' }}
+ Unregister-ScheduledTask -TaskName $n -Confirm:$false
+}}
+if (Test-Path $d) {{ Remove-Item -LiteralPath $d -Recurse -Force }}
+"""
+        try:
+            remote(ip, cleanup)
+        except Failure as error:
+            print(f"win-vm: cleanup failed for {task}: {error}", file=sys.stderr)
+            if not failed:
+                raise
+
+
+def require_session(ip, timeout):
+    # Serialized so concurrent callers recheck the session instead of racing tscon.
+    with private_lock("handoff.lock"):
+        ssh, sess = session(ip)
+        if not ssh:
+            raise Failure("guest SSH unavailable; run win-vm bootstrap once")
+        if sess["state"] == "none":
+            raise Failure("tb not logged on (autologon?)")
+        if sess["state"] != "disconnected":
+            return
+        remote(ip, f"""
+$n='win-vm-console-handoff-{uuid.uuid4().hex}'
+$a=New-ScheduledTaskAction -Execute 'tscon.exe' -Argument '{sess["id"]} /dest:console'
+$p=New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+$s=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds 30) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+Register-ScheduledTask -TaskName $n -Action $a -Principal $p -Settings $s | Out-Null
+try {{
+ Start-ScheduledTask -TaskName $n
+ $until=(Get-Date).AddSeconds({min(25, timeout):g})
+ do {{
+  $i=Get-ScheduledTaskInfo -TaskName $n
+  $t=Get-ScheduledTask -TaskName $n
+  if ($i.LastTaskResult -ne 267011 -and $t.State -notin @('Queued','Running')) {{ break }}
+  if ((Get-Date) -ge $until) {{ throw 'Console handoff task timed out' }}
+  Start-Sleep -Milliseconds 200
+ }} while ($true)
+ if ($i.LastTaskResult -ne 0) {{ throw "tscon failed with exit code $($i.LastTaskResult)" }}
+}} finally {{ Unregister-ScheduledTask -TaskName $n -Confirm:$false }}
+""")
+        _, sess = session(ip)
+        if not sess or sess["state"] != "console":
+            raise Failure("tscon completed without an Active console session")
+
+
+def winapp_script(args):
+    command_line = subprocess.list2cmdline(["ui", *args])
+    return f"""$out=Join-Path $PSScriptRoot 'winapp.out'
+$err=Join-Path $PSScriptRoot 'winapp.err'
+$p=Start-Process -FilePath {ps_string(WINAPP)} -ArgumentList {ps_string(command_line)} -NoNewWindow -Wait -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+$bytes=[IO.File]::ReadAllBytes($out)
+[Console]::OpenStandardOutput().Write($bytes,0,$bytes.Length)
+$bytes=[IO.File]::ReadAllBytes($err)
+[Console]::OpenStandardError().Write($bytes,0,$bytes.Length)
+exit $p.ExitCode
+"""
+
+
+def sha256(path):
+    with path.open("rb") as file:
+        return hashlib.file_digest(file, "sha256").hexdigest()
+
+
+def bootstrap(stage_only):
+    stage = CACHE / "bootstrap"
+    stage.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(SOURCE / "bootstrap.ps1", stage / "bootstrap.ps1")
+    batch = (SOURCE / "bootstrap.bat").read_text().splitlines()
+    (stage / "bootstrap.bat").write_bytes(("\r\n".join(batch) + "\r\n").encode())
+    shutil.copyfile(KEYS / "windows-vm-agent.pub", stage / "windows-vm-agent.pub")
+    for name, (url, digest) in ARTIFACTS.items():
+        path = stage / name
+        if path.is_file() and sha256(path) == digest:
+            continue
+        print(f"Downloading {name}", file=sys.stderr)
+        part = path.with_suffix(path.suffix + ".part")
+        try:
+            with urllib.request.urlopen(url, timeout=120) as response, part.open("wb") as file:
+                shutil.copyfileobj(response, file)
+            if sha256(part) != digest:
+                raise Failure(f"SHA256 mismatch for {name}; upstream bytes changed, refusing to use them")
+            part.replace(path)
+        finally:
+            part.unlink(missing_ok=True)
+    hashes = {name: sha256(stage / name) for name in ARTIFACTS}
+    (stage / "artifacts.json").write_text(json.dumps(hashes, indent=2) + "\n")
+    print(json.dumps({"stage": str(stage), "artifacts": hashes}), flush=True)
+    if not stage_only:
+        user, password = credentials()
+        if not password or "\n" in password or "\r" in password:
+            raise Failure("missing or invalid WINDOWS_VM_PASSWORD in ~/.keys/windows-vm.env")
+        # SDL's console callback reads one password line when /u is supplied.
+        argv = ["sdl-freerdp3", "/v:127.0.0.1:3389", f"/u:{user}", "/cert:ignore",
+                "/clipboard", "/dynamic-resolution", f"/drive:winvm,{stage}", "/from-stdin:force"]
+        process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, start_new_session=True)
+        process.stdin.write((password + "\n").encode())
+        process.stdin.close()
+        print(json.dumps({"rdp_pid": process.pid, "bootstrap": r"\\tsclient\winvm\bootstrap.bat"}))
+    return 0
+
+
+def parser():
+    p = argparse.ArgumentParser(description=__doc__, epilog="Guest commands require one elevated bootstrap.bat run. up waits for SSH + active console or RDP; down stops only a container started by win-vm (use --force to override). No RDP lifecycle coupling.")
+    sub = p.add_subparsers(dest="command", required=True)
+    q = sub.add_parser("up", help="start headless and wait for guest SSH + active console or RDP")
+    q.add_argument("--timeout", type=float, default=900, help="readiness timeout in seconds (default: 900)")
+    q = sub.add_parser("down", help="stop only the container started by win-vm")
+    q.add_argument("--force", action="store_true")
+    sub.add_parser("status", help="JSON state, SSH, session and lifecycle ownership")
+    for name in ["exec", "gui", "uia"]:
+        q = sub.add_parser(name, help={"exec": "non-interactive PowerShell script", "gui": "launch an exe in tb's session; returns JSON pid", "uia": "run winapp ui arguments in tb's session"}[name])
+        if name != "exec":
+            q.add_argument("--timeout", type=float, default=120, help="job timeout before command arguments (default: 120)")
+        q.add_argument("args", nargs=argparse.REMAINDER)
+    for name in ["put", "get"]:
+        q = sub.add_parser(name, help="SFTP copy; Windows drive paths and UNC supported")
+        q.add_argument("src")
+        q.add_argument("dst")
+    q = sub.add_parser("screenshot", help="capture app or whole desktop; copy and validate PNG")
+    q.add_argument("out")
+    q.add_argument("--app", type=int)
+    q.add_argument("--timeout", type=float, default=120)
+    q = sub.add_parser("bootstrap", help="stage pinned installers; optionally open detached SDL RDP")
+    q.add_argument("--stage-only", action="store_true")
+    return p
+
+
+def main():
+    p = parser()
+    args = p.parse_args()
+    if hasattr(args, "timeout") and args.timeout <= 0:
+        p.error("--timeout must be positive")
+    if hasattr(args, "args"):
+        if args.args[:1] == ["--"]:
+            args.args.pop(0)
+        if not args.args:
+            p.error(f"{args.command} requires command arguments")
+        if args.command == "exec" and len(args.args) != 1:
+            p.error("exec requires exactly one PowerShell script argument")
+    if args.command == "bootstrap":
+        return bootstrap(args.stage_only)
+    docker_access()
+    if args.command == "up":
+        return up(args.timeout)
+    if args.command == "down":
+        return down(args.force)
+    state = docker_state()
+    if args.command == "status":
+        print(json.dumps(status(state)))
+        return 0
+    ip = state["ip"]
+    if args.command == "exec":
+        script = args.args[0]
+        script = "$global:LASTEXITCODE=0; & { " + script + "\n}; $ok=$?; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; if (!$ok) { exit 1 }"
+        return powershell(ip, script, stream=True)
+    if args.command in ("put", "get"):
+        return scp(ip, args.src, args.dst, args.command == "put")
+    require_session(ip, args.timeout)
+    if args.command == "gui":
+        # Start-Process joins ArgumentList itself; apply Windows argv quoting once.
+        exe, *values = args.args
+        command_line = subprocess.list2cmdline(values)
+        script = f"""$ErrorActionPreference='Stop'
+$exe={ps_string(exe)}; $wd=Split-Path -Parent $exe
+if (!$wd) {{ $exe=(Get-Command $exe -ErrorAction Stop).Source; $wd=Split-Path -Parent $exe }}
+$params=@{{FilePath=$exe;WorkingDirectory=$wd;PassThru=$true}}
+$arguments={ps_string(command_line)}
+if ($arguments) {{ $params.ArgumentList=$arguments }}
+$p=Start-Process @params
+@{{pid=$p.Id}} | ConvertTo-Json -Compress
+"""
+        return job(ip, script, args.timeout)
+    if args.command == "uia":
+        script = winapp_script(args.args)
+        return job(ip, script, args.timeout)
+    if args.command == "screenshot":
+        if args.app is not None:
+            script = winapp_script(["screenshot", "-a", str(args.app), "--output", "capture.png"])
+        else:
+            script = """$ErrorActionPreference='Stop'
+Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+$r=[Windows.Forms.SystemInformation]::VirtualScreen
+$b=New-Object Drawing.Bitmap($r.Width,$r.Height)
+$g=[Drawing.Graphics]::FromImage($b)
+try { $g.CopyFromScreen($r.Left,$r.Top,0,0,$r.Size); $b.Save((Join-Path $PSScriptRoot 'capture.png'),[Drawing.Imaging.ImageFormat]::Png) }
+finally { $g.Dispose(); $b.Dispose() }
+"""
+        return job(ip, script, args.timeout, download=args.out)
+    raise Failure("unknown command")
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (Failure, OSError, ValueError, urllib.error.URLError) as error:
+        print(f"win-vm: {error}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        sys.exit(130)
