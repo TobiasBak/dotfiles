@@ -45,8 +45,31 @@ owns the measured sizing basis.
 Nix's `cores = 4` supplies `NIX_BUILD_CORES`; builders can ignore it, and trusted
 users can override Nix settings. These are cooperative worker settings, not CPU
 quotas.
-There are no new memory caps. T3 retains its existing 24-GiB memory and 4-GiB
-swap limits and its existing scheduling priority.
+The CPU launcher adds no memory caps. T3's separate live service policy is
+`MemoryHigh=12G`, `MemoryMax=16G`, `MemorySwapMax=1G`, owned by
+[`configs/t3code/service.conf`](../../../configs/t3code/service.conf).
+The budget leaves 8 GiB for the Windows VM and 6 GiB for the desktop on the
+30-GiB host. T3's previous 24-GiB cap allowed a global OOM on 2026-10-05:
+a timed-out scratch type-check left a 14.4-GiB `tsgolint` grandchild alive.
+`pc-workload` scopes are outside T3's cap; they need separately budgeted memory
+and whole-scope cancellation for bounded checks. Scheduling priority is unchanged.
+
+## Bounded checks
+
+For scratch checks that can spawn grandchildren, use a transient user service
+with `systemd-run --user --wait --pipe --service-type=exec`, a unique unit name,
+`--working-directory="$PWD"`, and explicit `MemoryMax`, `MemorySwapMax`,
+`RuntimeMaxSec`, `TimeoutStopSec` and `KillMode=control-group` properties.
+Choose the memory and runtime budgets for the check and available host capacity;
+services, like `pc-workload` scopes, are outside T3's aggregate memory cap.
+The service manager owns timeout cleanup even if the requesting agent disappears.
+If the wrapper times out earlier, stop its named unit and verify the whole cgroup
+is empty before retrying. A Python subprocess timeout alone is not cleanup.
+
+A live 2026-10-05 probe used 64 MiB, zero swap and a two-second runtime for a
+Python parent and sleeping child. The service reported `Result=timeout`, peaked
+at 6.3 MiB, and neither process survived. These tiny budgets test cancellation;
+they are not recommended compiler budgets.
 
 ## CPU policy and deferred I/O work
 
