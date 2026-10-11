@@ -346,7 +346,7 @@ def scp(ip, src, dst, upload):
     return run(argv).returncode
 
 
-def job(ip, script, timeout, download=None):
+def job(ip, script, timeout, download=None, capture=False):
     ident = uuid.uuid4().hex
     folder = ROOT + "\\jobs\\" + ident
     task = "win-vm-" + ident
@@ -383,7 +383,7 @@ Start-ScheduledTask -TaskName $n
         if json.loads(remote(ip, prepare)):
             code = scp(ip, str(SOURCE / "run-job.ps1"), ROOT + "\\run-job.ps1", True)
             if code:
-                return code
+                raise Failure(f"scp to guest failed with exit code {code}")
         scratch = HOME / ".cache/agent-tmp"
         scratch.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="win-vm-", dir=scratch) as local:
@@ -391,10 +391,11 @@ Start-ScheduledTask -TaskName $n
             path.write_text(script, encoding="utf-8-sig")
             code = scp(ip, str(path), folder + "\\job.ps1", True)
             if code:
-                return code
+                raise Failure(f"scp to guest failed with exit code {code}")
         before = int(remote(ip, setup))
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        interval = 0.25
+        while True:
             poll = f"""
 $i=Get-ScheduledTaskInfo -TaskName {ps_string(task)}
 $t=Get-ScheduledTask -TaskName {ps_string(task)}
@@ -413,16 +414,22 @@ if ($started -and !$active) {{
                 if download and result["code"] == 0:
                     code = scp(ip, folder + "\\capture.png", download, False)
                     if code:
-                        return code
+                        raise Failure(f"scp from guest failed with exit code {code}")
                     with Path(download).expanduser().open("rb") as image:
                         if image.read(8) != b"\x89PNG\r\n\x1a\n":
                             raise Failure("guest screenshot is not a PNG")
-                sys.stdout.buffer.write(base64.b64decode(result["stdout"]))
-                sys.stdout.buffer.flush()
+                stdout = base64.b64decode(result["stdout"])
+                if not capture:
+                    sys.stdout.buffer.write(stdout)
+                    sys.stdout.buffer.flush()
                 sys.stderr.write(decode_clixml(base64.b64decode(result["stderr"])))
-                return result["code"]
-            time.sleep(min(0.5, max(0, deadline - time.monotonic())))
-        raise Failure(f"in-session job timed out after {timeout:g}s")
+                return (result["code"], stdout) if capture else result["code"]
+            # Polls once more after the deadline, so a job finishing during the last sleep counts.
+            if time.monotonic() >= deadline:
+                raise Failure(f"in-session job timed out after {timeout:g}s")
+            # Each poll is a short SSH call; back off so long jobs stay cheap.
+            interval = min(5, interval * 1.5)
+            time.sleep(min(interval, max(0, deadline - time.monotonic())))
     finally:
         failed = sys.exc_info()[0] is not None
         # Always stop/wait before removal; Start-ScheduledTask is asynchronous.
@@ -553,6 +560,8 @@ def parser():
         q = sub.add_parser(name, help={"exec": "non-interactive PowerShell script", "gui": "launch an exe in tb's session; returns JSON pid", "uia": "run winapp ui arguments in tb's session"}[name])
         if name != "exec":
             q.add_argument("--timeout", type=float, default=120, help="job timeout before command arguments (default: 120)")
+        if name == "gui":
+            q.add_argument("--wait", action="store_true", help="block until the process exits; exit with its code (exact code in JSON)")
         q.add_argument("args", nargs=argparse.REMAINDER)
     for name in ["put", "get"]:
         q = sub.add_parser(name, help="SFTP copy; Windows drive paths and UNC supported")
@@ -572,6 +581,8 @@ def main():
     args = p.parse_args()
     if hasattr(args, "timeout") and args.timeout <= 0:
         p.error("--timeout must be positive")
+    if getattr(args, "wait", False) and args.timeout * 1000 > 2**31 - 1:
+        p.error("gui --wait --timeout is limited to 2147483 seconds (WaitForExit takes Int32 milliseconds)")
     if hasattr(args, "args"):
         if args.args[:1] == ["--"]:
             args.args.pop(0)
@@ -609,9 +620,27 @@ $params=@{{FilePath=$exe;WorkingDirectory=$wd;PassThru=$true}}
 $arguments={ps_string(command_line)}
 if ($arguments) {{ $params.ArgumentList=$arguments }}
 $p=Start-Process @params
-@{{pid=$p.Id}} | ConvertTo-Json -Compress
 """
-        return job(ip, script, args.timeout)
+        if not args.wait:
+            return job(ip, script + "@{pid=$p.Id} | ConvertTo-Json -Compress\n", args.timeout)
+        # The handle keeps ExitCode readable; on timeout, kill the whole tree before failing.
+        script += f"""$null=$p.Handle
+if (!$p.WaitForExit({int(args.timeout * 1000)})) {{
+ & taskkill.exe /T /F /PID $p.Id | Out-Null
+ @{{pid=$p.Id;timed_out=$true}} | ConvertTo-Json -Compress
+ exit 0
+}}
+@{{pid=$p.Id;exit_code=$p.ExitCode}} | ConvertTo-Json -Compress
+"""
+        code, stdout = job(ip, script, args.timeout + 60, capture=True)
+        if code:
+            return code
+        result = json.loads(stdout)
+        if result.get("timed_out"):
+            raise Failure(f"process {result['pid']} still running after {args.timeout:g}s; killed its process tree")
+        print(json.dumps(result))
+        # Host exit statuses are 8-bit; the exact Windows code stays in the JSON.
+        return result["exit_code"] if 0 <= result["exit_code"] <= 255 else 255
     if args.command == "uia":
         script = winapp_script(args.args)
         return job(ip, script, args.timeout)

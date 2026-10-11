@@ -15,7 +15,7 @@ class WinVmTests(unittest.TestCase):
         scratch.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="win-vm-cli-", dir=scratch) as home:
             env = {**os.environ, "HOME": home, "PATH": "/nonexistent"}
-            for args in [("exec",), ("exec", "a", "b"), ("gui",), ("uia",),
+            for args in [("exec",), ("exec", "a", "b"), ("gui",), ("gui", "--wait"), ("gui", "--timeout", "2592000", "--wait", "app.exe"), ("uia",),
                          ("up", "--timeout", "0"), ("down", "--froce")]:
                 with self.subTest(args=args):
                     result = subprocess.run(
