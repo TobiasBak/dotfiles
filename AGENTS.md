@@ -20,7 +20,7 @@ Before changing or remotely rebuilding a NixOS server, read `nixos/README.md` an
 
 ## Omarchy
 
-The `pc` can also run Omarchy (host `tb-omarchy`, user `tb`) from the standalone Home Manager configuration `<user>@omarchy`. Before changing it or its bootstrap, read `omarchy/README.md`. Omarchy owns its desktop configuration; do not manage Hyprland, Waybar or other Omarchy-owned files from this repository. On Omarchy, mise owns Node, pnpm and the agent CLIs, and T3 updates itself through `t3code-update.timer`; the NixOS instructions below do not apply there.
+Omarchy and NixOS are separate setups. `omarchy/bootstrap.sh` uses mise, pacman/AUR and native systemd user units in `omarchy/systemd/`; it must not install Nix or activate Home Manager. `nixos/` is only for NixOS and WSL. Share program configuration and agent instructions through `configs/` and `scripts/`, not OS modules. Before changing Omarchy setup, read `omarchy/README.md`. Omarchy owns desktop configuration; do not manage Hyprland or other Omarchy-owned files from this repository. T3's nightly service updater is `t3code-update.timer`.
 
 ## Installed T3 Code service
 

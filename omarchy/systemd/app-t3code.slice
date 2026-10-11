@@ -1,0 +1,7 @@
+[Unit]
+Description=T3 Code server and agents
+
+[Slice]
+MemoryHigh=40%
+MemoryMax=55%
+MemorySwapMax=1G

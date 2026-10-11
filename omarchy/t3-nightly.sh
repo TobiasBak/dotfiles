@@ -25,6 +25,8 @@ log() { printf '[t3-nightly] %s\n' "$*"; }
 die() { printf '[t3-nightly] %s\n' "$*" >&2; exit 1; }
 
 cd "$HOME"
+# systemd user units do not inherit the interactive shell's mise activation.
+export PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:/usr/local/bin:/usr/bin:$PATH"
 # Omarchy's mise wrappers do the same: the version is chosen explicitly.
 export MISE_MINIMUM_RELEASE_AGE=0
 t3="$HOME/.local/share/mise/shims/t3"
@@ -49,7 +51,7 @@ if [ "$current" != "$version" ]; then
   fi
 fi
 
-# T3 writes the unit itself; Home Manager supplies only a drop-in, which
+# T3 writes the unit itself; Omarchy supplies only a drop-in, which
 # alone would make `systemctl --user cat t3code.service` succeed.
 if [ -f "$HOME/.config/systemd/user/t3code.service" ]; then
   "$t3" update "$version" --yes

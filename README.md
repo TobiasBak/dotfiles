@@ -1,6 +1,6 @@
 # Dotfiles
 
-This repository contains configuration files for Windows, native NixOS developer machines, NixOS WSL, and NixOS servers.
+This repository contains separate setups for Omarchy, NixOS, NixOS WSL, NixOS servers and Windows. Omarchy uses native packages, mise and systemd, never Nix or Home Manager. Shared program and agent configuration lives under `configs/`.
 
 ## Structure
 
@@ -9,7 +9,8 @@ This repository contains configuration files for Windows, native NixOS developer
   - Native NixOS Home Manager modules explicitly link desktop and developer configs from here.
   - Windows installers symlink host configs like WezTerm and VS Code into their Windows locations.
 - `assets/`: Shared non-configuration assets such as wallpapers.
-- `nixos/`: Flake-based NixOS host configs for WSL, native developer machines, and servers.
+- `omarchy/`: Native Omarchy bootstrap, T3 nightly updater and systemd user units. See `omarchy/README.md`.
+- `nixos/`: Flake-based NixOS host configs for WSL, native developer machines, and servers. Not used by Omarchy.
 - `windows/`: Windows setup scripts.
 - `scripts/`: Shared bootstrap and benchmark scripts.
 - `docs/`: Historical research notes and supporting documentation.
@@ -99,8 +100,8 @@ The native developer hosts are:
 - `laptop`: integrated-graphics laptop.
 
 Both use Niri, Quickshell, Home Manager, Docker, and the shared developer
-profile. See `nixos/README.md` for the installation flow. The `pc` can also
-run Omarchy with the same home configuration; see `omarchy/README.md`.
+profile. See `nixos/README.md` for the installation flow. The same hardware can also
+run Omarchy with its separate native setup; see `omarchy/README.md`.
 After installation, rebuild the current native host with:
 
 ```bash

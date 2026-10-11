@@ -57,19 +57,6 @@
         packages = windowsVm.runtimeInputs ++ [ pkgs.shellcheck ];
       };
 
-      # Standalone Home Manager for Omarchy, one per Linux user. bootstrap.sh
-      # activates "$USER@omarchy". The installed pc runs as tb.
-      homeConfigurations = nixpkgs.lib.genAttrs' [ "tobias" "tb" ] (
-        username:
-        nixpkgs.lib.nameValuePair "${username}@omarchy" (
-          home-manager.lib.homeManagerConfiguration {
-            inherit pkgs;
-            extraSpecialArgs = { inherit hunk username; };
-            modules = [ ./home/tobias/omarchy.nix ];
-          }
-        )
-      );
-
       nixosConfigurations = {
         wsl = mkDeveloperSystem [
           nixos-wsl.nixosModules.default
