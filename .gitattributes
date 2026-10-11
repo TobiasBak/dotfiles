@@ -1,4 +1,3 @@
-# Keep this repo stable when edited from both Windows and Linux/WSL.
 # Git stores text files as LF and checks them out as LF everywhere.
 * text=auto eol=lf
 
