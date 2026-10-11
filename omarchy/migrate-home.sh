@@ -16,9 +16,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 TAILSCALE_STATE=var/lib/tailscale/tailscaled.state
-# Orderready's worktrees, parked on the NixOS root at the path they had on the
-# wiped data disk. T3's database records that path, so it stays the same.
-ORDERREADY=mnt/data-2tb/orderready
+# Orderready's worktrees, parked in the NixOS home before the data disk was
+# wiped. They return to the path they had there, which T3's database records.
+ORDERREADY_PARK=orderready-park
+ORDERREADY=/mnt/data-2tb/orderready
 # Paths relative to the home directory. Agent configs that Home Manager links
 # are skipped below and relinked by the activation at the end.
 paths=(
@@ -79,12 +80,12 @@ for path in "${paths[@]}"; do
   (cd "$source_home" && rsync -aHAX --relative --exclude-from="$excludes" "./$path" "$HOME/")
 done
 
-if [ -d "$source_root/$ORDERREADY" ]; then
-  log "Copying /$ORDERREADY"
+if [ -d "$source_home/$ORDERREADY_PARK" ]; then
+  log "Restoring ~/$ORDERREADY_PARK to $ORDERREADY"
   # bootstrap.sh creates /mnt/data-2tb owned by this user.
-  rsync -aHAX --filter="merge $SCRIPT_DIR/orderready.rsync-filter" "$source_root/$ORDERREADY/" "/$ORDERREADY/"
+  rsync -aHAX --filter="merge $SCRIPT_DIR/orderready.rsync-filter" "$source_home/$ORDERREADY_PARK/" "$ORDERREADY/"
 else
-  log "Skipping /$ORDERREADY (not parked on the source)"
+  log "Skipping $ORDERREADY (~/$ORDERREADY_PARK is not on the source)"
 fi
 
 # Home-level links Tobias made by hand, such as ~/vault.

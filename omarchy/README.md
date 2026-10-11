@@ -13,8 +13,8 @@ same Home Manager modules NixOS uses.
   zsh, Tailscale, lingering, the Tailnet-only firewall rule for 3773, and
   installs T3's service. `--tpm2` also switches to the systemd initramfs that
   TPM2 unlock needs. Safe to rerun. Exits 2 while human steps remain.
-- `migrate-home.sh`: copies agent state, `~/code`, credentials and Orderready
-  from the read-only NixOS root, at the same paths. `--tailscale` also takes
+- `migrate-home.sh`: copies agent state, `~/code` and credentials from the
+  read-only NixOS root at the same paths, and restores the parked Orderready. `--tailscale` also takes
   over NixOS's Tailscale identity.
 - `orderready.rsync-filter`: what Orderready parking and migration copy.
 
@@ -38,39 +38,41 @@ Identify disks by model and serial, never by `nvme` index:
 
 1. Orderready pushes its branches, commits dirty work to WIP branches and
    pauses.
-2. Park Orderready on the NixOS root, at the same path once the data disk is
-   gone. A bind mount of `/` reaches under the mountpoint:
+2. Park Orderready in the NixOS home. This needs no root:
 
    ```sh
    filter=~/code/dotfiles/omarchy/orderready.rsync-filter
-   sudo mkdir -p /mnt/rootview
-   sudo mount --bind / /mnt/rootview
-   sudo install -d -o tobias -g users /mnt/rootview/mnt/data-2tb
+   park=/home/tobias/orderready-park
    rsync -aHAX --info=progress2 --filter="merge $filter" \
-     /mnt/data-2tb/orderready/ /mnt/rootview/mnt/data-2tb/orderready/
+     /mnt/data-2tb/orderready/ "$park/"
    ```
 
-   About 68 GiB (852k files) on 2026-10-11, against 353 GiB free on the NixOS root.
-3. Verify the parked copy before anything is wiped. The
-   `wt/platform-*` worktrees are unpushed and this copy is their only backup.
-   The dry run must print nothing, and each worktree must show the same
-   status on both sides:
+   About 68 GiB (852k files) on 2026-10-11, against 353 GiB free on the NixOS
+   root. `migrate-home.sh` restores it to `/mnt/data-2tb/orderready` on
+   Omarchy, the path T3's database records.
+3. Verify the park before anything is wiped. The `wt/platform-*` worktrees
+   are unpushed and this copy is their only backup. The dry run must print
+   nothing, and each worktree must show the same status and HEAD on both
+   sides. `--no-optional-locks` keeps git from rewriting the index the two
+   copies share:
 
    ```sh
    rsync -naHAXc --delete -i --filter="merge $filter" \
-     /mnt/data-2tb/orderready/ /mnt/rootview/mnt/data-2tb/orderready/
+     /mnt/data-2tb/orderready/ "$park/"
    for wt in /mnt/data-2tb/orderready/wt/platform-*; do
-     parked=/mnt/rootview$wt
-     diff <(git -C "$wt" status --short; git -C "$wt" rev-parse HEAD) \
-          <(git -C "$parked" status --short; git -C "$parked" rev-parse HEAD) &&
+     parked=$park/wt/${wt##*/}
+     diff <(git -C "$wt" --no-optional-locks status --short; git -C "$wt" rev-parse HEAD) \
+          <(git -C "$parked" --no-optional-locks status --short; git -C "$parked" rev-parse HEAD) &&
        echo "ok $wt"
    done
-   sudo umount /mnt/rootview
    ```
 
+   The worktrees' git metadata lives in `~/code/orderready{,-platform}/.git`
+   and Orderready's cache in `~/.cache/orderready`, both already on the NixOS
+   root.
 4. Copy anything else still wanted off the 2 TB disk. All of it is lost.
-5. Rebuild the pc from main, which drops the `/mnt/data-2tb` mount. Reboot
-   once and check `ls /mnt/data-2tb/orderready` on NixOS.
+   NixOS's `/mnt/data-2tb` mount is `nofail`, so NixOS boots without the disk;
+   the next NixOS rebuild drops the mount.
 
 ## 2. Install
 
