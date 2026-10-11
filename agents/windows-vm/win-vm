@@ -9,7 +9,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -52,26 +51,6 @@ class Failure(Exception):
 
 def run(argv, **kwargs):
     return subprocess.run(argv, **kwargs)
-
-
-def docker_access():
-    if os.access("/var/run/docker.sock", os.W_OK):
-        return
-    groups = run(["id", "-nG", "tb"], capture_output=True, text=True)
-    if groups.returncode or "docker" not in groups.stdout.split():
-        raise Failure("tb is not configured in group docker; enable Omarchy sudoless Docker first")
-    if os.environ.get("WIN_VM_NEWGRP"):
-        raise Failure("Docker socket is still not writable after newgrp docker")
-    # Bridge the existing session until the next reboot applies tb's new group.
-    env = dict(os.environ, WIN_VM_NEWGRP="1")
-    command = shlex.join([sys.executable, str(SOURCE / "win-vm"), *sys.argv[1:]])
-    stdin = os.dup(0)
-    try:
-        result = run(["newgrp", "docker"], input=f"exec {command} <&{stdin} {stdin}<&-\n",
-                     text=True, env=env, pass_fds=(stdin,))
-    finally:
-        os.close(stdin)
-    sys.exit(result.returncode)
 
 
 def docker_state():
@@ -592,7 +571,6 @@ def main():
             p.error("exec requires exactly one PowerShell script argument")
     if args.command == "bootstrap":
         return bootstrap(args.stage_only)
-    docker_access()
     if args.command == "up":
         return up(args.timeout)
     if args.command == "down":
