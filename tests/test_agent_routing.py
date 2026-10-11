@@ -31,11 +31,16 @@ class AgentRoutingTests(unittest.TestCase):
         high = {**SOL, "options": {"thinking": "high"}}
         haiku = {"providerInstanceId": "claudeAgent", "model": "claude-haiku-5-5",
                  "options": {"effort": "high"}}
-        for target in [high, haiku]:
+        high_array = {**SOL, "options": [{"id": "thinking", "value": "high"}]}
+        haiku_array = {**haiku, "options": [{"id": "effort", "value": "high"}]}
+        for target in [high, high_array, haiku, haiku_array]:
             with self.subTest(target=target):
                 payload = {"task": "Read-only check", "target": target}
                 actual = self.invoke("mcp__t3-code__delegate_task", payload)
                 self.assertEqual(actual["updatedInput"],
                                  {**payload, "runtimeMode": "full-access"})
+        partial = {"model": high_array["model"], "options": high_array["options"]}
+        actual = self.invoke("mcp__t3-code__delegate_task", {"task": "Review", "target": partial})
+        self.assertEqual(actual["updatedInput"]["target"], high_array)
         self.assertEqual(self.invoke("Agent", {"prompt": "Execute", "model": "opus"})
                          ["permissionDecision"], "deny")
