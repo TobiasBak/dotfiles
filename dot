@@ -605,7 +605,8 @@ class Engine:
                 continue
             for assertion in data.get("assert", []):
                 try:
-                    result = command(["bash", "-c", assertion["check"]], cwd=HOME, timeout=120, check=False)
+                    result = command(["bash", "-c", assertion["check"]], cwd=HOME, timeout=120, check=False,
+                                     env={"MISE_AUTO_INSTALL": "0", "MISE_EXEC_AUTO_INSTALL": "0"})
                     if result.returncode == 0 and ("expect" not in assertion or result.stdout.strip() == assertion["expect"]):
                         continue
                     detail = f"check exited {result.returncode}; stdout: {result.stdout.strip()[-1000:]}; stderr: {result.stderr.strip()[-1000:]}"
@@ -676,7 +677,7 @@ def main():
             require(STABLE.resolve() == REPO, "apply from the stable checkout after merge; ~/.dotfiles points to a different path")
         items = engine.run(apply=args.operation == "apply" and not dry_run)
         output(items, args.json, dry_run)
-        return int(bool(items))
+        return 2 if any(item["state"] == "error" for item in items) else int(bool(items))
     except Exception as exc:
         print(f"dot: {exc}", file=sys.stderr)
         return 2

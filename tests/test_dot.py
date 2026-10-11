@@ -38,6 +38,13 @@ omarchy-pkg-add)
   ;;
 mise)
   case "$1" in
+    exec)
+      if [[ ${MISE_AUTO_INSTALL-unset} != 0 || ${MISE_EXEC_AUTO_INSTALL-unset} != 0 ]]; then
+        printf 'auto-install\n' >> "$DOT_STATE/mutations"
+        touch "$HOME/auto-installed-tool"
+      fi
+      exit 1
+      ;;
     ls) cat "$DOT_STATE/mise.json" ;;
     use|settings|set|install)
       printf 'mise\n' >> "$DOT_STATE/mutations"
@@ -224,7 +231,7 @@ class DotTests(unittest.TestCase):
         (self.bin / 'pacman').unlink()
         (self.bin / 'python3').symlink_to(sys.executable)
         self.env['PATH'] = str(self.bin)
-        items = self.run_dot('check', 'packages', code=1)
+        items = self.run_dot('check', 'packages', code=2)
         self.assertEqual([(i['state'], i['fix']) for i in items], [('error', 'capture')])
 
     def test_stable_missing_created_before_links_and_foreign_left_untouched(self):
@@ -430,6 +437,18 @@ fix = "printf ready"
         self.assert_clean('assertions')
         self.run_dot('apply', 'assertions', code=0)
         self.assertEqual((self.home / 'attempts').read_text(), 'x')
+        self.module('missing_tool', '''[[assert]]
+name = "missing tool stays absent during checks"
+check = "mise exec absent-tool -- absent-command"
+apply = "mise exec absent-tool -- absent-command"
+''')
+        before = self.snapshot()
+        self.run_dot('check', 'missing_tool', code=1)
+        self.run_dot('apply', 'missing_tool', code=1, dry_run=True)
+        self.assertEqual(before, self.snapshot())
+        self.assertFalse((self.home / 'auto-installed-tool').exists())
+        self.run_dot('apply', 'missing_tool', code=2)
+        self.assertTrue((self.home / 'auto-installed-tool').exists())
 
     def test_assertion_manifest_requires_exactly_one_remedy(self):
         for body in ('', 'apply = "true"\nfix = "true"\n'):
