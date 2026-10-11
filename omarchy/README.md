@@ -36,7 +36,8 @@ user and home directory, not a fixed username or hostname.
 
    Enter your sudo password when asked. The script:
    - Installs global instructions, vault skills and Pi settings without Nix.
-   - Sets mise's package manager to pnpm and selects pnpm 11 for T3 installs.
+   - Sets mise's package manager to pnpm, selects pnpm 11 for T3 installs and
+     pins pnpm's store to `~/.local/share/pnpm/store` on disk.
    - Installs `uv`, `go`, `vp` (vite-plus) and `playwright-cli` through mise,
      points playwright-cli at Omarchy's Chromium and links its agent skill.
      Omarchy's `~/.local/bin` wrappers install Claude, Codex, Pi and `gh` on

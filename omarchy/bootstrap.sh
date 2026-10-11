@@ -36,6 +36,12 @@ python3 "$REPO_DIR/scripts/install-agent-context.py"
 mise settings set npm.package_manager pnpm
 # pnpm 11 is the supported installer for the nightly CLI.
 mise use --global --quiet pnpm@11.13.1
+# Pin pnpm's store to disk. Otherwise projects on another filesystem get a
+# store at that filesystem's root, so projects under /tmp kept one in RAM. Projects
+# linked from an old store need a fresh install. pnpm 11 only writes global
+# config when its global bin directory is on PATH.
+PATH="$HOME/.local/share/pnpm/bin:$PATH" mise exec pnpm -- \
+  pnpm config set --global store-dir "$HOME/.local/share/pnpm/store"
 # Developer CLIs that NixOS hosts get from nixos/packages/developer-cli.nix.
 # Omarchy's ~/.local/bin wrappers install the agent CLIs on first use.
 MISE_MINIMUM_RELEASE_AGE=0 mise use --global --quiet \
