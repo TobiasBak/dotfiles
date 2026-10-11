@@ -156,12 +156,6 @@ in
   # T3 Code is reachable from localhost and the Tailnet, but not the LAN.
   networking.firewall.interfaces.tailscale0.allowedTCPPorts = [ 3773 ];
 
-  fileSystems."/mnt/data-2tb" = {
-    device = "/dev/disk/by-uuid/0e9d1e0f-a81d-4b66-981a-d3502dc45b1d";
-    fsType = "ext4";
-    options = [ "nofail" ];
-  };
-
   # T3 Code's official updater may compile node-pty when a release lacks a matching prebuild.
   environment.systemPackages = [
     cs2Stretched
