@@ -102,9 +102,10 @@ outside an interactive login.
 
 ## Manual restore
 
-No native NAS mount or remote T3 backup is installed yet. Restore credentials
-first, then port and verify those services. Do not claim backups work until a
-real backup and restore pass.
+No native NAS mount is installed yet. `t3-backup.timer` runs
+`agents/t3/backup.sh` nightly: restic snapshots of T3 and Pi state (tag `t3`)
+and Orderready's fixture store and corpus (tag `orderready`) into
+`/srv/nas/files/.backups/t3-pc` on serv01. Restore credentials before relying on it.
 
 - Create `~/.ssh/id_ed25519` with `ssh-keygen -t ed25519`, then
   `ssh-copy-id tobias@tobias-serv01` and check
@@ -112,8 +113,7 @@ real backup and restore pass.
   `tobias`'s `openssh.authorizedKeys.keys` in
   `../nixos/hosts/tobias-serv01/configuration.nix` so the next activation keeps it.
 - Copy `.config/restic/t3-password` from the cold disk's `/home/tobias` to
-  `~/.config/restic/t3-password` with mode 600. The old encrypted repository is
-  `/srv/nas/files/.backups/t3-pc` on serv01.
+  `~/.config/restic/t3-password` with mode 600.
 - Build and activate the retained serv01 configuration on serv01 itself using
   `../nixos/README.md`. Its import graph and lockfile stayed byte-identical;
   this workstation cannot run its Nix build.

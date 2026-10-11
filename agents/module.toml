@@ -1,6 +1,6 @@
 # Agent setup: global instructions, Claude/Codex/Pi configs, skills, and the
 # T3 Code background service with its drop-in, memory slice, disk-backed
-# TMPDIR and nightly updater.
+# TMPDIR, nightly updater and nightly restic backup to serv01.
 
 [links]
 "~/.local/bin/win-vm" = "agents/windows-vm/win-vm"
@@ -16,6 +16,8 @@
 "~/.config/systemd/user/app-t3code.slice" = "agents/systemd/app-t3code.slice"
 "~/.config/systemd/user/t3code-update.service" = "agents/systemd/t3code-update.service"
 "~/.config/systemd/user/t3code-update.timer" = "agents/systemd/t3code-update.timer"
+"~/.config/systemd/user/t3-backup.service" = "agents/systemd/t3-backup.service"
+"~/.config/systemd/user/t3-backup.timer" = "agents/systemd/t3-backup.timer"
 "~/.config/user-tmpfiles.d/agent-tmp.conf" = "agents/systemd/agent-tmp.conf"
 
 # The apps rewrite these files; the repo owns only the keys it lists.
@@ -27,7 +29,7 @@
 "~/.t3/userdata/desktop-settings.json" = "agents/t3/desktop-settings.json"
 
 [systemd]
-enable = ["t3code-update.timer", "systemd-tmpfiles-clean.timer"]
+enable = ["t3code-update.timer", "t3-backup.timer", "systemd-tmpfiles-clean.timer"]
 
 [[assert]]
 name = "agent TMPDIR exists"
@@ -88,8 +90,8 @@ name = "tailscaled enabled with the desktop user as operator"
 check = "systemctl is-enabled --quiet tailscaled && tailscale status >/dev/null 2>&1"
 fix = "sudo systemctl enable --now tailscaled && sudo tailscale set --operator=\"$USER\" && sudo tailscale up"
 
-# Secrets are restored by hand (README: Manual restore). The T3 restic backup
-# to serv01 and the NAS mount are ported once both exist.
+# Secrets are restored by hand (README: Manual restore). The NAS mount is
+# ported once it exists.
 [[assert]]
 name = "SSH key for tobias-serv01 restored"
 check = "test -f {home}/.ssh/id_ed25519"

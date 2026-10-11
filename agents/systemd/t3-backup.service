@@ -1,0 +1,17 @@
+[Unit]
+Description=Back up T3, Pi and Orderready data to serv01 with restic
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash %h/.dotfiles/agents/t3/backup.sh
+# Also after a kill, which skips shell cleanup.
+ExecStopPost=/usr/bin/rm -rf %h/.local/state/t3-backup
+Slice=background.slice
+UMask=0077
+# Streaming the multi-GiB T3 database copy fits in 1 GiB.
+MemoryMax=1G
+MemorySwapMax=0
+# Bounds stuck-network work.
+TimeoutStartSec=1h
+TimeoutStopSec=30s
+KillMode=control-group

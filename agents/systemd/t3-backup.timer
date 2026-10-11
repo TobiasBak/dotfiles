@@ -1,0 +1,9 @@
+[Unit]
+Description=Back up T3, Pi and Orderready data nightly
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -3,6 +3,7 @@ boost = "stepkit-geometry: gappa build"
 freerdp = "RDP to tailnet devices and the Omarchy Windows VM"
 libfaketime = "orderready: deterministic clock tests"
 nasm = "orderready: native build"
+restic = "Nightly T3, Pi and Orderready backups to serv01"
 tailscale = "T3 tailnet access and Taildrop"
 xorg-server-xvfb = "Agents: headless desktop verification"
 
