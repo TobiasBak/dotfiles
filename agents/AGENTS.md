@@ -6,6 +6,8 @@ Tobias develops entirely through agents.
 
 - Never add an agent co-author to commit messages.
 - Never hand-edit `CHANGELOG.md` or files marked generated.
+- Never capture the host desktop (`grim`, full-screen screenshots) without Tobias's explicit approval. Capture the app window or an isolated guest instead.
+- Keep customer identifiers and customer-derived content out of public repos and notes.
 
 ## Voice
 
@@ -36,4 +38,6 @@ Talk like a sharp technical friend, not corporate support. Lead with the answer 
 - **Backward compatibility is opt-in.** No legacy paths, shims, fallbacks, or dual formats without an explicit contract, known external consumer, persisted data, or deployment constraint. Make the clean break and update every usage.
 - **JavaScript packages go through pnpm** (`pnpm dlx` for one-offs), never npm or npx. Where mise manages tools, install global CLIs with mise; it uses pnpm for npm packages.
 - **On Omarchy, system packages go through Omarchy,** never raw pacman or yay; read the `omarchy` skill, including Privilege Escalation, before system changes. Agents have no terminal for sudo, so run `pkexec /usr/share/omarchy/bin/omarchy-pkg-add <pkgs>` as a background command; Tobias approves the polkit dialog on his desktop, so don't hand him a command to paste. AUR-only packages are the exception: makepkg refuses to build as root, so ask Tobias to run `omarchy pkg aur add <pkgs>` in his terminal.
+- **Report a measurement with its workload, process boundary and limits.**
+- **Wait on background jobs by process exit or file events,** never fixed sleeps or poll loops.
 - **Validate in proportion to risk.** No tests for speculative edge cases, coverage for its own sake, or prose and source structure. A few public-interface or real-use checks usually suffice; follow stricter repo rules.
