@@ -45,14 +45,32 @@ owns the measured sizing basis.
 Nix's `cores = 4` supplies `NIX_BUILD_CORES`; builders can ignore it, and trusted
 users can override Nix settings. These are cooperative worker settings, not CPU
 quotas.
-The CPU launcher adds no memory caps. T3's separate live service policy is
-`MemoryHigh=12G`, `MemoryMax=16G`, `MemorySwapMax=1G`, owned by
-[`configs/t3code/service.conf`](../../../configs/t3code/service.conf).
-The budget leaves 8 GiB for the Windows VM and 6 GiB for the desktop on the
-30-GiB host. T3's previous 24-GiB cap allowed a global OOM on 2026-10-05:
-a timed-out scratch type-check left a 14.4-GiB `tsgolint` grandchild alive.
-`pc-workload` scopes are outside T3's cap; they need separately budgeted memory
-and whole-scope cancellation for bounded checks. Scheduling priority is unchanged.
+The CPU launcher adds no memory caps. `pc-workload` scopes are outside T3's
+cap; they need separately budgeted memory and whole-scope cancellation for
+bounded checks. Scheduling priority is unchanged.
+
+## T3 memory budget
+
+T3's server and agents share `app-t3code.slice`: `MemoryHigh=12G`,
+`MemoryMax=16G`, `MemorySwapMax=1G`, declared in the shared Home Manager module
+[`home/tobias/t3code.nix`](../../home/tobias/t3code.nix). The
+[`service.conf`](../../../configs/t3code/service.conf) drop-in places
+`t3code.service` in that slice. T3 itself starts agent scopes in
+`app-t3code-agents.slice`, which systemd nests under `app-t3code.slice` by name,
+and sets that child slice's runtime limits from total RAM on each start. The
+parent cap bounds them. The budget leaves 8 GiB for the Windows VM and 6 GiB
+for the desktop on the 30-GiB host. T3's previous 24-GiB service cap allowed a
+global OOM on 2026-10-05: a timed-out scratch type-check left a 14.4-GiB
+`tsgolint` grandchild alive.
+
+Until the next PC rebuild and reload, the live slice limits come from
+`systemctl --user set-property` drop-ins under
+`~/.config/systemd/user.control/app-t3code.slice.d/` and the service's runtime
+copies under `/run/user/1000/systemd/user.control/t3code.service.d/`. They hold
+the same values and are superseded by the module. `user.control` drop-ins
+outrank unit files, so remove the persistent `50-Memory*.conf` files after the
+rebuild, then run `systemctl --user daemon-reload`; the runtime copies vanish
+at reboot.
 
 ## Bounded checks
 

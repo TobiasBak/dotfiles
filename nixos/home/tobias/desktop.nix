@@ -17,6 +17,8 @@ let
 in
 
 {
+  imports = [ ./t3code.nix ];
+
   home.file = {
     # Select the portable Niri config and this machine's output layout.
     ".config/niri/config.kdl".text = ''
@@ -28,7 +30,6 @@ in
     ".config/mako" = linkFromDotfiles "configs/mako";
     ".config/quickshell" = linkFromDotfiles "configs/quickshell";
     ".config/Code/User" = linkFromDotfiles "configs/Code/User";
-    ".config/systemd/user/t3code.service.d/local.conf" = linkFromDotfiles "configs/t3code/service.conf";
     ".local/bin/restic-t3" = lib.mkIf (hostname == "pc") {
       source = "${config.home.path}/bin/restic-t3";
     };
