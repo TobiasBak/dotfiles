@@ -2,8 +2,5 @@
   "defaultProjectTrust": "always",
   "defaultTools": [
     "+codemode"
-  ],
-  "extensions": [
-    "{siblings}/pi-workspace-view/src/snapshot.ts"
   ]
 }

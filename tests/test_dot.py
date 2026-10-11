@@ -450,6 +450,39 @@ apply = "mise exec absent-tool -- absent-command"
         self.run_dot('apply', 'missing_tool', code=2)
         self.assertTrue((self.home / 'auto-installed-tool').exists())
 
+    def test_retired_pi_snapshot_disable_preserves_other_extensions(self):
+        helper = self.repo / 'agents/pi/disable-workspace-view.py'
+        helper.parent.mkdir(parents=True)
+        shutil.copy2(ROOT / 'agents/pi/disable-workspace-view.py', helper)
+        self.put(self.repo / 'agents/pi/settings.json', (ROOT / 'agents/pi/settings.json').read_text())
+        self.module('pi', '''[merge]
+"~/.pi/agent/settings.json" = "agents/pi/settings.json"
+[[assert]]
+name = "retired snapshot disabled"
+check = 'python3 "{repo}/agents/pi/disable-workspace-view.py" --check "{siblings}/pi-workspace-view/src/snapshot.ts"'
+apply = 'python3 "{repo}/agents/pi/disable-workspace-view.py" "{siblings}/pi-workspace-view/src/snapshot.ts"'
+''')
+        snapshot = self.put(self.repo.parent / 'pi-workspace-view/src/snapshot.ts', 'retired extension\n')
+        live = self.home / '.pi/agent/settings.json'
+        other = ['/other/context-experiments/context.ts', '-builtin:mcp']
+        original = {'theme': 'local-theme', 'foreign': {'keep': True},
+                    'extensions': [str(snapshot), '+' + str(snapshot),
+                                   os.path.relpath(snapshot, live.parent), *other]}
+        self.put(live, json.dumps(original), mode=0o600)
+        before = self.snapshot()
+        self.run_dot('apply', 'pi', code=1, dry_run=True)
+        self.assertEqual(before, self.snapshot())
+        self.run_dot('apply', 'pi', code=0)
+        actual = json.loads(live.read_text())
+        self.assertEqual(actual['extensions'], other)
+        self.assertEqual(actual['theme'], original['theme'])
+        self.assertEqual(actual['foreign'], original['foreign'])
+        self.assertEqual(stat.S_IMODE(live.stat().st_mode), 0o600)
+        self.assertEqual(snapshot.read_text(), 'retired extension\n')
+        before = self.snapshot()
+        self.run_dot('apply', 'pi', code=0)
+        self.assertEqual(before, self.snapshot())
+
     def test_assertion_manifest_requires_exactly_one_remedy(self):
         for body in ('', 'apply = "true"\nfix = "true"\n'):
             with self.subTest(body=body):

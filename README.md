@@ -17,7 +17,9 @@ configuration for `tobias-serv01`. Omarchy never installs or runs Nix.
 
 ## Use
 
-Keep `dotfiles`, `vault-public` and `pi-workspace-view` as sibling checkouts.
+Keep `dotfiles` and `vault-public` as sibling checkouts. The sibling
+`pi-workspace-view` repo holds ongoing context-construction experiments; its
+retired v3 snapshot extension is disabled and no prototype is installed.
 The stable link `~/.dotfiles` points to the checkout used for live applies.
 
 ```sh
