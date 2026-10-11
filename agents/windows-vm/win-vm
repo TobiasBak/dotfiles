@@ -56,6 +56,10 @@ class Failure(Exception):
     pass
 
 
+class Leased(Failure):
+    pass
+
+
 def run(argv, **kwargs):
     return subprocess.run(argv, **kwargs)
 
@@ -196,8 +200,7 @@ def status(state=None):
             "session": sess, "started_by_win_vm": owned(state), "mode": state["mode"],
             "lease": {key: holder.get(key) for key in ("pid", "command", "started_at")} if holder is not None else None,
             "baseline": {"captured_at": baseline["captured_at"],
-                         "data.img": baseline["files"]["data.img"][:12]} if baseline else None,
-            "residue": holder is None and (EPHEMERAL.exists() or state["mode"] == "ephemeral")}
+                         "data.img": baseline["files"]["data.img"][:12]} if baseline else None}
 
 
 @contextmanager
@@ -252,7 +255,7 @@ def take_lease(fd, kind):
         fcntl.flock(fd, kind | fcntl.LOCK_NB)
     except BlockingIOError:
         holder = read_json(HOLDER) or {}
-        raise Failure(f"VM leased by pid {holder.get('pid', 'unknown')}, command {holder.get('command', 'unknown')}, started at {holder.get('started_at', 'unknown')}") from None
+        raise Leased(f"VM leased by pid {holder.get('pid', 'unknown')}, command {holder.get('command', 'unknown')}, started at {holder.get('started_at', 'unknown')}") from None
 
 
 def write_holder(holder):
@@ -287,13 +290,25 @@ def command_lease(command):
     try:
         kind = fcntl.LOCK_EX if command in ("run", "baseline") else fcntl.LOCK_SH
         take_lease(fd, kind)
-        if EPHEMERAL.exists() or docker_state()["mode"] == "ephemeral":
-            take_lease(fd, fcntl.LOCK_EX)
-            teardown()
-            take_lease(fd, kind)
+        recover(fd, kind)
         yield fd
     finally:
         os.close(fd)
+
+
+def recover(fd, kind):
+    # A run whose client and guardian both died (host reboot) leaves its clone behind.
+    clone_container = docker_state()["mode"] == "ephemeral"
+    if not EPHEMERAL.exists() and not clone_container:
+        return
+    take_lease(fd, fcntl.LOCK_EX)
+    try:
+        teardown()
+    except Failure as error:
+        steps = ([f"docker rm -f {CONTAINER}"] if clone_container else []) + [f"rm -rf {EPHEMERAL}"]
+        raise Failure(f"leftover ephemeral run could not be removed ({error}); clean up by hand: "
+                      + "; ".join(steps)) from None
+    take_lease(fd, kind)
 
 
 def checked(argv, **kwargs):
@@ -481,7 +496,7 @@ def ephemeral_run(command, timeout, fd):
             if guardian is not None:
                 guardian.wait()
                 if guardian.returncode:
-                    raise Failure(f"ephemeral guardian exited {guardian.returncode}; check win-vm status for residue")
+                    raise Failure(f"ephemeral guardian exited {guardian.returncode}; run win-vm status to clean up")
             else:
                 HOLDER.unlink(missing_ok=True)
             for sig, handler in previous.items():
@@ -867,6 +882,12 @@ def main():
         if args.command == "exec" and len(args.args) != 1:
             p.error("exec requires exactly one PowerShell script argument")
     if args.command == "status":
+        if not os.environ.get("WIN_VM_LEASE"):
+            try:
+                with command_lease("status"):
+                    pass
+            except Leased:
+                pass
         print(json.dumps(status()))
         return 0
     with command_lease(args.command) as fd:
