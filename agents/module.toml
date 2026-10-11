@@ -1,0 +1,95 @@
+# Agent setup: global instructions, Claude/Codex/Pi configs, skills, and the
+# T3 Code background service with its drop-in, memory slice, disk-backed
+# TMPDIR and nightly updater.
+
+[links]
+"~/.claude/CLAUDE.md" = "agents/AGENTS.md"
+"~/.codex/AGENTS.md" = "agents/AGENTS.md"
+"~/.pi/agent/APPEND_SYSTEM.md" = "agents/AGENTS.md"
+"~/.codex/prompts/yeet.md" = "agents/codex/prompts/yeet.md"
+# Omarchy links its own skills into both directories; those stay untouched.
+"~/.agents/skills/*" = "../vault-public/skills/*"
+"~/.claude/skills/*" = "../vault-public/skills/*"
+# T3 writes t3code.service itself; the repo owns only the drop-in and slice.
+"~/.config/systemd/user/t3code.service.d/local.conf" = "agents/systemd/t3code.service.d/local.conf"
+"~/.config/systemd/user/app-t3code.slice" = "agents/systemd/app-t3code.slice"
+"~/.config/systemd/user/t3code-update.service" = "agents/systemd/t3code-update.service"
+"~/.config/systemd/user/t3code-update.timer" = "agents/systemd/t3code-update.timer"
+"~/.config/user-tmpfiles.d/agent-tmp.conf" = "agents/systemd/agent-tmp.conf"
+
+# The apps rewrite these files; the repo owns only the keys it lists.
+[merge]
+"~/.claude/settings.json" = "agents/claude/settings.json"
+"~/.codex/config.toml" = "agents/codex/config.toml"
+"~/.pi/agent/settings.json" = "agents/pi/settings.json"
+"~/.t3/userdata/settings.json" = "agents/t3/settings.json"
+"~/.t3/userdata/desktop-settings.json" = "agents/t3/desktop-settings.json"
+
+[systemd]
+enable = ["t3code-update.timer", "systemd-tmpfiles-clean.timer"]
+
+[[assert]]
+name = "agent TMPDIR exists"
+check = "test -d {home}/.cache/agent-tmp"
+apply = "systemd-tmpfiles --user --create agent-tmp.conf"
+
+# Projects on another filesystem otherwise get a store at that filesystem's
+# root, so projects under /tmp kept one in RAM. pnpm 11 writes global config
+# only when its global bin directory is on PATH.
+[[assert]]
+name = "pnpm store on disk"
+check = "mise exec pnpm -- pnpm config get store-dir"
+expect = "{home}/.local/share/pnpm/store"
+apply = "PATH={home}/.local/share/pnpm/bin:$PATH mise exec pnpm -- pnpm config set --global store-dir {home}/.local/share/pnpm/store"
+
+# The skill ships inside the installed playwright-cli version, which prints its
+# path, relative to the cwd, only to coding agents.
+[[assert]]
+name = "playwright-cli skill linked to the installed version"
+check = "p=$(cd / && CLAUDECODE=1 mise exec npm:@playwright/cli -- playwright-cli --help | sed -n 's/^ *Agent skill: //p') && s=$(cd / && dirname \"$(realpath -e \"$p\")\") && test \"$(readlink -f {home}/.agents/skills/playwright-cli)\" = \"$s\""
+apply = "p=$(cd / && CLAUDECODE=1 mise exec npm:@playwright/cli -- playwright-cli --help | sed -n 's/^ *Agent skill: //p') && s=$(cd / && dirname \"$(realpath -e \"$p\")\") && ln -sfnT \"$s\" {home}/.agents/skills/playwright-cli"
+
+[[assert]]
+name = "T3 background service installed"
+check = "test -f {home}/.config/systemd/user/t3code.service"
+apply = "bash {repo}/agents/t3/nightly.sh --install-service"
+
+[[assert]]
+name = "unused Claude Sonnet compaction override removed"
+check = "python3 {repo}/agents/claude/drop-sonnet.py --check"
+apply = "python3 {repo}/agents/claude/drop-sonnet.py"
+
+# A unit change reaches T3 and its agents only after a restart, which
+# interrupts every hosted agent turn.
+[[assert]]
+name = "running T3 server has the drop-in environment and slice"
+check = "pid=$(systemctl --user show -p MainPID --value t3code.service) && test \"$pid\" -gt 0 && tr '\\0' '\\n' < /proc/$pid/environ | grep -qx 'TMPDIR={home}/.cache/agent-tmp' && tr '\\0' '\\n' < /proc/$pid/environ | grep -qx 'SSH_ASKPASS_REQUIRE=never' && grep -q '/app-t3code.slice/' /proc/$pid/cgroup"
+fix = "systemctl --user restart t3code.service  # interrupts hosted agents"
+
+[[assert]]
+name = "T3 published on the tailnet"
+check = "tailscale serve status 2>/dev/null | grep -q 'proxy http://127.0.0.1:3773'"
+apply = "tailscale serve --bg --yes http://127.0.0.1:3773"
+
+[[assert]]
+name = "user lingering keeps T3 running without a login"
+check = "loginctl show-user \"$USER\" -p Linger --value"
+expect = "yes"
+fix = "sudo loginctl enable-linger \"$USER\""
+
+[[assert]]
+name = "tailscaled enabled with the desktop user as operator"
+check = "systemctl is-enabled --quiet tailscaled && tailscale status >/dev/null 2>&1"
+fix = "sudo systemctl enable --now tailscaled && sudo tailscale set --operator=\"$USER\" && sudo tailscale up"
+
+# Secrets are restored by hand (README: Manual restore). The T3 restic backup
+# to serv01 and the NAS mount are ported once both exist.
+[[assert]]
+name = "SSH key for tobias-serv01 restored"
+check = "test -f {home}/.ssh/id_ed25519"
+fix = "restore or create an SSH key authorized on tobias-serv01 (README: Manual restore)"
+
+[[assert]]
+name = "T3 restic password restored"
+check = "test -f {home}/.config/restic/t3-password"
+fix = "copy .config/restic/t3-password from the cold NixOS disk (README: Manual restore)"

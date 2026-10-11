@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+"""Translate Stremio server 4.20's removed options for system FFmpeg 9."""
+import os
+import sys
+
+args = sys.argv[1:]
+result = []
+audio_async = None
+index = 0
+while index < len(args):
+    arg = args[index]
+    if arg == "-vsync":
+        result.extend(["-fps_mode", args[index + 1]])
+        index += 2
+    elif arg == "-async":
+        audio_async = args[index + 1]
+        index += 2
+    else:
+        result.append(arg)
+        index += 1
+
+if audio_async is not None:
+    # Preserve Stremio's existing apad filter rather than replacing it.
+    filter_index = next((i for i, arg in enumerate(result) if arg in ("-af", "-filter:a")), None)
+    resample = f"aresample=async={audio_async}"
+    if filter_index is not None:
+        result[filter_index + 1] += "," + resample
+    else:
+        result[-1:-1] = ["-filter:a", resample]
+
+os.execv("/usr/bin/ffmpeg", ["ffmpeg", *result])

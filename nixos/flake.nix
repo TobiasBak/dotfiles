@@ -1,5 +1,5 @@
 {
-  description = "NixOS configurations for developer machines and servers";
+  description = "NixOS configuration for tobias-serv01";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
@@ -40,38 +40,11 @@
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
-      windowsVm = pkgs.callPackage ./packages/windows-vm { };
-      mkDeveloperSystem =
-        modules:
-        nixpkgs.lib.nixosSystem {
-          inherit system;
-          specialArgs = { inherit hunk; };
-          modules = [ home-manager.nixosModules.home-manager ] ++ modules;
-        };
     in
     {
       formatter.${system} = pkgs.nixfmt;
 
-      packages.${system}.oip-windows-vm = windowsVm;
-      devShells.${system}.windows-vm = pkgs.mkShell {
-        packages = windowsVm.runtimeInputs ++ [ pkgs.shellcheck ];
-      };
-
       nixosConfigurations = {
-        wsl = mkDeveloperSystem [
-          nixos-wsl.nixosModules.default
-          ./hosts/wsl/configuration.nix
-        ];
-
-        pc = mkDeveloperSystem [
-          voxtype.nixosModules.default
-          ./hosts/pc/configuration.nix
-        ];
-
-        laptop = mkDeveloperSystem [
-          ./hosts/laptop/configuration.nix
-        ];
-
         tobias-serv01 = nixpkgs.lib.nixosSystem {
           inherit system;
           modules = [

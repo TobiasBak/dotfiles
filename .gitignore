@@ -6,11 +6,12 @@
 # Local temp workspace
 /tmp/
 
-# VS Code runtime state, local history, and workspace caches
-configs/Code/User/History/
-configs/Code/User/chatLanguageModels.json
-configs/Code/User/globalStorage/
-configs/Code/User/workspaceStorage/
+# Python runtime caches
+__pycache__/
+*.pyc
+
+# playwright-cli session logs
+.playwright-cli/
 
 # Local secrets and machine-private NixOS files
 *.age

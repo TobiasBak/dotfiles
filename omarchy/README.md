@@ -1,123 +1,114 @@
 # Omarchy
 
-Omarchy and NixOS are separate setups. This directory owns native Omarchy
-setup: mise, pacman/AUR and plain systemd user units. It never installs Nix,
-activates Home Manager, changes the login shell or touches a disk. `nixos/`
-owns NixOS and WSL; its modules are not used here. Both may reuse files under
-`configs/` and the agent-only installer under `scripts/`.
+This workstation uses native Omarchy packages, mise and systemd user units.
+Omarchy owns its desktop defaults; this repo stores only personal overrides.
+It never installs Nix, changes the login shell or touches disks.
 
-Omarchy owns the desktop, terminal and its updates. User monitor and other
-Hyprland settings remain in `~/.config/hypr/`, not managed by this repo.
+## Setup and apply
 
-Install system packages with Omarchy's commands, not raw pacman or yay. In a
-terminal, use `omarchy pkg add <pkgs>`, or `omarchy pkg aur add <pkgs>` for
-AUR-only ones; both prompt for sudo there. Agents have no terminal, so they
-run `pkexec /usr/share/omarchy/bin/omarchy-pkg-add <pkgs>` as a background
-command. Polkit shows a password dialog on the desktop, and the script runs
-pacman directly as root. makepkg refuses to build as root, so AUR-only
-packages need `omarchy pkg aur add` in Tobias's terminal. The bootstrap's T3 desktop build
-bypasses these commands; its comment says why.
+Requires an installed Omarchy desktop with Python 3.14+, Git and mise.
+Clone `dotfiles`, `vault-public` and `pi-workspace-view` as siblings. The
+workspace extension is private, so authenticate GitHub first.
 
-## Setup
+```sh
+cd ~/code/dotfiles
+./verify
+./dot apply --dry-run
+./dot apply
+./dot check --json
+```
 
-Requires an installed Omarchy desktop with mise, Git, Python, Tailscale,
-`yay`, and the build tools needed by `makepkg`. The bootstrap uses the current
-user and home directory, not a fixed username or hostname.
+Review the dry-run before approving apply. Real applies must run from the
+checkout behind `~/.dotfiles`. Worktrees preview proposed content but do not
+retarget the stable link. If the stable link is absent, apply creates it.
 
-1. Clone `dotfiles`, `vault-public` and `pi-workspace-view` as sibling
-   repositories. The workspace extension is private; log into GitHub first.
-2. Finish or stop hosted agents and quit the T3 desktop app. The script refuses
-   to migrate while it is open.
-3. In a visible terminal, run:
+The module manifests map links, managed settings, Omarchy append/merge
+overrides, enabled user units and checked assertions. Settings merges preserve
+unmanaged keys; managed arrays replace the corresponding live arrays.
+Conflicting link targets are backed up with a UTC timestamp. Unknown edits
+to Omarchy-seeded config are reported as `capture`, never silently reset.
 
-   ```sh
-   ~/code/dotfiles/omarchy/bootstrap.sh
-   ```
+Apply installs missing repository packages through `omarchy pkg add` in a
+terminal, or background `pkexec /usr/share/omarchy/bin/omarchy-pkg-add` from
+an agent. Polkit needs Tobias's approval. AUR packages require a terminal:
+`omarchy pkg aur add <pkg>`. The T3 desktop package has a dedicated
+`agents/t3/install-desktop.sh` because Omarchy's repository carries a
+same-named older package. Close the desktop client before running it.
 
-   Enter your sudo password when asked. The script:
-   - Installs global instructions, vault skills and Pi settings without Nix.
-   - Sets mise's package manager to pnpm, selects pnpm 11 for T3 installs and
-     pins pnpm's store to `~/.local/share/pnpm/store` on disk.
-   - Installs `uv`, `go`, `vp` (vite-plus) and `playwright-cli` through mise,
-     points playwright-cli at Omarchy's Chromium and links its agent skill.
-     Omarchy's `~/.local/bin` wrappers install Claude, Codex, Pi and `gh` on
-     first use.
-   - Routes GitHub SSH remotes to HTTPS with `gh` credentials. The machine has
-     no SSH key for GitHub.
-   - Saves a private copy of T3's existing state under
-     `~/.local/state/t3-migration/`.
-   - Disables the desktop app's own backend and enables T3's Pi provider,
-     which T3 disables by default.
-   - Installs `xorg-server-xvfb` with `omarchy pkg add`, so agents can run
-     desktop apps headless under `xvfb-run`.
-   - Builds the current AUR `t3code-nightly-bin` before replacing stable.
-   - Installs T3's official background service on the nightly channel.
-   - Installs this directory's resource slice, service drop-in and
-     nightly-update timer, then restarts the server so it loads them.
-   - Points T3's and its agents' `TMPDIR` at `~/.cache/agent-tmp` on disk,
-     because `/tmp` is a RAM-backed tmpfs with a per-user quota. A
-     systemd-tmpfiles user rule removes files there unused for 3 days, by
-     timestamp, even under a running process. Keep long-lived build state
-     elsewhere.
-   - Enables user lingering and publishes the loopback server through
-     Tailscale Serve. If Tailscale is logged out, it exits 2 with instructions.
-4. Open **T3 Code Nightly**, run `t3 pair` in a terminal, and add the resulting
-   environment in the app. Pairing links expire and are credentials; do not
-   commit them.
-5. Open a thread on the vault and invoke `/chief-of-staff` yourself.
+Global tools use mise with pnpm. Omarchy's Node pin and the nightly updater's
+`npm:t3` pin are intentionally excluded from the manifest's version ownership.
+The pnpm store is `~/.local/share/pnpm/store`. Agent scratch files use
+`~/.cache/agent-tmp`; the tmpfiles rule ages unused files after three days.
+Long-lived build state belongs elsewhere.
 
-The background service owns port 3773 and `~/.t3/userdata`. The app is only a
-client. The server binds to `127.0.0.1`, never the LAN. Tailscale Serve exposes
-it over Tailnet HTTPS. No LAN firewall rule is needed for a loopback listener.
+The first migration backs up only the audited old monitor/appearance/Git
+customizations and duplicate Stremio autostarts. Unknown content stops that
+migration. Desktop settings auto-reload; after applying Hyprland changes run
+`hyprctl reload` and `hyprctl configerrors`. Exercise the existing shell and
+normal application launch paths, not just a fresh parser.
 
-## Verify and update
+## T3
+
+T3's official service owns its unit and runtime. The repo owns its drop-in,
+55%/70% memory slice, update timer, Pi provider enablement and desktop-client
+settings. The server listens on loopback port 3773 and Tailscale Serve exposes
+it over Tailnet HTTPS. Pair the nightly desktop client with `t3 pair`;
+pairing links are credentials and never belong in Git.
 
 ```sh
 systemctl --user status t3code.service
-curl -sI http://127.0.0.1:3773 | head -1
+curl -sI http://127.0.0.1:3773
 tailscale serve status
 systemctl --user list-timers t3code-update.timer
 loginctl show-user "$USER" -p Linger
-t3 --version
-pacman -Q t3code-nightly-bin
 ```
 
-`systemd/` contains the native units. `t3-nightly.sh` resolves the current
-nightly version, installs its CLI through mise with pnpm, and asks T3 to
-update its service runtime. At 05:00 the timer runs it automatically. A version
-change restarts the server and interrupts hosted agent turns. An agent inside
-T3 must start the updater without waiting on its own restart:
+Apply never restarts T3. A changed drop-in needs Tobias's explicit restart
+approval before the running server and its children inherit it.
+`./dot check` verifies the process environment and reports the pending restart.
+
+At 05:00, `t3code-update.timer` updates the CLI through mise and the service
+through T3's official updater. A new runtime interrupts hosted turns.
+With approval, start a detached update using:
 
 ```sh
 systemctl --user start --no-block t3code-update.service
 journalctl --user -u t3code-update.service
 ```
 
-The timer covers the CLI and the service runtime, not the desktop app. Quit the
-app and rerun the bootstrap to update the AUR desktop package. Rerun it also
-after upgrading playwright-cli, whose skill link points into the installed
-version. Omarchy also has a
-repository package with the same name; an Omarchy update may replace the AUR
-build once its version is newer. `mise use -g` and `mise settings set` own mise
-configuration; do not hand-edit Omarchy's global mise config.
+The timer does not update the desktop package. That remains a terminal action.
 
-## Backups and cold storage
+## Stremio and Taildrop
 
-The migration snapshot is local rollback storage, not a remote backup. Native
-remote backup automation has not been installed. Do not claim nightly backups
-are working until a real backup and restore have passed. Credentials must not
-be committed or printed.
+One `stremio.service` runs the local streaming server with the FFmpeg 9
+compatibility shim. It replaces two old autostarts. On the first approved
+handoff, reverify the old server's UID, executable, arguments, port and process
+start identity, gracefully stop that exact PID, then enable the new unit.
+Never kill by process name or escalate to force-kill. If the new server fails
+health or port-ownership checks, stop only the new unit and restore the audited
+old launch/autostarts. The migration helper never kills processes.
 
-On Tobias's current desktop, Omarchy is on the 2 TB KINGSTON SFYRD2000G with
-serial ending `9170A9`. NixOS remains on the 1 TB KINGSTON SNV3S1000G as cold
-storage. Identify disks by model and serial, never by `nvme` index. Nothing in
-this bootstrap mounts, formats or modifies that disk.
+Taildrop receives files into `~/Downloads`. Tailscale must be joined and the
+desktop user must be its operator. User lingering keeps services running
+outside an interactive login.
 
-If recovery is requested, mount NixOS's ext4 root **read-only without journal
-replay** using `mount -o ro,noload`. Its old home is `/home/tobias`; the backup
-password is `.config/restic/t3-password` there. SSH access to the backup server
-also needs an accepted key. Restoring either is a separate privileged step.
+## Manual restore
 
-TPM enrollment, initramfs changes, boot order changes and autologin are not
-part of this setup. `mkinitcpio-tpm2.conf` and `orderready.rsync-filter` are
-manual migration assets, not instructions to change this machine unattended.
+No native NAS mount or remote T3 backup is installed yet. Restore credentials
+first, then port and verify those services. Do not claim backups work until a
+real backup and restore pass.
+
+- Restore or create an SSH key authorized for `tobias@tobias-serv01`.
+  Verify normal OpenSSH over Tailscale before changing remote services.
+- Restore `~/.config/restic/t3-password` privately, with restrictive permissions.
+  The old encrypted repository is `/srv/nas/files/.backups/t3-pc` on serv01.
+- Build and activate the retained serv01 configuration on serv01 itself using
+  `../nixos/README.md`. Its import graph and lockfile stayed byte-identical;
+  this workstation cannot run its Nix build.
+
+Cold storage is the 1 TB KINGSTON SNV3S1000G with the old NixOS home at
+`/home/tobias`; active Omarchy is on the 2 TB KINGSTON SFYRD2000G, serial
+ending `9170A9`. Identify disks by model and serial, never NVMe index.
+If recovery is requested, mount the ext4 root read-only without journal replay
+using `mount -o ro,noload`. Disk access requires separate privileged approval.
+Never print or commit recovered passwords, private keys or pairing credentials.

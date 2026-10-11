@@ -1,0 +1,687 @@
+#!/usr/bin/env python3
+"""Check declarative dotfiles drift; apply only managed fixes, phase by phase.
+
+Links use ~/.dotfiles. Foreign content is preserved or backed up, never reset.
+"""
+
+import argparse
+import copy
+import datetime
+import difflib
+import fnmatch
+import glob
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import stat
+import subprocess
+import sys
+import tempfile
+import tomllib
+
+REPO = Path(__file__).resolve().parent
+HOME = Path(os.environ["HOME"])
+STABLE = HOME / ".dotfiles"
+SIBLINGS = STABLE.resolve().parent if STABLE.exists() else REPO.parent
+OMARCHY = Path(os.environ.get("OMARCHY_PATH", "/usr/share/omarchy"))
+# These versions are owned by Omarchy's installer and agents/t3/nightly.sh.
+EXEMPT_TOOLS = {"node", "npm:t3"}
+
+
+class ManifestError(Exception):
+    pass
+
+
+class CommandError(Exception):
+    pass
+
+
+def substitute(value):
+    if isinstance(value, str):
+        for token, replacement in (("{home}", HOME), ("{repo}", REPO), ("{siblings}", SIBLINGS)):
+            value = value.replace(token, str(replacement))
+    elif isinstance(value, dict):
+        return {key: substitute(val) for key, val in value.items()}
+    elif isinstance(value, list):
+        return [substitute(val) for val in value]
+    return value
+
+
+def target_path(value):
+    if value == "~":
+        return HOME
+    if value.startswith("~/"):
+        return HOME / value[2:]
+    return Path(os.path.abspath(value))
+
+
+def source_path(value):
+    return SIBLINGS / value[3:] if value.startswith("../") else STABLE / value
+
+
+def source_matches(source, probe):
+    return [source.parent / Path(match).name for match in sorted(glob.glob(str(probe)))]
+
+
+def require(condition, message):
+    if not condition:
+        raise ManifestError(message)
+
+
+def keys(data, allowed, context):
+    require(isinstance(data, dict), f"{context}: expected a table")
+    unknown = data.keys() - set(allowed)
+    require(not unknown, f"{context}: unknown keys: {', '.join(sorted(unknown))}")
+
+
+def string_map(data, context):
+    require(isinstance(data, dict), f"{context}: expected a table")
+    require(all(isinstance(v, str) for v in data.values()), f"{context}: values must be strings")
+
+
+def string_list(data, context):
+    require(isinstance(data, list) and all(isinstance(v, str) for v in data),
+            f"{context}: expected a list of strings")
+
+
+def load_toml(path):
+    try:
+        with path.open("rb") as stream:
+            return tomllib.load(stream)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ManifestError(f"{path}: {exc}") from exc
+
+
+def toml_quote(value):
+    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
+
+
+def toml_key(key):
+    return key if re.fullmatch(r"[A-Za-z0-9_-]+", key) else toml_quote(key)
+
+
+def toml_scalar(value):
+    if isinstance(value, str):
+        return toml_quote(value)
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, list) and all(isinstance(v, (str, int, float, bool)) for v in value):
+        return "[" + ", ".join(toml_scalar(v) for v in value) + "]"
+    raise ManifestError(f"unsupported TOML value: {type(value).__name__}; arrays of tables and datetimes are not supported")
+
+
+def emit_toml(data):
+    lines = []
+
+    def table(values, path):
+        if path:
+            if lines:
+                lines.append("")
+            lines.append("[" + ".".join(toml_key(k) for k in path) + "]")
+        for key, value in values.items():
+            if not isinstance(value, dict):
+                lines.append(f"{toml_key(key)} = {toml_scalar(value)}")
+        for key, value in values.items():
+            if isinstance(value, dict):
+                table(value, path + [key])
+
+    table(data, [])
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def serialize(data, suffix, sorted_keys=False):
+    if suffix == ".json":
+        return json.dumps(data, indent=2, ensure_ascii=False, sort_keys=sorted_keys) + "\n"
+    require(suffix == ".toml", f"unsupported merge format: {suffix}")
+    return emit_toml(data)
+
+
+def load_data(path, suffix, missing=False, placeholders=False):
+    if missing and not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text()) if suffix == ".json" else load_toml(path)
+    except (OSError, ValueError) as exc:
+        raise ManifestError(f"{path}: {exc}") from exc
+    require(isinstance(data, dict), f"{path}: expected an object/table")
+    serialize(data, suffix)
+    return substitute(data) if placeholders else data
+
+
+def equal(left, right):
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(equal(value, right[key]) for key, value in left.items())
+    if isinstance(left, list):
+        return len(left) == len(right) and all(equal(a, b) for a, b in zip(left, right))
+    return left == right
+
+
+def subset(managed, live):
+    if isinstance(managed, dict):
+        return isinstance(live, dict) and all(k in live and subset(v, live[k]) for k, v in managed.items())
+    return equal(managed, live)
+
+
+def deep_merge(live, managed):
+    result = copy.deepcopy(live)
+    for key, value in managed.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = deep_merge(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+
+
+def diff(before, after, target):
+    return "".join(list(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
+                                           fromfile=f"{target} (before)", tofile=f"{target} (after)"))[:200])
+
+
+def atomic_write(path, text):
+    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            os.fchmod(stream.fileno(), mode)
+            stream.write(text)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def command(argv, timeout=300, env=None, check=True, cwd=None):
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, cwd=cwd,
+                                env={**os.environ, **(env or {})})
+    except (OSError, subprocess.TimeoutExpired, UnicodeError) as exc:
+        raise CommandError(f"{shlex.join(argv)}: {exc}") from exc
+    if check and result.returncode:
+        raise CommandError(f"{shlex.join(argv)}: exit {result.returncode}: " +
+                           (result.stderr or result.stdout).strip()[-2000:])
+    return result
+
+
+def flatten(values, prefix=""):
+    result = {}
+    for key, value in values.items():
+        name = f"{prefix}.{key}" if prefix else key
+        if isinstance(value, dict):
+            result.update(flatten(value, name))
+        else:
+            result[name] = value
+    return result
+
+
+def cli_value(value):
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, (list, dict)):
+        return json.dumps(value)
+    return str(value)
+
+
+def unit_for(path):
+    root = HOME / ".config/systemd/user"
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return None
+    for part in relative.parts[:-1]:
+        if part.endswith(".d"):
+            return part[:-2]
+    if len(relative.parts) == 1 and re.search(r"\.(service|timer|socket|target|path|mount|automount|slice|scope)$", relative.name):
+        return relative.name
+    return None
+
+
+class Engine:
+    def __init__(self, names):
+        self.modules = {}
+        self.links = []
+        self.changed_units = {}
+        self.packages = load_toml(REPO / "packages.toml") if (REPO / "packages.toml").exists() else None
+        self.mise = load_toml(REPO / "mise.toml") if (REPO / "mise.toml").exists() else None
+        if self.packages is not None:
+            keys(self.packages, {"repo", "aur", "installer"}, "packages.toml")
+            for category, declarations in self.packages.items():
+                require(isinstance(declarations, dict), f"packages.{category}: expected a table")
+                for name, value in declarations.items():
+                    if category == "aur" and isinstance(value, dict):
+                        keys(value, {"reason", "install"}, f"packages.aur.{name}")
+                        require(isinstance(value.get("reason"), str), f"packages.aur.{name}: reason required")
+                        require("install" not in value or isinstance(value["install"], str), f"packages.aur.{name}: install must be a string")
+                    else:
+                        require(isinstance(value, str), f"packages.{category}.{name}: reason must be a string")
+        if self.mise is not None:
+            keys(self.mise, {"tools", "settings", "env"}, "mise.toml")
+            for section in self.mise.values():
+                require(isinstance(section, dict), "mise.toml: sections must be tables")
+            string_map(self.mise.get("tools", {}), "mise.tools")
+        for manifest in sorted(REPO.glob("*/module.toml"), key=lambda p: p.parent.name):
+            name = manifest.parent.name
+            data = load_toml(manifest)
+            keys(data, {"links", "merge", "omarchy", "systemd", "assert"}, str(manifest))
+            for section in ("links", "merge"):
+                string_map(data.get(section, {}), f"{manifest}:{section}")
+            for target, source in data.get("links", {}).items():
+                dst, src = target_path(target), source_path(source)
+                is_glob = "*" in src.name
+                require(not is_glob or dst.name == "*", f"{manifest}: glob link target must end in /*")
+                probe = SIBLINGS / source[3:] if source.startswith("../") else REPO / source
+                self.links.append((name, dst, src, is_glob, probe))
+            data["managed"] = {}
+            for target, source in data.get("merge", {}).items():
+                path = REPO / source
+                data["managed"][target] = (path.suffix, load_data(path, path.suffix, placeholders=True))
+            if "omarchy" in data:
+                config = data["omarchy"]
+                keys(config, {"append", "merge", "ignore"}, f"{manifest}:omarchy")
+                string_map(config.get("append", {}), f"{manifest}:omarchy.append")
+                string_map(config.get("merge", {}), f"{manifest}:omarchy.merge")
+                string_list(config.get("ignore", []), f"{manifest}:omarchy.ignore")
+                config["append"] = substitute(config.get("append", {}))
+                config["managed"] = {}
+                for target, source in config.get("merge", {}).items():
+                    path = REPO / source
+                    require(path.suffix == ".json", f"{manifest}: omarchy merge source must be JSON")
+                    config["managed"][target] = load_data(path, ".json", placeholders=True)
+            if "systemd" in data:
+                keys(data["systemd"], {"enable"}, f"{manifest}:systemd")
+                string_list(data["systemd"].get("enable", []), f"{manifest}:systemd.enable")
+            assertions = data.get("assert", [])
+            require(isinstance(assertions, list), f"{manifest}: assert must be an array of tables")
+            for assertion in assertions:
+                keys(assertion, {"name", "check", "expect", "apply", "fix"}, f"{manifest}:assert")
+                require(all(isinstance(v, str) for v in assertion.values()), f"{manifest}: assert fields must be strings")
+                require("name" in assertion and "check" in assertion, f"{manifest}: assert requires name and check")
+                require(("apply" in assertion) != ("fix" in assertion), f"{manifest}: assert needs exactly one of apply/fix")
+                for key in ("check", "expect", "apply", "fix"):
+                    if key in assertion:
+                        assertion[key] = substitute(assertion[key])
+            self.modules[name] = data
+        unknown = set(names) - (self.modules.keys() | {"dot", "packages", "mise"})
+        require(not unknown, "unknown modules: " + ", ".join(sorted(unknown)))
+        self.selected = set(names) if names else self.modules.keys() | {"dot", "packages", "mise"}
+        self.omarchy_owners = [name for name, data in self.modules.items() if "omarchy" in data]
+        self.append = {}
+        self.omarchy_merge = {}
+        self.ignores = []
+        for name in self.omarchy_owners:
+            config = self.modules[name]["omarchy"]
+            self.ignores.extend(config.get("ignore", []))
+            for relative, line in config["append"].items():
+                require(relative not in self.append and relative not in self.omarchy_merge, f"duplicate omarchy target: {relative}")
+                self.append[relative] = (name, line)
+            for relative, managed in config["managed"].items():
+                require(relative not in self.append and relative not in self.omarchy_merge, f"duplicate omarchy target: {relative}")
+                self.omarchy_merge[relative] = (name, managed)
+
+    @staticmethod
+    def item(module, kind, target, state, detail, fix="capture", command_text=None, diff_text=None, action=None):
+        item = dict(module=module, kind=kind, target=str(target), state=state, detail=detail, fix=fix)
+        if command_text is not None:
+            item["command"] = command_text
+        if diff_text:
+            item["diff"] = diff_text
+        return item, action
+
+    def error(self, module, kind, target, exc):
+        return self.item(module, kind, target, "error", str(exc))
+
+    def command_item(self, module, kind, target, state, detail, argv, env=None):
+        return self.item(module, kind, target, state, detail, "apply", shlex.join(argv),
+                         action=lambda: command(argv, env=env, cwd=HOME if argv[0] == "mise" else None))
+
+    def stable_phase(self):
+        if "dot" not in self.selected:
+            return []
+        if STABLE.is_symlink() and STABLE.is_dir() and os.access(STABLE / "dot", os.X_OK) and (STABLE / "dot").is_file():
+            return []
+        if STABLE.exists() or STABLE.is_symlink():
+            detail = "expected a symlink to a checkout with an executable dot; leave untouched"
+            if STABLE.is_symlink() and STABLE.is_dir() and STABLE.resolve() != REPO:
+                detail += "; checkout without dot is an expected pre-merge transition when reviewing a worktree"
+            return [self.item("dot", "stable", STABLE, "invalid", detail)]
+
+        def create():
+            STABLE.parent.mkdir(parents=True, exist_ok=True)
+            STABLE.symlink_to(REPO)
+
+        return [self.item("dot", "stable", STABLE, "missing", f"link to {REPO}", "apply",
+                          shlex.join(["ln", "-s", str(REPO), str(STABLE)]), action=create)]
+
+    def packages_phase(self):
+        if "packages" not in self.selected or self.packages is None:
+            return []
+        try:
+            installed = set(command(["pacman", "-Qq"]).stdout.split())
+            explicit = set(command(["pacman", "-Qqe"]).stdout.split())
+        except CommandError as exc:
+            return [self.error("packages", "package", "pacman", exc)]
+        repo = self.packages.get("repo", {})
+        aur = self.packages.get("aur", {})
+        installer = self.packages.get("installer", {})
+        base = set()
+        for path in sorted((OMARCHY / "install").glob("*.packages")):
+            for line in path.read_text().splitlines():
+                base.update(line.split("#", 1)[0].split())
+        missing = sorted(repo.keys() - installed)
+        argv = (["omarchy", "pkg", "add"] if sys.stdin.isatty() else
+                ["pkexec", str(OMARCHY / "bin/omarchy-pkg-add")]) + missing
+        items = [self.item("packages", "package", name, "missing", repo[name], "apply", shlex.join(argv),
+                           action=(lambda: command(argv)) if index == 0 else None)
+                 for index, name in enumerate(missing)]
+        for name in sorted(aur.keys() - installed):
+            declaration = aur[name]
+            reason = declaration["reason"] if isinstance(declaration, dict) else declaration
+            install = declaration.get("install") if isinstance(declaration, dict) else None
+            items.append(self.item("packages", "package", name, "missing", reason, "tobias",
+                                   install or shlex.join(["omarchy", "pkg", "aur", "add", name])))
+        for name in sorted(explicit - base - repo.keys() - aur.keys() - installer.keys()):
+            items.append(self.item("packages", "package", name, "undeclared", "explicit package not declared"))
+        return items
+
+    def mise_phase(self):
+        if "mise" not in self.selected or self.mise is None:
+            return []
+        live_path = Path(os.environ.get("MISE_GLOBAL_CONFIG_FILE", HOME / ".config/mise/config.toml"))
+        live = load_toml(live_path) if live_path.exists() else {}
+        tools = self.mise.get("tools", {})
+        items = []
+        for tool, value in tools.items():
+            if live.get("tools", {}).get(tool) != value:
+                items.append(self.command_item("mise", "mise", tool, "differs", f"want {value}",
+                             ["mise", "use", "-g", "--quiet", f"{tool}@{value}"], {"MISE_MINIMUM_RELEASE_AGE": "0"}))
+        for tool in sorted(live.get("tools", {}).keys() - tools.keys() - EXEMPT_TOOLS):
+            items.append(self.item("mise", "mise", tool, "undeclared", "global tool not declared"))
+        try:
+            installed = json.loads(command(["mise", "ls", "--global", "--json"], cwd=HOME).stdout)
+            if not isinstance(installed, dict):
+                raise ValueError("expected a JSON object")
+            for tool in sorted(tools.keys() - EXEMPT_TOOLS):
+                if any(entry.get("installed") is False for entry in installed.get(tool, [])):
+                    items.append(self.command_item("mise", "mise", tool, "not-installed", "declared version is not installed",
+                                                   ["mise", "install", tool]))
+        except CommandError as exc:
+            items.append(self.error("mise", "mise", "mise", exc))
+        except (ValueError, TypeError, AttributeError) as exc:
+            items.append(self.error("mise", "mise", "mise", f"invalid mise ls output: {exc}"))
+        live_settings = flatten(live.get("settings", {}))
+        for key, value in flatten(self.mise.get("settings", {})).items():
+            if key not in live_settings or not subset(value, live_settings[key]):
+                items.append(self.command_item("mise", "mise", key, "differs", f"want setting {cli_value(value)}",
+                                               ["mise", "settings", "set", key, cli_value(value)]))
+        env = self.mise.get("env", {})
+        for key, value in env.items():
+            if key not in live.get("env", {}) or not subset(value, live["env"][key]):
+                items.append(self.command_item("mise", "mise", key, "differs", f"want environment {cli_value(value)}",
+                                               ["mise", "set", "-g", f"{key}={cli_value(value)}"]))
+        for key in sorted(live.get("env", {}).keys() - env.keys()):
+            items.append(self.item("mise", "mise", key, "undeclared", "global environment key not declared"))
+        return items
+
+    def link_one(self, module, target, source, probe):
+        if not probe.exists():
+            return self.item(module, "link", target, "source-missing", f"source missing: {probe}")
+        backup = None
+        if target.is_symlink():
+            if target.resolve() == source.resolve():
+                return None
+            state, detail = "wrong-link", f"link should point to {source}"
+        elif not target.exists():
+            state, detail = "missing", f"link to {source}"
+        elif target.is_file() and probe.is_file() and target.read_bytes() == probe.read_bytes():
+            state, detail = "real-identical", "replace identical file with a link"
+        else:
+            stamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
+            backup = target.with_name(target.name + ".dotfiles-backup-" + stamp)
+            state, detail = "real-different", f"rename to {backup}, then link to {source}"
+
+        def apply():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if backup is not None:
+                require(not backup.exists() and not backup.is_symlink(), f"backup already exists: {backup}")
+                target.rename(backup)
+            elif target.is_symlink() or target.exists():
+                target.unlink()
+            target.symlink_to(source)
+            unit = unit_for(target)
+            if unit:
+                self.changed_units[unit] = module
+
+        return self.item(module, "link", target, state, detail, "apply", action=apply)
+
+    def links_phase(self):
+        items = []
+        for module, target, source, wildcard, probe in self.links:
+            if module not in self.selected:
+                continue
+            if wildcard and not probe.parent.is_dir():
+                items.append(self.item(module, "link", target, "source-missing", f"source directory missing: {probe.parent}"))
+                continue
+            matches = source_matches(source, probe) if wildcard else [source]
+            for match in matches:
+                destination = target.parent / match.name if wildcard else target
+                actual = probe.parent / match.name if wildcard else probe
+                item = self.link_one(module, destination, match, actual)
+                if item:
+                    items.append(item)
+            if wildcard and target.parent.is_dir():
+                current = {match.resolve() for match in matches}
+                current_names = {match.name for match in matches}
+                for entry in sorted(target.parent.iterdir()):
+                    if (entry.name not in current_names and entry.is_symlink()
+                            and entry.resolve().is_relative_to(source.parent.resolve()) and entry.resolve() not in current):
+                        def remove(path=entry, owner=module):
+                            path.unlink()
+                            unit = unit_for(path)
+                            if unit:
+                                self.changed_units[unit] = owner
+                        items.append(self.item(module, "link", entry, "stale", "remove stale source-owned link", "apply", action=remove))
+        return items
+
+    def merge_item(self, module, kind, target, suffix, managed):
+        live = load_data(target, suffix, missing=True)
+        if subset(managed, live):
+            return None
+        merged = serialize(deep_merge(live, managed), suffix)
+        return self.item(module, kind, target, "differs", "managed keys differ; preserve foreign keys", "apply",
+                         diff_text=diff(serialize(live, suffix), merged, target), action=lambda: atomic_write(target, merged))
+
+    def merge_phase(self):
+        items = []
+        for module, data in self.modules.items():
+            if module in self.selected:
+                for target, (suffix, managed) in data["managed"].items():
+                    item = self.merge_item(module, "merge", target_path(target), suffix, managed)
+                    if item:
+                        items.append(item)
+        return items
+
+    def omarchy_phase(self):
+        if not self.omarchy_owners:
+            return []
+        link_targets = set()
+        for _, target, source, wildcard, probe in self.links:
+            if wildcard:
+                link_targets.update(target.parent / match.name for match in source_matches(source, probe))
+            else:
+                link_targets.add(target)
+        items = []
+        for template in sorted((OMARCHY / "config").rglob("*")):
+            if not template.is_file() or template.is_symlink():
+                continue
+            relative = template.relative_to(OMARCHY / "config").as_posix()
+            target = HOME / ".config" / relative
+            if (not target.exists() or any(target.is_relative_to(link) for link in link_targets)
+                    or any(fnmatch.fnmatchcase(relative, pattern) for pattern in self.ignores)):
+                continue
+            module = (self.append.get(relative) or self.omarchy_merge.get(relative) or (self.omarchy_owners[0],))[0]
+            if module not in self.selected:
+                continue
+            if relative in self.omarchy_merge:
+                managed = self.omarchy_merge[relative][1]
+                expected = deep_merge(load_data(template, ".json"), managed)
+                live = load_data(target, ".json")
+                item = self.merge_item(module, "omarchy", target, ".json", managed)
+                if item:
+                    items.append(item)
+                if not equal(live, expected):
+                    items.append(self.item(module, "omarchy", target, "delta", "live configuration differs from template plus managed keys",
+                                           diff_text=diff(serialize(expected, ".json", True), serialize(live, ".json", True), target)))
+                continue
+            before, after = template.read_bytes(), target.read_bytes()
+            if relative in self.append:
+                line = self.append[relative][1]
+                try:
+                    template_text, live_text = before.decode("utf-8"), after.decode("utf-8")
+                except UnicodeError:
+                    items.append(self.item(module, "omarchy", target, "delta", "binary differs"))
+                    continue
+                expected = template_text + ("" if template_text.endswith("\n") else "\n") + line + "\n"
+                if line not in live_text.splitlines():
+                    appended = live_text + ("" if live_text.endswith("\n") else "\n") + line + "\n"
+                    items.append(self.item(module, "omarchy", target, "missing-line", f"append {line}", "apply",
+                                           diff_text=diff(live_text, appended, target), action=lambda p=target, t=appended: atomic_write(p, t)))
+                elif live_text != expected:
+                    items.append(self.item(module, "omarchy", target, "differs", "live configuration differs from template plus appended line",
+                                           diff_text=diff(expected, live_text, target)))
+            elif before != after:
+                try:
+                    delta = diff(before.decode("utf-8"), after.decode("utf-8"), target)
+                    items.append(self.item(module, "omarchy", target, "delta", "live file differs from Omarchy template", diff_text=delta))
+                except UnicodeError:
+                    items.append(self.item(module, "omarchy", target, "delta", "binary differs"))
+        return items
+
+    def systemd_phase(self):
+        units = {}
+        for module, target, source, wildcard, probe in self.links:
+            if module not in self.selected:
+                continue
+            targets = [target.parent / p.name for p in source_matches(source, probe)] if wildcard else [target]
+            for path in targets:
+                unit = unit_for(path)
+                if unit:
+                    units.setdefault(unit, module)
+        reload_module = next((self.changed_units[u] for u in sorted(self.changed_units)), None)
+        items = []
+        try:
+            for unit, module in sorted(units.items()):
+                if command(["systemctl", "--user", "show", "-p", "NeedDaemonReload", "--value", unit], check=False).stdout.strip() == "yes":
+                    reload_module = reload_module or module
+            if reload_module:
+                items.append(self.command_item(reload_module, "systemd", "daemon-reload", "daemon-reload", "reload changed unit definitions",
+                                               ["systemctl", "--user", "daemon-reload"]))
+            for module, data in self.modules.items():
+                if module not in self.selected:
+                    continue
+                for unit in data.get("systemd", {}).get("enable", []):
+                    enabled = command(["systemctl", "--user", "is-enabled", unit], check=False).stdout.strip()
+                    active = command(["systemctl", "--user", "is-active", unit], check=False).stdout.strip()
+                    if enabled != "enabled" or active != "active":
+                        state = "disabled" if enabled != "enabled" else "inactive"
+                        items.append(self.command_item(module, "systemd", unit, state, f"enabled={enabled}, active={active}",
+                                                       ["systemctl", "--user", "enable", "--now", unit]))
+        except CommandError as exc:
+            module = reload_module or next(iter(units.values()), None) or next(
+                (m for m, d in self.modules.items() if m in self.selected and "systemd" in d), "systemd")
+            items.append(self.error(module, "systemd", "systemctl", exc))
+        return items
+
+    def asserts_phase(self):
+        items = []
+        for module, data in self.modules.items():
+            if module not in self.selected:
+                continue
+            for assertion in data.get("assert", []):
+                try:
+                    result = command(["bash", "-c", assertion["check"]], cwd=HOME, timeout=120, check=False,
+                                     env={"MISE_AUTO_INSTALL": "0", "MISE_EXEC_AUTO_INSTALL": "0"})
+                    if result.returncode == 0 and ("expect" not in assertion or result.stdout.strip() == assertion["expect"]):
+                        continue
+                    detail = f"check exited {result.returncode}; stdout: {result.stdout.strip()[-1000:]}; stderr: {result.stderr.strip()[-1000:]}"
+                except CommandError as exc:
+                    items.append(self.error(module, "assert", assertion["name"], exc))
+                    continue
+                fix = "apply" if "apply" in assertion else "tobias"
+                text = assertion.get("apply", assertion.get("fix"))
+                items.append(self.item(module, "assert", assertion["name"], "failed", detail, fix, text,
+                                       action=(lambda cmd=text: command(["bash", "-c", cmd], cwd=HOME, timeout=120)) if fix == "apply" else None))
+        return items
+
+    def run(self, apply=False):
+        items, failures = [], []
+        for phase in (self.stable_phase, self.packages_phase, self.mise_phase, self.links_phase, self.merge_phase,
+                      self.omarchy_phase, self.systemd_phase, self.asserts_phase):
+            results = phase()
+            items.extend(item for item, _ in results)
+            if apply:
+                for item, action in results:
+                    if item["fix"] == "apply" and action is not None:
+                        try:
+                            action()
+                            if item["state"] == "daemon-reload":
+                                self.changed_units.clear()
+                        except (CommandError, OSError) as exc:
+                            failures.append(self.error(item["module"], item["kind"], item["target"], exc)[0])
+        if apply:
+            return self.run() + failures
+        return items
+
+
+def output(items, as_json, dry_run):
+    if as_json:
+        print(json.dumps({"clean": not items, "repo": str(REPO), "items": items}, ensure_ascii=False))
+        return
+    if REPO != STABLE.resolve():
+        print(f"note: running from {REPO}; links resolve through ~/.dotfiles -> {STABLE.resolve()}")
+    for item in items:
+        fix = item["fix"]
+        label = fix + (": " + item["command"] if fix == "tobias" and "command" in item else "")
+        detail = item["detail"].replace("\n", " ")
+        print(f'{item["module"]} {item["kind"]} {item["target"]}: {item["state"]} — {detail} [fix: {label}]')
+        if dry_run and fix == "apply":
+            description = (f'write {item["target"]}' if item["kind"] in {"merge", "omarchy"} else item["detail"])
+            print("  would " + item.get("command", description))
+        if "diff" in item:
+            for line in item["diff"].splitlines():
+                print("  " + line)
+    counts = {fix: sum(i["fix"] == fix for i in items) for fix in ("apply", "tobias", "capture")}
+    print(f'{len(items)} items: {counts["apply"]} apply, {counts["tobias"]} tobias, {counts["capture"]} capture' if items else "clean")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="operation", required=True)
+    for operation in ("check", "apply"):
+        sub = subparsers.add_parser(operation)
+        sub.add_argument("--json", action="store_true")
+        if operation == "apply":
+            sub.add_argument("--dry-run", action="store_true")
+        sub.add_argument("names", nargs="*")
+    args = parser.parse_args()
+    try:
+        engine = Engine(args.names)
+        dry_run = getattr(args, "dry_run", False)
+        if args.operation == "apply" and not dry_run and (STABLE.exists() or STABLE.is_symlink()):
+            require(STABLE.resolve() == REPO, "apply from the stable checkout after merge; ~/.dotfiles points to a different path")
+        items = engine.run(apply=args.operation == "apply" and not dry_run)
+        output(items, args.json, dry_run)
+        return 2 if any(item["state"] == "error" for item in items) else int(bool(items))
+    except Exception as exc:
+        print(f"dot: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

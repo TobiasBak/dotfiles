@@ -1,0 +1,8 @@
+{
+  "providerInstances": {
+    "pi": {
+      "driver": "pi",
+      "enabled": true
+    }
+  }
+}

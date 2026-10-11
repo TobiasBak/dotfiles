@@ -1,158 +1,50 @@
 # Dotfiles
 
-This repository contains separate setups for Omarchy, NixOS, NixOS WSL, NixOS servers and Windows. Omarchy uses native packages, mise and systemd, never Nix or Home Manager. Shared program and agent configuration lives under `configs/`.
+Personal overrides for an Omarchy workstation, plus the unchanged NixOS
+configuration for `tobias-serv01`. Omarchy never installs or runs Nix.
 
-## Structure
+## Layout
 
-- `configs/`: Shared program configs used by both OS installers where applicable.
-  - Home Manager links NixOS WSL user configs from here into the home directory.
-  - Native NixOS Home Manager modules explicitly link desktop and developer configs from here.
-  - Windows installers symlink host configs like WezTerm and VS Code into their Windows locations.
-- `assets/`: Shared non-configuration assets such as wallpapers.
-- `omarchy/`: Native Omarchy bootstrap, T3 nightly updater and systemd user units. See `omarchy/README.md`.
-- `nixos/`: Flake-based NixOS host configs for WSL, native developer machines, and servers. Not used by Omarchy.
-- `windows/`: Windows setup scripts.
-- `scripts/`: Shared bootstrap and benchmark scripts.
-- `docs/`: Historical research notes and supporting documentation.
+- `dot`: declarative apply and drift check.
+- `packages.toml`: extra system packages, with consumer notes.
+- `mise.toml`: global developer tools, settings and environment.
+- `agents/`: global instructions, Claude/Codex/Pi settings, skills and T3.
+- `desktop/`: monitor/animation overrides, transparent bar, wallpaper,
+  Stremio and Taildrop.
+- `cli/`: Git overrides and hunk.
+- `omarchy/README.md`: workstation setup, verification and manual recovery.
+- `nixos/`: serv01 only. See `nixos/README.md` for safe rebuilds.
 
-## Usage
+## Use
 
-### Agent context only (any Unix workstation, no Nix)
-
-Keep `dotfiles`, `vault-public`, and `pi-workspace-view` as sibling checkouts.
-The username, hostname, and parent directory do not matter. Clone missing
-repositories first (the workspace extension is private):
+Keep `dotfiles`, `vault-public` and `pi-workspace-view` as sibling checkouts.
+The stable link `~/.dotfiles` points to the checkout used for live applies.
 
 ```sh
-gh repo clone TobiasBak/vault-public ../vault-public
-gh repo clone TobiasBak/pi-workspace-view ../pi-workspace-view
-python3 scripts/install-agent-context.py
+./verify
+./dot check
+./dot apply --dry-run
+./dot apply
+./dot check --json
 ```
 
-Run clone commands only for repositories that are missing. Use `--vault PATH`
-and `--workspace PATH` if the checkouts are not siblings. Requires Python 3.9+
-and an existing Pi installation compatible with the workspace extension
-(currently Pi 1.1.0 and Node 24+).
+Apply requires approval. Review its dry-run diff first. It installs missing
+repo packages, configures mise, creates links, merges managed settings and
+enables user services. It never restarts T3 or resets unknown customizations.
+AUR installs, secrets and process restarts remain explicit manual items.
 
-This installs global instructions for Pi, Claude and Codex, links every vault
-skill into the shared and Claude skill directories, and merges repository Pi
-settings into local settings. Local model/theme preferences and unrelated
-extensions survive; repository policy settings take precedence. Conflicts are
-renamed to timestamped `.backup-*` paths. Omarchy skills remain untouched.
-Pi settings stay a local file, not a writable symlink into the repo; rerun this
-installer to apply shared settings changes.
+`check` exits 0 when clean, 1 when drift remains, and 2 on an error. JSON
+reports each item's module, target, state, detail and fix owner:
+`apply`, `tobias` or `capture`. Only `tobias` items may remain after a
+completed apply. Scope either command with module names, for example
+`./dot apply agents`; this replaces the old agent-context installer.
 
-No packages, shell changes, Nix activation, desktop configuration or services
-are involved. The workspace extension loads TypeScript directly and needs no
-build. Run `/reload` in Pi after installation; restart Claude/Codex sessions.
+Omarchy owns all stock terminal, theme and desktop defaults. Live changes
+to its seeded configs are drift unless this repo captures their overrides.
 
-### Windows
+## Privacy
 
-Run the root rebuild script from Windows PowerShell:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\rebuild-windows.ps1
-```
-
-This elevates when needed, applies the winget configuration, installs Windows
-host tools, creates the Windows config links, and installs or updates NixOS WSL
-when its recorded repository revision is stale. The WSL bootstrap also refreshes
-mutable agent CLIs and skill links when it runs. Commit and push the revision
-before running this command because WSL checks out that commit from the configured
-Git remote.
-
-### NixOS WSL
-
-Windows setup creates `%USERPROFILE%\.dotfiles` as a link to the Windows
-checkout used to run the configuration. It installs the latest NixOS-WSL `.wsl`
-release, applies `nixos#wsl`, creates the `tobias` user, and clones the same Git
-revision inside WSL at `~/code/dotfiles`. Linux config links use:
-
-```text
-~/.dotfiles -> ~/code/dotfiles
-```
-
-The Windows and Linux links are separate. The automated installer uses the
-fixed Linux checkout above rather than running from the Windows checkout under
-`/mnt/c`.
-
-Inside NixOS WSL, refresh the system profile and Home Manager user config with:
-
-```bash
-./rebuild-wsl.sh
-```
-
-Pi uses upstream defaults without custom themes, keybindings, or prompt
-templates. Its one personal extension is the workspace view from the local
-checkout `~/code/pi-workspace-view` (`src/snapshot.ts`); without that checkout
-Pi starts normally without it. Remove the `extensions` entry in
-`configs/pi/settings.json` to roll it back. It shares the global agent instructions and
-discovers the shared skills in `~/.agents/skills`. Built-in codemode is enabled
-alongside the normal tools, not as their replacement. Managed settings trust
-project resources by default so noninteractive T3 sessions load repository-local
-skills and settings too. This also permits project extensions and packages.
-
-### Native NixOS
-
-The native developer hosts are:
-
-- `pc`: NVIDIA desktop workstation.
-- `laptop`: integrated-graphics laptop.
-
-Both use Niri, Quickshell, Home Manager, Docker, and the shared developer
-profile. See `nixos/README.md` for the installation flow. The same hardware can also
-run Omarchy with its separate native setup; see `omarchy/README.md`.
-After installation, rebuild the current native host with:
-
-```bash
-./rebuild-nixos.sh
-```
-
-On the first rebuild from a generic NixOS installation, select the target
-explicitly. The script copies the generated hardware configuration when the
-repo still contains its placeholder, enables the Nix features needed for the
-first flake build, applies the declared hostname, and bootstraps developer tools
-when requested:
-
-```bash
-./rebuild-nixos.sh pc --bootstrap
-```
-
-Use `./rebuild-nixos.sh --bootstrap` on later rebuilds when Pi, Codex, Claude Code, OpenCode v2, and
-agent skill links also need to be refreshed.
-
-The native GRUB configuration expects the EFI system partition at
-`/boot/efi`. If a graphical installer mounted a VFAT EFI partition at `/boot`,
-move it and update the generated hardware configuration manually before
-rebuilding. The script fails closed rather than unmounting or rewriting a live
-EFI setup.
-
-### NixOS servers
-
-See `nixos/README.md` for server build, installation, and remote-operation notes.
-
-## Agent CLI privacy
-
-Run `bash scripts/bootstrap-ai-clis.sh` to install or update Codex and Claude Code
-without rebuilding the system or refreshing other developer tools. The full
-developer-tool bootstrap runs this step too. Mutable agent CLIs track `latest`,
-not fixed versions. Claude Code uses Anthropic's native installer and latest
-update channel; the bootstrap removes old pnpm installs that shadow it.
-Both CLIs load privacy settings through managed links to `configs/`.
-
-These settings disable optional analytics, telemetry, and feedback uploads. They
-also disable Claude Code's background updates; rerun the bootstrap to update it.
-They do not opt out of model training. For subscription sign-ins, turn off the account
-settings in [ChatGPT Data controls](https://chatgpt.com/#settings/DataControls)
-("Improve the model for everyone") and
-[Claude Privacy](https://claude.ai/settings/data-privacy-controls)
-("Help improve our AI models"). These account choices cannot be enforced by
-dotfiles. Both services still receive the prompts and code needed to answer.
-
-## Nix Direction
-
-- Use NixOS WSL as the default Windows developer shell.
-- Use native NixOS for the laptop and stationary developer environments.
-- Keep shared system behavior in `nixos/modules/` and machine-specific behavior in `nixos/hosts/<host>/`.
-- Keep user configuration in `nixos/home/` and shared source files in `configs/`.
-- Add project-level `flake.nix` dev shells where reproducible tooling matters.
+Managed agent settings disable optional telemetry and feedback. They do not
+control account-level training preferences. Set those separately in
+[ChatGPT Data controls](https://chatgpt.com/#settings/DataControls) and
+[Claude Privacy](https://claude.ai/settings/data-privacy-controls).

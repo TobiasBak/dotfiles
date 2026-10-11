@@ -1,0 +1,12 @@
+[Unit]
+Description=Receive Tailscale Taildrop files
+After=network-online.target
+
+[Service]
+ExecStartPre=/usr/bin/mkdir -p %h/Downloads
+ExecStart=/usr/bin/tailscale file get --loop --conflict=rename %h/Downloads
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

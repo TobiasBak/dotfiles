@@ -1,0 +1,10 @@
+[Unit]
+Description=Update T3 Code to the newest nightly
+StartLimitIntervalSec=6h
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash %h/.dotfiles/agents/t3/nightly.sh
+Restart=on-failure
+RestartSec=15min
