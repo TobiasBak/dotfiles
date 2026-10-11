@@ -1,0 +1,54 @@
+warning: Git tree '/home/tobias/.t3/worktrees/dotfiles/disposable-windows-qualification' is dirty
+test_confirm_and_rollback_refuse_existing_clone (test_base_image.BaseImageTests.test_confirm_and_rollback_refuse_existing_clone) ... No errors were found on the image.
+2/64 = 3.12% allocated, 0.00% fragmented, 0.00% compressed clusters
+Image end offset: 458752
+ok
+test_disk_budget_failure_keeps_original_and_preparation_clone (test_base_image.BaseImageTests.test_disk_budget_failure_keeps_original_and_preparation_clone) ... ok
+test_expired_evaluation_rejected_and_near_expiry_warned (test_base_image.BaseImageTests.test_expired_evaluation_rejected_and_near_expiry_warned) ... ok
+test_flatten_retains_old_base_until_explicit_confirmation (test_base_image.BaseImageTests.test_flatten_retains_old_base_until_explicit_confirmation) ... No errors were found on the image.
+2/64 = 3.12% allocated, 0.00% fragmented, 0.00% compressed clusters
+Image end offset: 458752
+ok
+test_interrupted_promotion_fails_info_and_can_rollback (test_base_image.BaseImageTests.test_interrupted_promotion_fails_info_and_can_rollback) ... No errors were found on the image.
+2/64 = 3.12% allocated, 0.00% fragmented, 0.00% compressed clusters
+Image end offset: 458752
+ok
+test_interrupted_rollback_is_retryable_and_never_exposes_stale_identity (test_base_image.BaseImageTests.test_interrupted_rollback_is_retryable_and_never_exposes_stale_identity) ... No errors were found on the image.
+2/64 = 3.12% allocated, 0.00% fragmented, 0.00% compressed clusters
+Image end offset: 458752
+ok
+test_invalid_tool_versions_do_not_promote (test_base_image.BaseImageTests.test_invalid_tool_versions_do_not_promote) ... ok
+test_process_exit_during_retention_can_abort_without_filesystem_surgery (test_base_image.BaseImageTests.test_process_exit_during_retention_can_abort_without_filesystem_surgery) ... ok
+test_rollback_restores_original_without_preexisting_identity (test_base_image.BaseImageTests.test_rollback_restores_original_without_preexisting_identity) ... No errors were found on the image.
+2/64 = 3.12% allocated, 0.00% fragmented, 0.00% compressed clusters
+Image end offset: 458752
+ok
+test_console_unlock_and_credential_cleanup_without_disk_mutation (test_desktop_guest.DesktopGuestTests.test_console_unlock_and_credential_cleanup_without_disk_mutation) ... ok
+test_preparation_removes_only_registered_recovery_and_expands_c_once (test_desktop_guest.DesktopGuestTests.test_preparation_removes_only_registered_recovery_and_expands_c_once) ... ok
+test_bounded_stop_preserves_running_vm_and_reports_unit_errors (test_vm_lifecycle.VmLifecycleTests.test_bounded_stop_preserves_running_vm_and_reports_unit_errors) ... ok
+test_concurrent_creates_leave_one_valid_clone (test_vm_lifecycle.VmLifecycleTests.test_concurrent_creates_leave_one_valid_clone) ... ok
+test_create_obeys_persisted_lifecycle_lock (test_vm_lifecycle.VmLifecycleTests.test_create_obeys_persisted_lifecycle_lock) ... ok
+test_desktop_boot_and_cleanup_are_bounded_even_with_hung_ssh (test_vm_lifecycle.VmLifecycleTests.test_desktop_boot_and_cleanup_are_bounded_even_with_hung_ssh) ... ok
+test_desktop_readiness_rejects_locked_explorer_and_missing_restart (test_vm_lifecycle.VmLifecycleTests.test_desktop_readiness_rejects_locked_explorer_and_missing_restart) ... ok
+test_desktop_readiness_restarts_once_and_clears_temporary_credentials (test_vm_lifecycle.VmLifecycleTests.test_desktop_readiness_restarts_once_and_clears_temporary_credentials) ... ok
+test_discard_keeps_clone_if_qmp_quit_does_not_end_owned_process (test_vm_lifecycle.VmLifecycleTests.test_discard_keeps_clone_if_qmp_quit_does_not_end_owned_process) ... ok
+test_discard_quits_owned_qemu_without_waiting_for_guest_shutdown (test_vm_lifecycle.VmLifecycleTests.test_discard_quits_owned_qemu_without_waiting_for_guest_shutdown) ... ok
+test_failed_create_cleans_partial_directory (test_vm_lifecycle.VmLifecycleTests.test_failed_create_cleans_partial_directory) ... ok
+test_foreground_service_lifetime_and_explicit_guest_queries (test_vm_lifecycle.VmLifecycleTests.test_foreground_service_lifetime_and_explicit_guest_queries) ... ok
+test_grown_clone_is_cow_and_preserves_sealed_base (test_vm_lifecycle.VmLifecycleTests.test_grown_clone_is_cow_and_preserves_sealed_base) ... ok
+test_help_paths_and_status_do_not_create_home (test_vm_lifecycle.VmLifecycleTests.test_help_paths_and_status_do_not_create_home) ... ok
+test_missing_bootstrap_is_observational_and_not_fabricated (test_vm_lifecycle.VmLifecycleTests.test_missing_bootstrap_is_observational_and_not_fabricated) ... ok
+test_public_scp_routes_clone_key_port_knownhosts_and_paths (test_vm_lifecycle.VmLifecycleTests.test_public_scp_routes_clone_key_port_knownhosts_and_paths) ... ok
+test_second_vm_budget_and_explicit_replacement (test_vm_lifecycle.VmLifecycleTests.test_second_vm_budget_and_explicit_replacement) ... ok
+test_service_sigterm_during_start_does_not_orphan_qemu (test_vm_lifecycle.VmLifecycleTests.test_service_sigterm_during_start_does_not_orphan_qemu) ... ok
+test_service_sigterm_waits_for_sibling_qemu_scope (test_vm_lifecycle.VmLifecycleTests.test_service_sigterm_waits_for_sibling_qemu_scope) ... ok
+test_shrink_invalid_size_and_failed_resize_leave_no_partial_clone (test_vm_lifecycle.VmLifecycleTests.test_shrink_invalid_size_and_failed_resize_leave_no_partial_clone) ... ok
+test_start_and_destroy_share_lock_without_service_inheriting_it (test_vm_lifecycle.VmLifecycleTests.test_start_and_destroy_share_lock_without_service_inheriting_it) ... ok
+test_start_checks_old_home_budget (test_vm_lifecycle.VmLifecycleTests.test_start_checks_old_home_budget) ... ok
+test_stopped_pid_is_not_enough_while_service_or_scope_remains (test_vm_lifecycle.VmLifecycleTests.test_stopped_pid_is_not_enough_while_service_or_scope_remains) ... ok
+test_uncleared_credentials_fail_readiness (test_vm_lifecycle.VmLifecycleTests.test_uncleared_credentials_fail_readiness) ... ok
+
+----------------------------------------------------------------------
+Ran 33 tests in 38.211s
+
+OK

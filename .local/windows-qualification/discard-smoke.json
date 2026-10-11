@@ -1,0 +1,32 @@
+[
+  {
+    "args": [
+      "clone-create",
+      "qualification-discard-smoke"
+    ],
+    "seconds": 0.07574121502693743,
+    "returncode": 0,
+    "stdout": "Formatting '/home/tobias/.local/share/oip-windows-vm/vms/qualification-discard-smoke/disk.qcow2', fmt=qcow2 cluster_size=65536 extended_l2=off compression_type=zlib size=85899345920 backing_file=/home/tobias/.local/share/oip-windows-vm/base/windows-server-2025-desktop-base.qcow2 backing_fmt=qcow2 lazy_refcounts=off refcount_bits=16\nclone created: qualification-discard-smoke\n",
+    "stderr": ""
+  },
+  {
+    "args": [
+      "start",
+      "qualification-discard-smoke"
+    ],
+    "seconds": 0.3005203700158745,
+    "returncode": 0,
+    "stdout": "started qualification-discard-smoke: console=spice://127.0.0.1:5931 ssh=127.0.0.1:2223\n",
+    "stderr": "Running as unit: oip-windows-vm-80582d2f8f65de2b259870c565fec22ac0b9d505b9906bb88b4a3211ac92579f.service; invocation ID: 7062bd51bf5c48c0ac9aaf79c4a10b7d\n"
+  },
+  {
+    "args": [
+      "discard",
+      "qualification-discard-smoke"
+    ],
+    "seconds": 0.015304033062420785,
+    "returncode": 1,
+    "stdout": "",
+    "stderr": "2026/10/04 16:36:39 socat[3683342] E read(5, 0x61c97fe4e000, 8192): Connection reset by peer\nerror: QMP quit failed; clone preserved: qualification-discard-smoke\n"
+  }
+]

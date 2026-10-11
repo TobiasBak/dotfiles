@@ -1,0 +1,1 @@
+{"diskBytes":137438953472,"partitionBeforeBytes":84884324352,"partitionBytes":137331998720,"removedRecovery":{"diskNumber":0,"partitionNumber":3,"bytes":907018240},"unusedTailBytes":1048576,"tailBudgetBasis":"Windows partition alignment: at most one MiB at the disk end"}

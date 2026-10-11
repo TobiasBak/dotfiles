@@ -1,0 +1,32 @@
+[
+  {
+    "args": [
+      "clone-create",
+      "qualification-discard-smoke"
+    ],
+    "seconds": 0.07586924696806818,
+    "returncode": 0,
+    "stdout": "Formatting '/home/tobias/.local/share/oip-windows-vm/vms/qualification-discard-smoke/disk.qcow2', fmt=qcow2 cluster_size=65536 extended_l2=off compression_type=zlib size=85899345920 backing_file=/home/tobias/.local/share/oip-windows-vm/base/windows-server-2025-desktop-base.qcow2 backing_fmt=qcow2 lazy_refcounts=off refcount_bits=16\nclone created: qualification-discard-smoke\n",
+    "stderr": ""
+  },
+  {
+    "args": [
+      "start",
+      "qualification-discard-smoke"
+    ],
+    "seconds": 0.297659078030847,
+    "returncode": 0,
+    "stdout": "started qualification-discard-smoke: console=spice://127.0.0.1:5931 ssh=127.0.0.1:2223\n",
+    "stderr": "Running as unit: oip-windows-vm-80582d2f8f65de2b259870c565fec22ac0b9d505b9906bb88b4a3211ac92579f.service; invocation ID: efaeb8ce4d8149eaa4a3155c1de2cad3\n"
+  },
+  {
+    "args": [
+      "discard",
+      "qualification-discard-smoke"
+    ],
+    "seconds": 1.051751721999608,
+    "returncode": 0,
+    "stdout": "destroyed clone: qualification-discard-smoke\n",
+    "stderr": ""
+  }
+]

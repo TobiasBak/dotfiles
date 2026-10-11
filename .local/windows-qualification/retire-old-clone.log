@@ -1,0 +1,12 @@
+2026-10-04T15:50:42+02:00
+import-gui-desktop-236 is stopped.
+service: oip-windows-vm-a87d46fcf662cc4b9159134571230a9fef6f5206ce34a0a724a6c81159ffd44e.service state=inactive main-pid=0
+scope: pc-workload-6e7eee8f-808c-4334-98e0-38e4faeab44b.scope state=inactive main-pid=
+destroyed clone: import-gui-desktop-236
+VM home:       /home/tobias/.local/share/oip-windows-vm
+Media:         /home/tobias/.local/share/oip-windows-vm/media
+Base disk:     /home/tobias/.local/share/oip-windows-vm/base/windows-server-2025-desktop-base.qcow2
+SSH key:       /home/tobias/.local/share/oip-windows-vm/keys/id_ed25519
+Admin password:/home/tobias/.local/share/oip-windows-vm/base/administrator-password.txt
+Test VMs:      /home/tobias/.local/share/oip-windows-vm/vms (limit 1)
+Lifecycle lock:/home/tobias/.local/share/oip-windows-vm/clone.lock

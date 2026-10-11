@@ -1,0 +1,47 @@
+{
+  "state": "ready",
+  "phase": "complete",
+  "restartRequested": true,
+  "budgetsSeconds": {
+    "boot": 300,
+    "restart": 300,
+    "command": 60,
+    "cleanup": 30
+  },
+  "deadlinePolicy": {
+    "boot": "300s operational deadline for an already-started Windows clone to accept SSH and prepare its disk/login; not a measured boot SLA.",
+    "restart": "300s operational deadline for the single login restart and an unlocked console; not a measured boot SLA.",
+    "command": "60s cap per SSH operation so a live connection cannot consume the entire boot/restart budget.",
+    "cleanup": "30s separate failure-cleanup deadline for removing temporary Winlogon credentials over SSH."
+  },
+  "observations": [
+    {
+      "state": "ready",
+      "bootTime": "2026-10-04T14:10:33.5000000Z",
+      "provisionReady": false,
+      "consoleSessionId": 1,
+      "consoleActive": true,
+      "consoleUnlocked": true,
+      "consoleAdministrator": true,
+      "explorerRunning": true,
+      "credentialsCleared": false,
+      "partitionBytes": 84884324352,
+      "supportedMaxBytes": 84884324352
+    },
+    {
+      "state": "ready",
+      "bootTime": "2026-10-04T14:10:33.5000000Z",
+      "provisionReady": false,
+      "consoleSessionId": 1,
+      "consoleActive": true,
+      "consoleUnlocked": true,
+      "consoleAdministrator": true,
+      "explorerRunning": true,
+      "credentialsCleared": true,
+      "partitionBytes": 84884324352,
+      "supportedMaxBytes": 84884324352
+    }
+  ],
+  "updatedAt": "2026-10-04T14:11:05.313910+00:00",
+  "credentialsCleared": true
+}
