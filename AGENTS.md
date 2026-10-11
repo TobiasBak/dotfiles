@@ -16,6 +16,10 @@ Vault-maintained agent skills live in the sibling `../vault-public` repository u
 
 Before changing or remotely rebuilding a NixOS server, read `nixos/README.md` and follow its remote server operation guidance. It is authoritative for SSH, Tailscale, and rebuild safety.
 
+## Omarchy
+
+The `pc` can also run Omarchy from the standalone Home Manager configuration `tobias@omarchy`. Before changing it, its bootstrap or the cut-over, read `omarchy/README.md`. Omarchy owns its desktop configuration; do not manage Hyprland, Waybar or other Omarchy-owned files from this repository.
+
 ## Installed T3 Code service
 
 The `pc` host uses T3 Code's official pinned per-user background service on the nightly channel. NixOS owns user lingering and the Tailnet-only port `3773` firewall rule; it does not own the service unit or runtime. OS rebuilds do not update T3. Update it separately through `npx --yes t3@nightly update --channel nightly --yes`, not a source checkout.

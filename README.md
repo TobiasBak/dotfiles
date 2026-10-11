@@ -70,7 +70,8 @@ The native developer hosts are:
 - `laptop`: integrated-graphics laptop.
 
 Both use Niri, Quickshell, Home Manager, Docker, and the shared developer
-profile. See `nixos/README.md` for the Arch replacement and installation flow.
+profile. See `nixos/README.md` for the installation flow. The `pc` can also
+run Omarchy with the same home configuration; see `omarchy/README.md`.
 After installation, rebuild the current native host with:
 
 ```bash

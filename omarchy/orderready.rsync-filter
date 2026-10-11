@@ -1,0 +1,11 @@
+# What to park and migrate from /mnt/data-2tb/orderready (rsync filter rules,
+# first match wins). Build output is rebuildable, except the mutation receipts
+# and run records under target/or/artifacts that evidence files cite by path.
++ /wt/*/target/
++ /wt/*/target/or/
++ /wt/*/target/or/artifacts/***
+- /wt/*/target/**
+- target/
+- node_modules/
+- .venv/
+- frontend/dist/

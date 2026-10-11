@@ -57,6 +57,12 @@
         packages = windowsVm.runtimeInputs ++ [ pkgs.shellcheck ];
       };
 
+      homeConfigurations."tobias@omarchy" = home-manager.lib.homeManagerConfiguration {
+        inherit pkgs;
+        extraSpecialArgs = { inherit hunk; };
+        modules = [ ./home/tobias/omarchy.nix ];
+      };
+
       nixosConfigurations = {
         wsl = mkDeveloperSystem [
           nixos-wsl.nixosModules.default

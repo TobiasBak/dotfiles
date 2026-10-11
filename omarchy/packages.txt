@@ -1,0 +1,11 @@
+# pacman packages bootstrap.sh installs on top of Omarchy. Everything else
+# comes from Nix through Home Manager (nixos/home/tobias/omarchy.nix).
+base-devel
+git
+nix
+openssh
+rsync
+tailscale
+tpm2-tss
+uv
+zsh
