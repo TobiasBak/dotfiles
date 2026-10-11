@@ -182,7 +182,24 @@ pi() {
   command pi "$@"
 }
 
-alias t3token='command npx --yes t3@nightly auth pairing create'
+unalias t3token 2>/dev/null
+t3token() {
+  local runtime_dir="${T3CODE_HOME:-$HOME/.t3}/runtime"
+  if [[ ! -r "$runtime_dir/service-state.json" ]]; then
+    print -u2 "No installed T3 service found at $runtime_dir."
+    return 1
+  fi
+
+  local version
+  version="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).activeVersion)' "$runtime_dir/service-state.json")" || return
+  local runtime="$runtime_dir/versions/$version/t3"
+  if [[ ! -x "$runtime" ]]; then
+    print -u2 "Installed T3 runtime is missing: $runtime"
+    return 1
+  fi
+
+  "$runtime" pair "$@"
+}
 
 export PNPM_HOME="$HOME/.local/share/pnpm"
 export PNPM_BIN="$PNPM_HOME/bin"
