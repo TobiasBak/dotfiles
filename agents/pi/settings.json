@@ -1,5 +1,6 @@
 {
   "defaultProjectTrust": "always",
+  "defaultThinkingLevel": "high",
   "defaultTools": [
     "+codemode"
   ]

@@ -20,14 +20,14 @@ case "$(jq -r '.tool_name' <<<"$input")" in
     jq '
       def with_sol_thinking:
         if type == "array" then
-          if any(.[]; .id == "thinking") then . else . + [{id: "thinking", value: "medium"}] end
-        else {thinking: "medium"} + . end;
+          if any(.[]; .id == "thinking") then . else . + [{id: "thinking", value: "high"}] end
+        else {thinking: "high"} + . end;
       (.tool_input.target // {}) as $requested |
       (if ($requested.providerInstanceId // "") == "" or ($requested.model // "") == ""
        then {providerInstanceId: "pi", model: "openai-codex/gpt-6.1-sol",
              options: (($requested.options // {}) |
                        if type == "array" then map(select(.id == "thinking"))
-                       else {thinking: (.thinking // "medium")} end)}
+                       else {thinking: (.thinking // "high")} end)}
        else $requested end) as $target |
       (if $target.providerInstanceId == "pi" and $target.model == "openai-codex/gpt-6.1-sol"
        then $target + {options: (($target.options // {}) | with_sol_thinking)}
