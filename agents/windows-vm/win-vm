@@ -3,6 +3,7 @@
 import argparse
 import base64
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import fcntl
 import hashlib
 import json
@@ -10,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -23,6 +25,11 @@ HOME = Path.home()
 KEYS = HOME / ".keys"
 CACHE = HOME / ".cache/win-vm"
 MARKER = CACHE / "started-by-win-vm"
+STATE = HOME / ".local/state/win-vm"
+BASELINE = STATE / "baseline"
+EPHEMERAL = STATE / "ephemeral"
+LEASE = STATE / "lease"
+HOLDER = STATE / "lease.json"
 SOURCE = Path(__file__).resolve().parent
 CONTAINER = "omarchy-windows"
 COMPOSE = "/var/lib/omarchy/windows/docker-compose.yml"
@@ -54,17 +61,18 @@ def run(argv, **kwargs):
 
 
 def docker_state():
-    template = "{{.State.Status}}|{{.State.StartedAt}}|{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}"
+    template = '{{.State.Status}}|{{.State.StartedAt}}|{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}|{{range .Mounts}}{{if eq .Destination "/storage"}}{{.Source}}{{end}}{{end}}'
     result = run(["docker", "inspect", "-f", template, CONTAINER], capture_output=True, text=True)
     if result.returncode:
         if "no such" in result.stderr.lower():
-            return {"container": "absent", "ip": None, "started_at": None}
+            return {"container": "absent", "ip": None, "started_at": None, "mode": "persistent"}
         raise Failure(result.stderr.strip() or "docker inspect failed")
-    state, started_at, addresses = result.stdout.strip().split("|")
+    state, started_at, addresses, storage = result.stdout.strip().split("|")
     ips = addresses.split()
     if len(ips) > 1:
         raise Failure("VM has multiple network IPs; refusing an ambiguous SSH target")
-    return {"container": state, "ip": ips[0] if ips else None, "started_at": started_at}
+    return {"container": state, "ip": ips[0] if ips else None, "started_at": started_at,
+            "mode": "ephemeral" if storage == str(EPHEMERAL / "storage") else "persistent"}
 
 
 def owned(state):
@@ -128,6 +136,8 @@ def stderr_stream(stream):
 
 
 def powershell(ip, script, stream=False):
+    if os.environ.get("WIN_VM_LEASE"):
+        ip = leased_state()["ip"]
     user, _ = credentials()
     if not ip:
         raise Failure("Windows VM has no container IP; run win-vm up")
@@ -180,8 +190,14 @@ def session(ip):
 def status(state=None):
     state = state or docker_state()
     ssh, sess = session(state["ip"]) if state["container"] == "running" and state["ip"] else (False, None)
+    baseline = read_json(BASELINE / "baseline.json")
+    holder = live_lease()
     return {"container": state["container"], "ip": state["ip"], "ssh": ssh,
-            "session": sess, "started_by_win_vm": owned(state)}
+            "session": sess, "started_by_win_vm": owned(state), "mode": state["mode"],
+            "lease": {key: holder.get(key) for key in ("pid", "command", "started_at")} if holder is not None else None,
+            "baseline": {"captured_at": baseline["captured_at"],
+                         "data.img": baseline["files"]["data.img"][:12]} if baseline else None,
+            "residue": holder is None and (EPHEMERAL.exists() or state["mode"] == "ephemeral")}
 
 
 @contextmanager
@@ -193,7 +209,7 @@ def lifecycle_lock():
         return
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
-        yield True
+        yield fd
     finally:
         os.close(fd)
 
@@ -204,9 +220,272 @@ def private_lock(name):
     fd = os.open(CACHE / name, os.O_RDWR | os.O_CREAT, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
-        yield
+        yield fd
     finally:
         os.close(fd)
+
+
+def read_json(path):
+    try:
+        return json.loads(path.read_text())
+    except FileNotFoundError:
+        return None
+
+
+def live_lease():
+    try:
+        fd = os.open(LEASE, os.O_RDONLY)
+    except FileNotFoundError:
+        return None
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return read_json(HOLDER) or {}
+        return None
+    finally:
+        os.close(fd)
+
+
+def take_lease(fd, kind):
+    try:
+        fcntl.flock(fd, kind | fcntl.LOCK_NB)
+    except BlockingIOError:
+        holder = read_json(HOLDER) or {}
+        raise Failure(f"VM leased by pid {holder.get('pid', 'unknown')}, command {holder.get('command', 'unknown')}, started at {holder.get('started_at', 'unknown')}") from None
+
+
+def write_holder(holder):
+    fd, name = tempfile.mkstemp(prefix=".lease-", dir=STATE)
+    try:
+        with os.fdopen(fd, "w") as file:
+            file.write(json.dumps(holder) + "\n")
+        os.replace(name, HOLDER)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
+def leased_state():
+    holder = live_lease()
+    state = docker_state()
+    if not holder or holder.get("token") != os.environ.get("WIN_VM_LEASE") or state["container"] != "running" or state["mode"] != "ephemeral":
+        raise Failure("the ephemeral VM is gone; refusing to touch the persistent VM")
+    return state
+
+
+@contextmanager
+def command_lease(command):
+    token = os.environ.get("WIN_VM_LEASE")
+    if token:
+        if command in ("run", "baseline", "down"):
+            raise Failure(f"{command} is refused inside an ephemeral run (no nested runs or VM lifecycle changes)")
+        leased_state()
+        yield None
+        return
+    STATE.mkdir(parents=True, exist_ok=True)
+    fd = os.open(LEASE, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        kind = fcntl.LOCK_EX if command in ("run", "baseline") else fcntl.LOCK_SH
+        take_lease(fd, kind)
+        if EPHEMERAL.exists() or docker_state()["mode"] == "ephemeral":
+            take_lease(fd, fcntl.LOCK_EX)
+            teardown()
+            take_lease(fd, kind)
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def checked(argv, **kwargs):
+    result = run(argv, **kwargs)
+    if result.returncode:
+        raise Failure(f"{argv[0]} failed with exit code {result.returncode}")
+    return result
+
+
+def reflink_files(source, target):
+    target.mkdir(parents=True)
+    checked(["chattr", "-C", str(target)])
+    for path in sorted(source.iterdir()):
+        if path.is_symlink() or not path.is_file() or path.name == "baseline.json":
+            continue
+        dest = target / path.name
+        flags = checked(["lsattr", "-d", str(path)], capture_output=True, text=True).stdout.split()[0]
+        dest.touch()
+        checked(["chattr", "+C" if "C" in flags else "-C", str(dest)])
+        checked(["cp", "--reflink=always", "--", str(path), str(dest)])
+        dest.chmod(0o644)
+
+
+def baseline():
+    new = STATE / "baseline.new"
+    old = STATE / "baseline.old"
+    with lifecycle_lock():
+        if docker_state()["container"] == "running":
+            raise Failure("VM is running; stop it before win-vm baseline")
+        shutil.rmtree(new, ignore_errors=True)
+        reflink_files(HOME / ".windows", new)
+    if not (new / "data.img").is_file():
+        raise Failure("~/.windows has no data.img; bootstrap the persistent guest first")
+    files = {}
+    for path in sorted(new.iterdir()):
+        files[path.name] = checked(["sha256sum", "--", str(path)], capture_output=True, text=True).stdout.split()[0]
+    identity = {"captured_at": datetime.now(timezone.utc).isoformat(), "source": "~/.windows", "files": files}
+    (new / "baseline.json").write_text(json.dumps(identity, indent=2) + "\n")
+    for path in new.iterdir():
+        path.chmod(0o444)
+    shutil.rmtree(old, ignore_errors=True)
+    if BASELINE.exists():
+        BASELINE.rename(old)
+    new.rename(BASELINE)
+    shutil.rmtree(old, ignore_errors=True)
+    print(json.dumps(identity), flush=True)
+    return 0
+
+
+@contextmanager
+def ephemeral_lifecycle():
+    with private_lock("ephemeral.lock") as fd, lifecycle_lock() as omarchy_fd:
+        yield (fd, omarchy_fd) if omarchy_fd is not False else (fd,)
+
+
+def teardown():
+    with ephemeral_lifecycle():
+        if docker_state()["mode"] == "ephemeral":
+            checked(["docker", "rm", "-f", CONTAINER], stdout=sys.stderr)
+        if EPHEMERAL.exists():
+            try:
+                shutil.rmtree(EPHEMERAL)
+            except PermissionError:
+                checked(["docker", "run", "--rm", "--pull=never", "--network=none",
+                         "--mount", f"type=bind,source={EPHEMERAL},target=/cleanup",
+                         "--entrypoint", "rm", "dockurr/windows", "-rf", "--", "/cleanup/storage", "/cleanup/shared"], stdout=sys.stderr)
+                shutil.rmtree(EPHEMERAL)
+
+
+class RunSignal(Exception):
+    def __init__(self, signum):
+        self.signum = signum
+
+
+def guard(fd):
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+
+    def terminate(signum, frame):
+        raise RunSignal(signum)
+
+    signal.signal(signal.SIGTERM, terminate)
+    try:
+        while os.read(0, 4096):
+            pass
+    except RunSignal:
+        pass
+    finally:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        try:
+            teardown()
+            HOLDER.unlink(missing_ok=True)
+        finally:
+            os.close(fd)
+    return 0
+
+
+def refuse_running(state):
+    if state["container"] != "running":
+        return
+    if state["mode"] != "persistent":
+        raise Failure("VM is running in ephemeral mode; stop it first")
+    who = "win-vm up" if owned(state) else "not win-vm (Tobias or an Omarchy launch)"
+    message = f"persistent VM is running; refusing ephemeral run (holder: {who}, started {state['started_at']})"
+    try:
+        ssh, sess = session(state["ip"]) if state["ip"] else (False, None)
+        if ssh and sess and sess["state"] in ("console", "rdp", "disconnected"):
+            message += f", session: {sess['state']}"
+    except (Failure, OSError):
+        pass
+    raise Failure(message)
+
+
+def ephemeral_run(command, timeout, fd):
+    state = docker_state()
+    refuse_running(state)
+    if not (BASELINE / "baseline.json").is_file():
+        raise Failure("no pinned baseline; run win-vm baseline with the VM stopped")
+    token = uuid.uuid4().hex
+    holder = {"pid": os.getpid(), "guardian_pid": None, "command": command,
+              "started_at": datetime.now(timezone.utc).isoformat(), "token": token}
+    read_fd, write_fd = os.pipe()
+    guardian = None
+    process = None
+    received = None
+    signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+    def forward(signum, frame):
+        nonlocal received
+        received = signum
+        if process is not None and process.poll() is None:
+            process.send_signal(signum)
+
+    def check():
+        if received is not None:
+            raise RunSignal(received)
+        if guardian is not None and guardian.poll() is not None:
+            raise Failure("ephemeral guardian exited before the host command")
+
+    previous = {sig: signal.signal(sig, forward) for sig in signals}
+    try:
+        write_holder(holder)
+        guardian = subprocess.Popen(["systemd-run", "--user", "--scope", "--quiet", "--collect",
+                                     f"--unit=win-vm-ephemeral-{token[:12]}", "--", sys.executable,
+                                     str(SOURCE / "win-vm"), "__guard", str(fd)],
+                                    stdin=read_fd, pass_fds=(fd,))
+        os.close(read_fd)
+        read_fd = None
+        holder["guardian_pid"] = guardian.pid
+        write_holder(holder)
+        with ephemeral_lifecycle() as lifecycle_fds:
+            check()
+            state = docker_state()
+            refuse_running(state)
+            shutil.rmtree(EPHEMERAL, ignore_errors=True)
+            reflink_files(BASELINE, EPHEMERAL / "storage")
+            (EPHEMERAL / "shared").mkdir()
+            override = {"services": {"windows": {"volumes": [
+                {"type": "bind", "source": str(EPHEMERAL / "storage"), "target": "/storage"},
+                {"type": "bind", "source": str(EPHEMERAL / "shared"), "target": "/shared"}]}}}
+            (EPHEMERAL / "compose.yml").write_text(json.dumps(override) + "\n")
+            check()
+            checked(["docker-compose", "-f", COMPOSE, "-f", str(EPHEMERAL / "compose.yml"),
+                     "up", "-d", "--force-recreate"], stdout=sys.stderr, pass_fds=lifecycle_fds)
+        os.environ["WIN_VM_LEASE"] = token
+        wait_ready(timeout, check=check)
+        check()
+        process = subprocess.Popen(command, env={**os.environ, "WIN_VM_LEASE": token})
+        if received is not None:
+            process.send_signal(received)
+        code = process.wait()
+        return code if code >= 0 else 128 - code
+    except RunSignal as error:
+        return 128 + error.signum
+    finally:
+        os.environ.pop("WIN_VM_LEASE", None)
+        for sig in signals:
+            signal.signal(sig, signal.SIG_IGN)
+        try:
+            teardown()
+        finally:
+            if read_fd is not None:
+                os.close(read_fd)
+            os.close(write_fd)
+            if guardian is not None:
+                guardian.wait()
+                if guardian.returncode:
+                    raise Failure(f"ephemeral guardian exited {guardian.returncode}; check win-vm status for residue")
+            else:
+                HOLDER.unlink(missing_ok=True)
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
 
 
 def record_start(state):
@@ -256,6 +535,8 @@ def mounts_ready():
 
 
 def up(timeout):
+    if os.environ.get("WIN_VM_LEASE"):
+        return wait_ready(timeout, already=True, check=leased_state)
     # Serializes win-vm starts, including the pkexec fallback that must run outside Omarchy's lock.
     with private_lock("up.lock"):
         with lifecycle_lock() as locked:
@@ -282,15 +563,21 @@ def up(timeout):
                     print("win-vm: VM was not freshly started by this up; leaving it unowned", file=sys.stderr)
                 else:
                     record_start(state)
+    return wait_ready(timeout, already)
+
+
+def wait_ready(timeout, already=False, check=lambda: None):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        check()
         state = docker_state()
         info = status(state)
         if info["ssh"] and info["session"]["state"] == "disconnected":
             require_session(state["ip"], min(120, max(1, deadline - time.monotonic())))
             info = status(state)
         if info["ssh"] and info["session"]["state"] in ("console", "rdp"):
-            print(json.dumps({"already_running": already, "ip": info["ip"], "ssh": True, "session": info["session"]}))
+            check()
+            print(json.dumps({"already_running": already, "ip": info["ip"], "ssh": True, "session": info["session"]}), flush=True)
             return 0
         time.sleep(min(2, max(0, deadline - time.monotonic())))
     raise Failure("timed out waiting for SSH and tb's active console or RDP session; run the bootstrap once (autologon?)")
@@ -312,6 +599,8 @@ def down(force):
 
 
 def scp(ip, src, dst, upload):
+    if os.environ.get("WIN_VM_LEASE"):
+        ip = leased_state()["ip"]
     user, _ = credentials()
     if not ip:
         raise Failure("Windows VM has no container IP")
@@ -528,8 +817,13 @@ def bootstrap(stage_only):
 
 
 def parser():
-    p = argparse.ArgumentParser(description=__doc__, epilog="Guest commands require one elevated bootstrap.bat run. up waits for SSH + active console or RDP; down stops only a container started by win-vm (use --force to override). No RDP lifecycle coupling.")
+    p = argparse.ArgumentParser(description=__doc__, epilog="Guest commands require one elevated bootstrap.bat run. Pin the stopped guest with baseline; run --ephemeral -- cmd uses a disposable clone and exclusive lease. up waits for SSH + active console or RDP; down stops only a container started by win-vm (use --force to override). No RDP lifecycle coupling.")
     sub = p.add_subparsers(dest="command", required=True)
+    sub.add_parser("baseline", help="pin reflinked files from the stopped persistent guest")
+    q = sub.add_parser("run", help="lease a disposable baseline clone for a host command")
+    q.add_argument("--ephemeral", action="store_true", required=True)
+    q.add_argument("--timeout", type=float, default=900, help="readiness timeout in seconds (default: 900)")
+    q.add_argument("args", nargs=argparse.REMAINDER)
     q = sub.add_parser("up", help="start headless and wait for guest SSH + active console or RDP")
     q.add_argument("--timeout", type=float, default=900, help="readiness timeout in seconds (default: 900)")
     q = sub.add_parser("down", help="stop only the container started by win-vm")
@@ -556,6 +850,9 @@ def parser():
 
 
 def main():
+    # Internal: the ephemeral run's guardian, started through systemd-run.
+    if sys.argv[1:2] == ["__guard"]:
+        return guard(int(sys.argv[2]))
     p = parser()
     args = p.parse_args()
     if hasattr(args, "timeout") and args.timeout <= 0:
@@ -569,6 +866,18 @@ def main():
             p.error(f"{args.command} requires command arguments")
         if args.command == "exec" and len(args.args) != 1:
             p.error("exec requires exactly one PowerShell script argument")
+    if args.command == "status":
+        print(json.dumps(status()))
+        return 0
+    with command_lease(args.command) as fd:
+        if args.command == "baseline":
+            return baseline()
+        if args.command == "run":
+            return ephemeral_run(args.args, args.timeout, fd)
+        return dispatch(args)
+
+
+def dispatch(args):
     if args.command == "bootstrap":
         return bootstrap(args.stage_only)
     if args.command == "up":
