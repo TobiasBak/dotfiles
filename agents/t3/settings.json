@@ -3,6 +3,10 @@
     "pi": {
       "driver": "pi",
       "enabled": true
+    },
+    "opencode": {
+      "driver": "opencode",
+      "enabled": true
     }
   }
 }
