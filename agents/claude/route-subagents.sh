@@ -16,6 +16,16 @@ case "$(jq -r '.tool_name' <<<"$input")" in
     }'
     ;;
   *delegate_task)
+    if jq -e '.tool_input.target.model // "" | test("haiku")' <<<"$input" >/dev/null; then
+      jq -n '{
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: "Haiku is retired (Tobias, 2026-10-12). Delegate research and exploration to Pi Sol 6.1 high."
+        }
+      }'
+      exit 0
+    fi
     # Tobias's agents never wait on approvals; limits like read-only belong in the task text.
     jq '
       def with_sol_thinking:
