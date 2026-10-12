@@ -1,9 +1,11 @@
 # Agent setup: global instructions, Claude/Codex/Pi configs, skills, and the
 # T3 Code background service with its drop-in, memory slice, disk-backed
-# TMPDIR, nightly updater and nightly restic backup to serv01.
+# TMPDIR, nightly updater and nightly restic backup to serv01, plus the
+# OpenCode free-model tracker.
 
 [links]
 "~/.local/bin/win-vm" = "agents/windows-vm/win-vm"
+"~/.local/bin/opencode-free" = "agents/opencode-free/opencode-free"
 "~/.claude/CLAUDE.md" = "agents/AGENTS.md"
 "~/.codex/AGENTS.md" = "agents/AGENTS.md"
 "~/.pi/agent/APPEND_SYSTEM.md" = "agents/AGENTS.md"
@@ -18,6 +20,8 @@
 "~/.config/systemd/user/t3code-update.timer" = "agents/systemd/t3code-update.timer"
 "~/.config/systemd/user/t3-backup.service" = "agents/systemd/t3-backup.service"
 "~/.config/systemd/user/t3-backup.timer" = "agents/systemd/t3-backup.timer"
+"~/.config/systemd/user/opencode-free.service" = "agents/systemd/opencode-free.service"
+"~/.config/systemd/user/opencode-free.timer" = "agents/systemd/opencode-free.timer"
 "~/.config/user-tmpfiles.d/agent-tmp.conf" = "agents/systemd/agent-tmp.conf"
 
 # The apps rewrite these files; the repo owns only the keys it lists.
@@ -29,7 +33,12 @@
 "~/.t3/userdata/desktop-settings.json" = "agents/t3/desktop-settings.json"
 
 [systemd]
-enable = ["t3code-update.timer", "t3-backup.timer", "systemd-tmpfiles-clean.timer"]
+enable = ["t3code-update.timer", "t3-backup.timer", "opencode-free.timer", "systemd-tmpfiles-clean.timer"]
+
+[[assert]]
+name = "Artificial Analysis API key stored"
+check = "test -s {home}/.keys/artificial-analysis"
+fix = "store the Artificial Analysis API key at ~/.keys/artificial-analysis, mode 0600 (dotfiles#14)"
 
 [[assert]]
 name = "agent TMPDIR exists"

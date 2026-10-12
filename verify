@@ -8,7 +8,7 @@ import tomllib
 
 root = Path(__file__).resolve().parent
 try:
-    for path in [root / "dot", root / "verify", root / "desktop/stremio/ffmpeg", *root.glob("*/**/*.py")]:
+    for path in [root / "dot", root / "verify", root / "desktop/stremio/ffmpeg", root / "agents/opencode-free/opencode-free", *root.glob("*/**/*.py")]:
         if "__pycache__" not in path.parts:
             ast.parse(path.read_text(), filename=str(path))
     for path in root.rglob("*.toml"):

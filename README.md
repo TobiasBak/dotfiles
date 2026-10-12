@@ -8,7 +8,7 @@ configuration for `tobias-serv01`. Omarchy never installs or runs Nix.
 - `dot`: declarative apply and drift check.
 - `packages.toml`: extra system packages, with consumer notes.
 - `mise.toml`: global developer tools, settings and environment.
-- `agents/`: global instructions, Claude/Codex/Pi settings, skills and T3.
+- `agents/`: global instructions, Claude/Codex/Pi settings, skills, T3 and the OpenCode free-model tracker.
 - `desktop/`: monitor/animation overrides, transparent bar, wallpaper,
   Stremio and Taildrop.
 - `cli/`: Git overrides and hunk.

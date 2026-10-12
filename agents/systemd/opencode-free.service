@@ -1,0 +1,9 @@
+[Unit]
+Description=Track OpenCode free models and Artificial Analysis scores
+
+[Service]
+Type=oneshot
+ExecStart=%h/.dotfiles/agents/opencode-free/opencode-free run
+Environment=PATH=%h/.local/share/mise/shims:%h/.local/bin:/usr/local/bin:/usr/bin
+Slice=background.slice
+TimeoutStartSec=5min
