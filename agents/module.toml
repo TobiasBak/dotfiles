@@ -52,6 +52,16 @@ name = "playwright-cli skill linked to the installed version"
 check = "p=$(cd / && CLAUDECODE=1 mise exec npm:@playwright/cli -- playwright-cli --help | sed -n 's/^ *Agent skill: //p') && s=$(cd / && dirname \"$(realpath -e \"$p\")\") && test \"$(readlink -f {home}/.agents/skills/playwright-cli)\" = \"$s\""
 apply = "p=$(cd / && CLAUDECODE=1 mise exec npm:@playwright/cli -- playwright-cli --help | sed -n 's/^ *Agent skill: //p') && s=$(cd / && dirname \"$(realpath -e \"$p\")\") && ln -sfnT \"$s\" {home}/.agents/skills/playwright-cli"
 
+# tb can't read /etc/polkit-1/rules.d, and probing the rule through pkexec
+# would open a password dialog when it is missing. tb's docker group is
+# root-equivalent anyway, so a throwaway container with Omarchy's Windows VM
+# image (present once the VM is installed) reads and installs the rule.
+[[assert]]
+name = "Windows VM polkit rule installed"
+check = '''docker run --rm --pull never --network none --entrypoint sh -v "{repo}/agents/windows-vm/50-omarchy-windows-vm.rules:/repo.rules:ro" -v /etc/polkit-1/rules.d:/rules:ro dockurr/windows -c 'cmp /repo.rules /rules/50-omarchy-windows-vm.rules && test "$(stat -c %u:%g:%a /rules/50-omarchy-windows-vm.rules)" = 0:0:644' '''
+# polkitd loads only *.rules, so the temporary copy is ignored until the rename.
+apply = '''docker run --rm --pull never --network none --entrypoint sh -v "{repo}/agents/windows-vm/50-omarchy-windows-vm.rules:/repo.rules:ro" -v /etc/polkit-1/rules.d:/rules dockurr/windows -c 'install -m 0644 -o root -g root /repo.rules /rules/.50-omarchy-windows-vm.tmp && mv -f /rules/.50-omarchy-windows-vm.tmp /rules/50-omarchy-windows-vm.rules || { rm -f /rules/.50-omarchy-windows-vm.tmp; exit 1; }' '''
+
 [[assert]]
 name = "T3 background service installed"
 check = "test -f {home}/.config/systemd/user/t3code.service"

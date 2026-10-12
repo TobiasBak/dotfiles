@@ -1,13 +1,15 @@
 // Let tb run Omarchy's privileged Windows VM actions without a password, so
 // agents can start the VM while Tobias is away. Omarchy's bind mounts vanish
-// at every reboot and only `omarchy-windows-vm __priv up` recreates them.
+// at every reboot, and only the helper's privileged actions recreate them;
+// win-vm uses `omarchy-windows-vm __priv up`.
 //
 // No local or active session is required: agents run without a seat. The
 // script allowlists its __priv sub-actions and refuses caller-supplied mount
 // paths. tb is in the docker group, which is already root-equivalent, so this
 // widens nothing in practice.
 //
-// Installed as /etc/polkit-1/rules.d/50-omarchy-windows-vm.rules (root, 0644).
+// Installed as /etc/polkit-1/rules.d/50-omarchy-windows-vm.rules (root, 0644)
+// by `./dot apply agents`; `./dot check agents` compares it byte for byte.
 polkit.addRule(function (action, subject) {
     if (action.id == "org.freedesktop.policykit.exec" &&
         action.lookup("program") == "/usr/bin/omarchy-windows-vm" &&
