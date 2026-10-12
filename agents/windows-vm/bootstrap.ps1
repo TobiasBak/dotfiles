@@ -237,6 +237,130 @@ try {
         Report 'CHANGED' 'system time zone Romance Standard Time matches the VM Copenhagen localtime RTC'
     } else { Report 'OK' 'system time zone Romance Standard Time matches the VM Copenhagen localtime RTC' }
 
+    foreach ($setting in @('monitor-timeout-ac', 'standby-timeout-ac', 'hibernate-timeout-ac')) {
+        & powercfg.exe /change $setting 0
+        if ($LASTEXITCODE -ne 0) { throw "powercfg $setting failed" }
+    }
+    & powercfg.exe /setacvalueindex SCHEME_CURRENT SUB_NONE CONSOLELOCK 0
+    if ($LASTEXITCODE -ne 0) { throw 'powercfg console lock failed' }
+    & powercfg.exe /setactive SCHEME_CURRENT
+    if ($LASTEXITCODE -ne 0) { throw 'powercfg activation failed' }
+    Report 'OK' 'AC display, standby and hibernate timeouts disabled; no lock on resume'
+
+    $sessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
+    if ($sessionId -eq 0) { throw 'Bootstrap must run in tb interactive session, not over SSH' }
+
+    Add-Type -ReferencedAssemblies 'System.dll', 'System.Windows.Forms.dll', 'System.Drawing.dll' -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+
+public static class WinVmNative {
+    [DllImport("user32.dll")]
+    private static extern short GetKeyState(int key);
+
+    [DllImport("user32.dll")]
+    private static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extraInfo);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(IntPtr window);
+
+    [DllImport("kernel32.dll")]
+    public static extern uint WTSGetActiveConsoleSessionId();
+
+    private static readonly byte[] LockKeys = { 0x90, 0x14, 0x91 };
+    private static readonly byte[] Scans = { 0x45, 0x3A, 0x46 };
+
+    private sealed class KeyboardWindow : Form {
+        public int Changed;
+        public bool Verified;
+        public Exception Failure;
+        private int pending;
+        private readonly Timer deadline = new Timer();
+
+        public KeyboardWindow() {
+            Text = "win-vm keyboard pins";
+            Width = 320;
+            Height = 120;
+            StartPosition = FormStartPosition.CenterScreen;
+            ShowInTaskbar = false;
+            ControlBox = false;
+            deadline.Interval = 2000;
+            deadline.Tick += delegate { Fail(new InvalidOperationException("Lock key releases did not reach the bootstrap window")); };
+        }
+
+        private void Fail(Exception error) {
+            Failure = error;
+            deadline.Stop();
+            Close();
+        }
+
+        private void VerifyOff() {
+            if (GetForegroundWindow() != Handle) { throw new InvalidOperationException("Bootstrap keyboard window lost foreground ownership"); }
+            foreach (byte key in LockKeys) {
+                if ((GetKeyState(key) & 1) != 0) { throw new InvalidOperationException("GetKeyState still reports lock key " + key + " on; keyboard indicators were not written"); }
+            }
+            Verified = true;
+            deadline.Stop();
+            Close();
+        }
+
+        protected override void OnShown(EventArgs args) {
+            base.OnShown(args);
+            try {
+                SetForegroundWindow(Handle);
+                if (GetForegroundWindow() != Handle) { throw new InvalidOperationException("Cannot obtain foreground ownership for the bootstrap keyboard window"); }
+                for (int i = 0; i < LockKeys.Length; i++) {
+                    if ((GetKeyState(LockKeys[i]) & 1) != 0) { Changed |= 1 << i; }
+                }
+                pending = Changed;
+                if (pending == 0) { VerifyOff(); return; }
+                deadline.Start();
+                for (int i = 0; i < LockKeys.Length; i++) {
+                    if ((Changed & (1 << i)) == 0) { continue; }
+                    uint flags = LockKeys[i] == 0x90 ? 1U : 0U;
+                    keybd_event(LockKeys[i], Scans[i], flags, UIntPtr.Zero);
+                    keybd_event(LockKeys[i], Scans[i], flags | 2U, UIntPtr.Zero);
+                }
+            } catch (Exception error) { Fail(error); }
+        }
+
+        protected override void WndProc(ref Message message) {
+            base.WndProc(ref message);
+            if (message.Msg != 0x0101 || pending == 0) { return; }
+            for (int i = 0; i < LockKeys.Length; i++) {
+                if (message.WParam.ToInt64() == LockKeys[i]) { pending &= ~(1 << i); }
+            }
+            if (pending != 0) { return; }
+            try { VerifyOff(); } catch (Exception error) { Fail(error); }
+        }
+
+        protected override void Dispose(bool disposing) {
+            if (disposing) { deadline.Dispose(); }
+            base.Dispose(disposing);
+        }
+    }
+
+    public static int TurnOffLockKeys() {
+        using (KeyboardWindow window = new KeyboardWindow()) {
+            Application.Run(window);
+            if (window.Failure != null) { throw window.Failure; }
+            if (!window.Verified) { throw new InvalidOperationException("Bootstrap keyboard window closed before lock states were verified"); }
+            return window.Changed;
+        }
+    }
+}
+'@
+    $changedLockKeys = [WinVmNative]::TurnOffLockKeys()
+    $lockKeys = @('Num Lock', 'Caps Lock', 'Scroll Lock')
+    for ($i = 0; $i -lt $lockKeys.Count; $i++) {
+        $state = if (($changedLockKeys -band (1 -shl $i)) -ne 0) { 'CHANGED' } else { 'OK' }
+        Report $state "interactive tb $($lockKeys[$i]) reports off (GetKeyState)"
+    }
     Set-RegistryValue 'HKCU:\Control Panel\Keyboard' 'InitialKeyboardIndicators' '0' 'String'
     Set-RegistryValue 'Registry::HKEY_USERS\.DEFAULT\Control Panel\Keyboard' 'InitialKeyboardIndicators' '0' 'String'
 
@@ -264,9 +388,9 @@ try {
         Report 'CHANGED' 'tb default input method 0406:00000406'
     } else { Report 'OK' 'tb default input method 0406:00000406' }
 
+    Set-RegistryValue 'HKCU:\Keyboard Layout\Preload' '1' '00000406' 'String'
+    Remove-OtherPreloadValues 'HKCU:\Keyboard Layout\Preload'
     foreach ($keyboard in @('HKCU:\Keyboard Layout', 'Registry::HKEY_USERS\.DEFAULT\Keyboard Layout')) {
-        Set-RegistryValue "$keyboard\Preload" '1' '00000406' 'String'
-        Remove-OtherPreloadValues "$keyboard\Preload"
         foreach ($setting in @('Substitutes', 'Toggle')) {
             $path = "$keyboard\$setting"
             if (!(Test-Path $path)) { Report 'OK' "$path absent; left alone"; continue }
@@ -278,28 +402,22 @@ try {
                 if ($setting -eq 'Substitutes' -and $name -eq '00000406' -and $value -ne '00000406') {
                     Remove-ItemProperty -Path $path -Name $name
                     Report 'CHANGED' "removed $path\$name = $value; redirected Danish to another layout"
-                } else { Report 'OK' "$path\$name = $value preserved; only Danish is preloaded" }
+                } else { Report 'OK' "$path\$name = $value preserved" }
             }
         }
     }
 
-    foreach ($setting in @('monitor-timeout-ac', 'standby-timeout-ac', 'hibernate-timeout-ac')) {
-        & powercfg.exe /change $setting 0
-        if ($LASTEXITCODE -ne 0) { throw "powercfg $setting failed" }
-    }
-    & powercfg.exe /setacvalueindex SCHEME_CURRENT SUB_NONE CONSOLELOCK 0
-    if ($LASTEXITCODE -ne 0) { throw 'powercfg console lock failed' }
-    & powercfg.exe /setactive SCHEME_CURRENT
-    if ($LASTEXITCODE -ne 0) { throw 'powercfg activation failed' }
-    Report 'OK' 'AC display, standby and hibernate timeouts disabled; no lock on resume'
     $userDesktop = 'HKCU:\Control Panel\Desktop'
     Set-RegistryValue $userDesktop 'ScreenSaveActive' '0'
     Set-RegistryValue $userDesktop 'ScreenSaverIsSecure' '0'
     Set-RegistryValue 'HKCU:\Software\Policies\Microsoft\Windows\Control Panel\Desktop' 'ScreenSaveActive' '0'
     Set-RegistryValue 'HKCU:\Software\Policies\Microsoft\Windows\Control Panel\Desktop' 'ScreenSaverIsSecure' '0'
-    $sessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
-    if ($sessionId -eq 0) { throw 'Bootstrap must run in tb interactive session, not over SSH' }
-    Report 'OK' "bootstrap complete; transferring tb session $sessionId to unlocked console (RDP will close)"
+    $handoffRequired = [WinVmNative]::WTSGetActiveConsoleSessionId() -ne $sessionId
+    if ($handoffRequired) {
+        Report 'OK' "bootstrap complete; transferring tb session $sessionId to unlocked console (RDP will close)"
+    } else {
+        Report 'OK' "bootstrap complete; tb session $sessionId already on console; no handoff needed"
+    }
     Save-Log
     $success = $true
 } catch {
@@ -307,6 +425,7 @@ try {
     try { Save-Log } catch { Write-Host "FAIL could not save bootstrap log: $_" }
 }
 if (!$success) { exit 1 }
+if (!$handoffRequired) { exit 0 }
 try {
     Invoke-AsSystem 'console-handoff' 'tscon.exe' "$sessionId /dest:console" @(0)
 } catch {
