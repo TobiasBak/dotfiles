@@ -232,10 +232,10 @@ try {
         Report 'CHANGED' 'removed AutoLogonCount limit'
     } else { Report 'OK' 'tb autologon configured without count limit' }
 
-    if ((Get-TimeZone).Id -ne 'UTC') {
-        Set-TimeZone -Id 'UTC'
-        Report 'CHANGED' 'system time zone UTC'
-    } else { Report 'OK' 'system time zone UTC' }
+    if ((Get-TimeZone).Id -ne 'Romance Standard Time') {
+        Set-TimeZone -Id 'Romance Standard Time'
+        Report 'CHANGED' 'system time zone Romance Standard Time matches the VM Copenhagen localtime RTC'
+    } else { Report 'OK' 'system time zone Romance Standard Time matches the VM Copenhagen localtime RTC' }
 
     Set-RegistryValue 'HKCU:\Control Panel\Keyboard' 'InitialKeyboardIndicators' '0' 'String'
     Set-RegistryValue 'Registry::HKEY_USERS\.DEFAULT\Control Panel\Keyboard' 'InitialKeyboardIndicators' '0' 'String'
