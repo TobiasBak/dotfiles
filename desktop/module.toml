@@ -47,3 +47,13 @@ apply = 'omarchy theme bg set "{home}/.config/omarchy/backgrounds/tokyo-night/da
 name = "systemd Stremio owns its responding endpoint"
 check = 'systemctl --user is-active --quiet stremio.service && pid=$(systemctl --user show -p MainPID --value stremio.service) && test "$pid" -gt 0 && ss -H -ltnp "sport = :11470" | grep -q "pid=$pid," && curl --fail --silent --show-error --max-time 5 http://127.0.0.1:11470/settings >/dev/null'
 fix = 'journalctl --user -u stremio.service -n 50 --no-pager; ss -ltnp "sport = :11470" # resolve any existing-server conflict explicitly, then run ~/.dotfiles/dot apply desktop'
+
+[[assert]]
+name = "NAS system automount declared and active"
+check = 'python3 "{repo}/desktop/nas/check.py" units'
+fix = 'install the NAS system units and enable only mnt-nas.automount with Tobias approval (omarchy/README.md: NAS mount)'
+
+[[assert]]
+name = "NAS Samba credentials restored"
+check = 'python3 "{repo}/desktop/nas/check.py" credentials'
+fix = 'restore ~/.config/samba/nas.credentials, owned by tb with mode 0600 (omarchy/README.md: Manual restore)'

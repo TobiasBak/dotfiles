@@ -1,5 +1,6 @@
 [repo]
 boost = "stepkit-geometry: gappa build"
+cifs-utils = "Desktop: native CIFS automount of serv01 NAS"
 freerdp = "RDP to tailnet devices and the Omarchy Windows VM"
 libfaketime = "orderready: deterministic clock tests"
 nasm = "orderready: native build"
