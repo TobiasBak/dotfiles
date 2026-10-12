@@ -207,6 +207,109 @@ them.
 - Build and activate the retained serv01 configuration on serv01 itself using
   `../nixos/README.md`; this workstation cannot run its Nix build.
 
+### Restore drill
+
+Run this in Bash after restoring the credentials above. It restores both
+snapshot tags into private scratch, never over live data. Do not run restored
+applications or print restored files, session text or customer filenames.
+
+```bash
+set -euo pipefail
+export RESTIC_REPOSITORY='sftp:tobias@tobias-serv01:/srv/nas/files/.backups/t3-pc'
+export RESTIC_PASSWORD_FILE="$HOME/.config/restic/t3-password"
+install -d -m 700 "$HOME/.cache/agent-tmp"
+drill=$(mktemp -d "$HOME/.cache/agent-tmp/t3-restore.XXXXXXXX")
+cleanup() {
+  [[ -d $drill && ! -L $drill ]] || return 0
+  find "$drill" -type d -exec chmod u+rwx -- {} +
+  rm -rf -- "$drill"
+}
+trap cleanup EXIT
+export RESTIC_CACHE_DIR="$drill/cache"
+for tag in t3 orderready; do
+  restic snapshots --host pc --tag "$tag" --json > "$drill/$tag.json"
+  python - "$drill/$tag.json" > "$drill/$tag.id" <<'PY'
+import json, sys
+snapshots = json.load(open(sys.argv[1]))
+if not snapshots:
+    raise SystemExit("missing snapshot tag")
+print(max(snapshots, key=lambda snapshot: snapshot["time"])["id"])
+PY
+done
+t3=$(<"$drill/t3.id")
+orderready=$(<"$drill/orderready.id")
+restic stats "$t3" "$orderready" --mode restore-size --json > "$drill/size.json"
+python - "$drill" <<'PY'
+import json, os, sys
+root = sys.argv[1]
+size = json.load(open(root + "/size.json"))["total_size"]
+fs = os.statvfs(root)
+if fs.f_bavail * fs.f_frsize - size < fs.f_blocks * fs.f_frsize * 0.20:
+    raise SystemExit("restore would leave less than 20% free")
+PY
+restic ls "$t3" --json > "$drill/t3-inventory.jsonl"
+restic ls "$orderready" --json > "$drill/orderready-inventory.jsonl"
+restic restore "$t3" --target "$drill/restored" --verify > "$drill/t3.log" 2>&1
+restic restore "$orderready" --target "$drill/restored" --verify > "$drill/orderready.log" 2>&1
+```
+
+Keep the shell open for inspection; the exit trap deletes its private files.
+Restic retains the original absolute paths below `restored`, so use each
+snapshot's inventory to locate its home, not the current `$HOME`.
+
+- Compare every inventory node's type and size with the restored tree.
+  `restic ls --json` omits symlink targets. For each symlink's parent path,
+  read `restic cat tree "$snapshot:$parent"` and compare the named node's
+  `linktarget` with `readlink`. Tree blob IDs instead use `restic cat blob`.
+  Keep that metadata private too. `--verify` checks restored file contents,
+  not application usability by itself.
+- Open `.local/state/t3-backup/statev2.sqlite` read-only. Require
+  `PRAGMA integrity_check` to return `ok`, then check the application schema,
+  thread/message counts and referenced T3 userdata artifacts. The live
+  `state*.sqlite*` files, logs and regenerable caches are deliberately excluded.
+- Parse Pi settings and session JSONL, splitting records on newline, not
+  Unicode line separators inside JSON strings. The staged `pi-settings.json` and
+  `pi-APPEND_SYSTEM.md` are regular, dereferenced copies. Original Pi settings
+  symlinks may point outside the restore target. Use the staged copies during
+  an approved recovery rather than relying on those symlinks.
+- Check Orderready fixture SHA-256 hashes against their content-addressed
+  filenames. Parse corpus PDFs and check STEP/DXF format envelopes. These
+  checks do not execute CAD import workflows. Report counts and integrity only.
+- Record aggregate results and limits, then run `cleanup`, unset
+  `RESTIC_CACHE_DIR`, and confirm the target no longer exists. Restored
+  directories may be read-only; cleanup changes only scratch directory modes,
+  without following symlinks, before deletion. Do not retain
+  restored data, metadata, logs or caches. A real recovery that replaces the
+  T3 database requires separate approval to stop T3; a drill never does.
+
+The 2026-10-12 drill restored both latest tags with `--verify` and matched
+all 3,311 T3/Pi nodes and 550 Orderready nodes, including three symlinks.
+SQLite passed integrity and foreign-key checks across 48 tables. All 880
+Pi sessions and 66,174 JSONL records parsed. All 70 fixture SHA-256 hashes
+matched; 177 corpus PDFs parsed, and 175 STEP plus 116 DXF envelopes passed.
+Three other corpus files received restic content verification only. This
+proved byte recovery and structural readability, not live application or
+CAD import workflows. The mode-700 target, caches, metadata and scripts were
+deleted and their absence independently checked.
+
+### Backup memory
+
+The backup unit uses `MemoryHigh=1G` to reclaim streaming file cache before
+`MemoryMax=3G` can kill the job; `MemorySwapMax=0` keeps it off swap. Measure
+the whole service cgroup, including the SQLite copy, both restic backups,
+retention, repository check and cleanup, not just restic's RSS.
+
+On 2026-10-12, one real run with these limits in a transient user service
+processed 3,027 T3/Pi files (8.696 GiB) and 541 Orderready files (321.415 MiB).
+The repository check passed. Its cgroup peak was 1,074,917,376 bytes, 33.4%
+of the 3 GiB ceiling, with zero swap and successful exit. Wall time was
+43.191 s versus the earlier 80.900 s run at the 1 GiB hard ceiling. The peak
+was near the soft limit, but reclaim did not stretch observed wall time.
+These are single runs with changing data/cache state, not a speedup benchmark.
+The transient run did not modify the live unit or restart T3. After merging,
+apply from the stable checkout only with approval, then daemon-reload so the
+next backup inherits the limits.
+
 Cold storage is the 1 TB KINGSTON SNV3S1000G with the old NixOS home at
 `/home/tobias`; active Omarchy is on the 2 TB KINGSTON SFYRD2000G, serial
 ending `9170A9`. Identify disks by model and serial, never NVMe index.
