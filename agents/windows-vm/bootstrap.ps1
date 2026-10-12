@@ -77,6 +77,18 @@ function Set-RegistryValue([string]$path, [string]$name, $value, [string]$type='
     } else { Report 'OK' "$path\$name" }
 }
 
+function Remove-OtherPreloadValues([string]$path) {
+    $key = (Get-Item -Path $path).OpenSubKey('', $true)
+    try {
+        $others = @($key.GetValueNames() | Where-Object { $_ -ne '1' })
+        foreach ($name in $others) {
+            $key.DeleteValue($name)
+            Report 'CHANGED' "removed $path\$name"
+        }
+        if ($others.Count -eq 0) { Report 'OK' "$path has only value 1" }
+    } finally { $key.Dispose() }
+}
+
 $success = $false
 try {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -220,8 +232,56 @@ try {
         Report 'CHANGED' 'removed AutoLogonCount limit'
     } else { Report 'OK' 'tb autologon configured without count limit' }
 
+    if ((Get-TimeZone).Id -ne 'UTC') {
+        Set-TimeZone -Id 'UTC'
+        Report 'CHANGED' 'system time zone UTC'
+    } else { Report 'OK' 'system time zone UTC' }
+
     Set-RegistryValue 'HKCU:\Control Panel\Keyboard' 'InitialKeyboardIndicators' '0' 'String'
     Set-RegistryValue 'Registry::HKEY_USERS\.DEFAULT\Control Panel\Keyboard' 'InitialKeyboardIndicators' '0' 'String'
+
+    $uiLanguage = Get-WinUILanguageOverride
+    if (!$uiLanguage) { $uiLanguage = Get-UICulture }
+    if ($uiLanguage.Name -ne 'da-DK' -and $uiLanguage.Name -notlike 'en-*') { throw "Unsupported display language $($uiLanguage.Name); refusing to change it for the Danish keyboard pin" }
+    $languages = New-WinUserLanguageList -Language $uiLanguage.Name
+    if ($uiLanguage.Name -ne 'da-DK') { $languages.Add('da-DK') }
+    foreach ($language in $languages) {
+        $language.InputMethodTips.Clear()
+        if ($language.LanguageTag -eq 'da-DK') { $language.InputMethodTips.Add('0406:00000406') }
+    }
+    $currentLanguages = Get-WinUserLanguageList
+    $languagesMatch = $currentLanguages.Count -eq $languages.Count
+    for ($i = 0; $languagesMatch -and $i -lt $languages.Count; $i++) {
+        $languagesMatch = $currentLanguages[$i].LanguageTag -eq $languages[$i].LanguageTag -and
+            ($currentLanguages[$i].InputMethodTips -join ',') -eq ($languages[$i].InputMethodTips -join ',')
+    }
+    if (!$languagesMatch) {
+        Set-WinUserLanguageList -LanguageList $languages -Force
+        Report 'CHANGED' "tb language list: $($languages.LanguageTag -join ', '); only input 0406:00000406; display language $($uiLanguage.Name) preserved"
+    } else { Report 'OK' "tb language list: only input 0406:00000406; display language $($uiLanguage.Name) preserved" }
+    if ((Get-WinDefaultInputMethodOverride).InputMethodTip -ne '0406:00000406') {
+        Set-WinDefaultInputMethodOverride -InputTip '0406:00000406'
+        Report 'CHANGED' 'tb default input method 0406:00000406'
+    } else { Report 'OK' 'tb default input method 0406:00000406' }
+
+    foreach ($keyboard in @('HKCU:\Keyboard Layout', 'Registry::HKEY_USERS\.DEFAULT\Keyboard Layout')) {
+        Set-RegistryValue "$keyboard\Preload" '1' '00000406' 'String'
+        Remove-OtherPreloadValues "$keyboard\Preload"
+        foreach ($setting in @('Substitutes', 'Toggle')) {
+            $path = "$keyboard\$setting"
+            if (!(Test-Path $path)) { Report 'OK' "$path absent; left alone"; continue }
+            $key = Get-Item -Path $path
+            $names = @($key.GetValueNames())
+            if ($names.Count -eq 0) { Report 'OK' "$path empty; left alone" }
+            foreach ($name in $names) {
+                $value = $key.GetValue($name)
+                if ($setting -eq 'Substitutes' -and $name -eq '00000406' -and $value -ne '00000406') {
+                    Remove-ItemProperty -Path $path -Name $name
+                    Report 'CHANGED' "removed $path\$name = $value; redirected Danish to another layout"
+                } else { Report 'OK' "$path\$name = $value preserved; only Danish is preloaded" }
+            }
+        }
+    }
 
     foreach ($setting in @('monitor-timeout-ac', 'standby-timeout-ac', 'hibernate-timeout-ac')) {
         & powercfg.exe /change $setting 0
