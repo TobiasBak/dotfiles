@@ -121,8 +121,7 @@ them.
 - Copy `.config/restic/t3-password` from the cold disk's `/home/tobias` to
   `~/.config/restic/t3-password` with mode 600.
 - Build and activate the retained serv01 configuration on serv01 itself using
-  `../nixos/README.md`. Its import graph and lockfile stayed byte-identical;
-  this workstation cannot run its Nix build.
+  `../nixos/README.md`; this workstation cannot run its Nix build.
 
 Cold storage is the 1 TB KINGSTON SNV3S1000G with the old NixOS home at
 `/home/tobias`; active Omarchy is on the 2 TB KINGSTON SFYRD2000G, serial

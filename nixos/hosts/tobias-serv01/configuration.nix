@@ -6,7 +6,6 @@
 
 {
   imports = [
-    ../../modules/hermes-agent.nix
     ../../modules/kanban.nix
     ../../modules/server-base.nix
     ./hardware-configuration.nix
@@ -90,7 +89,7 @@
     description = "Recover the NAS mount and dependent services";
     serviceConfig = {
       Type = "oneshot";
-      ExecStart = "${pkgs.systemd}/bin/systemctl start srv-nas.mount samba-smbd.service hermes-agent.service docker-kanban.service";
+      ExecStart = "${pkgs.systemd}/bin/systemctl start srv-nas.mount samba-smbd.service docker-kanban.service";
     };
   };
 
@@ -101,12 +100,6 @@
       OnBootSec = "1min";
       OnUnitInactiveSec = "1min";
     };
-  };
-
-  systemd.services.hermes-agent = {
-    requires = [ "srv-nas.mount" ];
-    after = [ "srv-nas.mount" ];
-    unitConfig.AssertPathIsMountPoint = "/srv/nas";
   };
 
   systemd.services.samba-smbd = {

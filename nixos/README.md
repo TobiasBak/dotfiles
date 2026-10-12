@@ -1,13 +1,11 @@
 # NixOS: tobias-serv01
 
 This flake configures one host, `tobias-serv01`: a NixOS file server with
-Docker, Samba, SSH, Tailscale, Hermes and Kanban. Hermes is documented in
-`hosts/tobias-serv01/README.md`. No workstation runs NixOS; Omarchy is set up
-by `../dot`, never by this flake, and the Omarchy workstation never runs Nix.
+Docker, Samba, SSH, Tailscale and Kanban. No workstation runs NixOS; Omarchy
+is set up by `../dot`, never by this flake, and the Omarchy workstation never
+runs Nix.
 
-`flake.nix` still declares the inputs `hunk`, `nixos-wsl`, `home-manager` and
-`voxtype`, which no output uses. They stay until a deliberate input cleanup
-on serv01. `flake.lock` is generated and only changes through Nix.
+`flake.lock` is generated and only changes through Nix, run on serv01.
 
 ## Source of truth
 
