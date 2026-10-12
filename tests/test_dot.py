@@ -99,8 +99,12 @@ def assign(section, key, value):
     pattern = r'(?ms)^\[' + re.escape(section) + r'\]\n(.*?)(?=^\[|\Z)'
     found = re.search(pattern, text)
     body = found[1] if found else ""
+    key = key if re.fullmatch(r'[A-Za-z0-9_-]+', key) else json.dumps(key)
     key_pattern = r'(?m)^' + re.escape(key) + r'\s*=.*$'
-    line = key + ' = ' + json.dumps(value)
+    if isinstance(value, dict):
+        line = key + ' = { ' + ', '.join(k + ' = ' + json.dumps(v) for k, v in value.items()) + ' }'
+    else:
+        line = key + ' = ' + json.dumps(value)
     body = re.sub(key_pattern, line, body) if re.search(key_pattern, body) else body + line + '\n'
     table = '[' + section + ']\n' + body
     text = text[:found.start()] + table + text[found.end():] if found else text + '\n' + table
@@ -111,9 +115,15 @@ if args[0] == 'use':
         if arg.startswith('-'):
             continue
         tool, version = arg.rsplit('@', 1)
+        options = re.fullmatch(r'(.*)\[(.*)\]', tool)
+        value = version
+        if options:
+            tool = options[1]
+            pairs = (o.split('=', 1) for o in options[2].split(','))
+            value = {'version': version, **{k: json.loads(v) for k, v in pairs}}
         data[tool] = [{'version': version, 'requested_version': version, 'installed': True,
                        'source': {'type': 'mise.toml', 'path': str(config)}}]
-        assign('tools', tool, version)
+        assign('tools', tool, value)
 elif args[0] == 'settings':
     value = json.loads(args[3]) if args[3] in ('true', 'false') else args[3]
     assign('settings', args[2], value)
@@ -633,6 +643,7 @@ enable = ["new.service", "inactive.timer", "disabled.timer", "healthy.timer"]
     def test_mise_differing_tools_unknown_capture_and_runtime_exemptions(self):
         self.put(self.repo / 'mise.toml', '''[tools]
 python = "3.14"
+"npm:built" = { version = "latest", allow_builds = "built" }
 [settings]
 experimental = true
 [env]
@@ -640,6 +651,7 @@ PROJECT_FLAG = "enabled"
 ''')
         self.put(self.home / '.config/mise/config.toml', '''[tools]
 python = "3.13"
+"npm:built" = "latest"
 node = "24"
 "npm:t3" = "nightly"
 unknown = "1"
@@ -651,7 +663,8 @@ FOREIGN = "keep"
         self.put(self.state / 'mise.json', json.dumps({
             name: [{'version': version, 'requested_version': version, 'installed': True,
                     'source': {'type': 'mise.toml', 'path': str(self.home / '.config/mise/config.toml')}}]
-            for name, version in [('python', '3.13'), ('node', '24'), ('npm:t3', 'nightly'), ('unknown', '1')]
+            for name, version in [('python', '3.13'), ('npm:built', 'latest'), ('node', '24'), ('npm:t3', 'nightly'),
+                                  ('unknown', '1')]
         }))
         items = self.run_dot('check', code=1)
         self.assertTrue(any('unknown' in str(item) and item['fix'] == 'capture' for item in items), items)
@@ -662,16 +675,18 @@ FOREIGN = "keep"
         self.assertEqual((self.state / 'mutations').read_text(), '')
         self.run_dot('apply')
         uses = [call for call in self.calls('mise') if len(call) > 1 and call[1] == 'use']
-        self.assertEqual(uses, [['mise', 'use', '-g', '--quiet', 'python@3.14']])
+        self.assertEqual(uses, [['mise', 'use', '-g', '--quiet', 'python@3.14'],
+                                ['mise', 'use', '-g', '--quiet', 'npm:built[allow_builds="built"]@latest']])
         self.assertEqual((self.state / 'release-age').read_text().splitlines()[0], '0')
         live = tomllib.loads((self.home / '.config/mise/config.toml').read_text())
         self.assertEqual(live['settings'], {'foreign': True, 'experimental': True})
         self.assertEqual(live['env'], {'FOREIGN': 'keep', 'PROJECT_FLAG': 'enabled'})
         items = self.run_dot('check', code=1)
-        self.assertFalse(any(item['fix'] == 'apply' and 'python' in str(item) for item in items), items)
+        self.assertFalse(any(item['fix'] == 'apply' and item['target'] in ('python', 'npm:built') for item in items), items)
         self.assertIn(['mise', 'ls', '--global', '--json'], self.calls('mise'))
         self.put(self.repo / 'mise.toml', '''[tools]
 python = "3.14"
+"npm:built" = { version = "latest", allow_builds = "built" }
 node = "24"
 "npm:t3" = "nightly"
 [settings]
