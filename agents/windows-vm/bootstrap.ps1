@@ -71,7 +71,7 @@ finally { [IO.File]::WriteAllText($(& $q "$result.tmp"), "`$code"); Move-Item -L
 function Set-RegistryValue([string]$path, [string]$name, $value, [string]$type='String') {
     if (!(Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
     $old = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
-    if ($null -eq $old -or $old -ne $value) {
+    if ($null -eq $old -or $old -ne $value -or (Get-Item -Path $path).GetValueKind($name).ToString() -ne $type) {
         New-ItemProperty -Path $path -Name $name -Value $value -PropertyType $type -Force | Out-Null
         Report 'CHANGED' "$path\$name"
     } else { Report 'OK' "$path\$name" }
@@ -219,6 +219,9 @@ try {
         Remove-ItemProperty $winlogon -Name AutoLogonCount
         Report 'CHANGED' 'removed AutoLogonCount limit'
     } else { Report 'OK' 'tb autologon configured without count limit' }
+
+    Set-RegistryValue 'HKCU:\Control Panel\Keyboard' 'InitialKeyboardIndicators' '0' 'String'
+    Set-RegistryValue 'Registry::HKEY_USERS\.DEFAULT\Control Panel\Keyboard' 'InitialKeyboardIndicators' '0' 'String'
 
     foreach ($setting in @('monitor-timeout-ac', 'standby-timeout-ac', 'hibernate-timeout-ac')) {
         & powercfg.exe /change $setting 0
