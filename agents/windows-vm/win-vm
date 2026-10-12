@@ -549,6 +549,16 @@ def mounts_ready():
     return True
 
 
+def harden_mount_sources():
+    # Omarchy's privileged bring-up silently refuses sources not at exactly 0700, and its
+    # `chmod 0700` keeps the setgid bit dockurr's samba sets on an empty share (2777).
+    for source in (HOME / ".windows", HOME / "Windows"):
+        try:
+            os.chmod(source, 0o700)
+        except OSError as error:
+            raise Failure(f"cannot set {source} to 0700: {error}") from None
+
+
 def up(timeout):
     if os.environ.get("WIN_VM_LEASE"):
         return wait_ready(timeout, already=True, check=leased_state)
@@ -565,6 +575,7 @@ def up(timeout):
                 record_start(docker_state())
         if not already and not direct:
             print("Omarchy bind mounts need restoring (normally after reboot); starting the VM through its privileged helper.", file=sys.stderr, flush=True)
+            harden_mount_sources()
             result = run(["pkexec", "/usr/bin/omarchy-windows-vm", "__priv", "up"], stdout=sys.stderr)
             if result.returncode:
                 return result.returncode
