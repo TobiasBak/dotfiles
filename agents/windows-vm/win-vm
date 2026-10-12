@@ -564,7 +564,7 @@ def up(timeout):
                     return result.returncode
                 record_start(docker_state())
         if not already and not direct:
-            print("Omarchy bind mounts need restoring (normally after reboot). Approve the one polkit dialog to start the VM.", file=sys.stderr, flush=True)
+            print("Omarchy bind mounts need restoring (normally after reboot); starting the VM through its privileged helper.", file=sys.stderr, flush=True)
             result = run(["pkexec", "/usr/bin/omarchy-windows-vm", "__priv", "up"], stdout=sys.stderr)
             if result.returncode:
                 return result.returncode
@@ -573,7 +573,7 @@ def up(timeout):
                     raise Failure("Omarchy bring-up did not create its lifecycle lock")
                 state = docker_state()
                 # Claim only a new incarnation. Other win-vm callers wait on up.lock, so only an
-                # Omarchy launch racing the polkit dialog could have started it instead.
+                # Omarchy launch racing the privileged helper could have started it instead.
                 if state["container"] != "running" or state["started_at"] == before["started_at"]:
                     print("win-vm: VM was not freshly started by this up; leaving it unowned", file=sys.stderr)
                 else:
