@@ -107,6 +107,12 @@ No native NAS mount is installed yet. `t3-backup.timer` runs
 and Orderready's fixture store and corpus (tag `orderready`) into
 `/srv/nas/files/.backups/t3-pc` on serv01. Restore credentials before relying on it.
 
+The repository also keeps the four NixOS-era `t3` snapshots of `/home/tobias`
+(29652b4c to b3952015, 2026-10-08 to 2026-10-11) on purpose, as history.
+`forget` groups by host and paths, so these form their own group that the
+nightly `--keep-daily 7 --keep-weekly 4` never expires. Never forget or prune
+them.
+
 - Create `~/.ssh/id_ed25519` with `ssh-keygen -t ed25519`, then
   `ssh-copy-id tobias@tobias-serv01` and check
   `ssh -o BatchMode=yes tobias@tobias-serv01 true`. Add the public key to
