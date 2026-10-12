@@ -8,8 +8,9 @@ ExecStart=/usr/bin/bash %h/.dotfiles/agents/t3/backup.sh
 ExecStopPost=/usr/bin/rm -rf %h/.local/state/t3-backup
 Slice=background.slice
 UMask=0077
-# Streaming the multi-GiB T3 database copy fits in 1 GiB.
-MemoryMax=1G
+# Reclaim streaming file cache before reaching the hard OOM ceiling.
+MemoryHigh=1G
+MemoryMax=3G
 MemorySwapMax=0
 # Bounds stuck-network work.
 TimeoutStartSec=1h
