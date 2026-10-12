@@ -21,7 +21,7 @@ case "$(jq -r '.tool_name' <<<"$input")" in
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           permissionDecision: "deny",
-          permissionDecisionReason: "Haiku is retired (Tobias, 2026-10-12). Delegate research and exploration to Pi Sol 6.1 high."
+          permissionDecisionReason: "Haiku is retired (Tobias, 2026-10-12). Delegate research and exploration to OpenCode Space Bunny (free); use Pi Sol 6.1 high after limit errors."
         }
       }'
       exit 0
@@ -34,10 +34,12 @@ case "$(jq -r '.tool_name' <<<"$input")" in
         else {thinking: "high"} + . end;
       (.tool_input.target // {}) as $requested |
       (if ($requested.providerInstanceId // "") == "" or ($requested.model // "") == ""
-       then {providerInstanceId: "pi", model: "openai-codex/gpt-6.1-sol",
-             options: (($requested.options // {}) |
-                       if type == "array" then map(select(.id == "thinking"))
-                       else {thinking: (.thinking // "high")} end)}
+       then if $requested.model == "openai-codex/gpt-6.1-sol"
+            then {providerInstanceId: "pi", model: "openai-codex/gpt-6.1-sol",
+                  options: (($requested.options // {}) |
+                            if type == "array" then map(select(.id == "thinking"))
+                            else {thinking: (.thinking // "high")} end)}
+            else {providerInstanceId: "opencode", model: "opencode/space-bunny-free"} end
        else $requested end) as $target |
       (if $target.providerInstanceId == "pi" and $target.model == "openai-codex/gpt-6.1-sol"
        then $target + {options: (($target.options // {}) | with_sol_thinking)}

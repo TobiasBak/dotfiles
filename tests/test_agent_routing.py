@@ -8,6 +8,7 @@ import unittest
 HOOK = Path(__file__).resolve().parents[1] / "agents/claude/route-subagents.sh"
 SOL = {"providerInstanceId": "pi", "model": "openai-codex/gpt-6.1-sol",
        "options": {"thinking": "high"}}
+SPACE_BUNNY = {"providerInstanceId": "opencode", "model": "opencode/space-bunny-free"}
 
 
 class AgentRoutingTests(unittest.TestCase):
@@ -20,20 +21,39 @@ class AgentRoutingTests(unittest.TestCase):
         return json.loads(result.stdout)["hookSpecificOutput"]
 
     def test_default_delegation_does_not_inherit_leader(self):
-        for target in [None, {}, {"providerInstanceId": "claudeAgent"},
-                       {"model": "openai-codex/gpt-6.1-sol"}]:
-            with self.subTest(target=target):
+        for fields in [{}, {"target": None}, {"target": {}},
+                       {"target": {"providerInstanceId": "claudeAgent"}},
+                       {"target": {"providerInstanceId": "pi"}},
+                       {"target": {"model": SPACE_BUNNY["model"]}},
+                       {"target": {"model": "other-model", "options": {"effort": "high"}}},
+                       {"target": {"providerInstanceId": "", "model": "other-model"}},
+                       {"target": {"providerInstanceId": "pi", "model": ""}}]:
+            with self.subTest(fields=fields):
                 payload = {"task": "Execute the approved design", "role": "implementation",
-                           "runtimeMode": "inherit", "target": target}
+                           "runtimeMode": "inherit", **fields}
                 actual = self.invoke("mcp__t3-code__delegate_task", payload)
                 self.assertEqual(actual["updatedInput"],
-                                 {**payload, "runtimeMode": "full-access", "target": SOL})
+                                 {**payload, "runtimeMode": "full-access", "target": SPACE_BUNNY})
+        for target, expected in [
+            ({"model": SOL["model"]}, SOL),
+            ({"providerInstanceId": "", "model": SOL["model"]}, SOL),
+            ({"providerInstanceId": "pi", "model": SOL["model"]}, SOL),
+            ({**SOL, "options": [{"id": "other", "value": "keep"}]},
+             {**SOL, "options": [{"id": "other", "value": "keep"},
+                                 {"id": "thinking", "value": "high"}]}),
+        ]:
+            with self.subTest(target=target):
+                payload = {"task": "Review", "target": target}
+                actual = self.invoke("mcp__t3-code__delegate_task", payload)
+                self.assertEqual(actual["updatedInput"],
+                                 {**payload, "runtimeMode": "full-access", "target": expected})
         xhigh = {**SOL, "options": {"thinking": "xhigh"}}
         haiku = {"providerInstanceId": "claudeAgent", "model": "claude-haiku-5-5",
                  "options": {"effort": "high"}}
         xhigh_array = {**SOL, "options": [{"id": "thinking", "value": "xhigh"}]}
         haiku_array = {**haiku, "options": [{"id": "effort", "value": "high"}]}
-        for target in [xhigh, xhigh_array]:
+        for target in [xhigh, xhigh_array, SPACE_BUNNY,
+                       {"providerInstanceId": "other", "model": "other-model"}]:
             with self.subTest(target=target):
                 payload = {"task": "Read-only check", "target": target}
                 actual = self.invoke("mcp__t3-code__delegate_task", payload)
@@ -44,8 +64,11 @@ class AgentRoutingTests(unittest.TestCase):
                 actual = self.invoke("mcp__t3-code__delegate_task",
                                      {"task": "Read-only check", "target": target})
                 self.assertEqual(actual["permissionDecision"], "deny")
-        partial = {"model": xhigh_array["model"], "options": xhigh_array["options"]}
-        actual = self.invoke("mcp__t3-code__delegate_task", {"task": "Review", "target": partial})
-        self.assertEqual(actual["updatedInput"]["target"], xhigh_array)
+        for expected in [xhigh, xhigh_array]:
+            with self.subTest(partial=expected):
+                partial = {"model": expected["model"], "options": expected["options"]}
+                actual = self.invoke("mcp__t3-code__delegate_task",
+                                     {"task": "Review", "target": partial})
+                self.assertEqual(actual["updatedInput"]["target"], expected)
         self.assertEqual(self.invoke("Agent", {"prompt": "Execute", "model": "opus"})
                          ["permissionDecision"], "deny")
