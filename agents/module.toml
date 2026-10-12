@@ -109,8 +109,8 @@ name = "tailscaled enabled with the desktop user as operator"
 check = "systemctl is-enabled --quiet tailscaled && tailscale status >/dev/null 2>&1"
 fix = "sudo systemctl enable --now tailscaled && sudo tailscale set --operator=\"$USER\" && sudo tailscale up"
 
-# Secrets are restored by hand (README: Manual restore). The NAS mount is
-# ported once it exists.
+# Secrets are restored by hand (omarchy/README.md: Manual restore).
+# desktop/module.toml owns the NAS automount and Samba credential checks.
 [[assert]]
 name = "SSH key for tobias-serv01 restored"
 check = "test -f {home}/.ssh/id_ed25519"

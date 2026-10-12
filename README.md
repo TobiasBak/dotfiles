@@ -10,7 +10,7 @@ configuration for `tobias-serv01`. Omarchy never installs or runs Nix.
 - `mise.toml`: global developer tools, settings and environment.
 - `agents/`: global instructions, Claude/Codex/Pi settings, skills, T3 and the OpenCode free-model tracker.
 - `desktop/`: monitor/animation overrides, transparent bar, wallpaper,
-  Stremio and Taildrop.
+  Stremio, Taildrop and the LAN-only serv01 NAS automount.
 - `cli/`: Git overrides and hunk.
 - `omarchy/README.md`: workstation setup, verification and manual recovery.
 - `nixos/`: serv01 only. See `nixos/README.md` for safe rebuilds.
@@ -33,7 +33,9 @@ The stable link `~/.dotfiles` points to the checkout used for live applies.
 Apply requires approval. Review its dry-run diff first. It installs missing
 repo packages, configures mise, creates links, merges managed settings and
 enables user services. It never restarts T3 or resets unknown customizations.
-AUR installs, secrets and process restarts remain explicit manual items.
+AUR installs, secrets, process restarts and privileged NAS unit setup remain
+explicit manual items. See [NAS setup and manual restore](omarchy/README.md#nas-mount).
+The NAS mount uses the home LAN only; it fails away from home.
 
 `check` exits 0 when clean, 1 when drift remains, and 2 on an error. JSON
 reports each item's module, target, state, detail and fix owner:

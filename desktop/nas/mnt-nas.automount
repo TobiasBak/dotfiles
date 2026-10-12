@@ -1,0 +1,9 @@
+[Unit]
+Description=serv01 NAS automount (LAN)
+
+[Automount]
+Where=/mnt/nas
+TimeoutIdleSec=60s
+
+[Install]
+WantedBy=multi-user.target

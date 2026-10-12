@@ -1,0 +1,9 @@
+[Unit]
+Description=serv01 NAS (LAN)
+
+[Mount]
+What=//192.168.1.53/nas
+Where=/mnt/nas
+Type=cifs
+Options=credentials=/home/tb/.config/samba/nas.credentials,uid=tb,gid=tb,file_mode=0600,dir_mode=0700,vers=3.1.1,soft,echo_interval=5,nosuid,nodev,noexec,_netdev
+TimeoutSec=10s
