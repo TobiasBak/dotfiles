@@ -19,6 +19,10 @@ class GuardFailure(Exception):
     pass
 
 
+class RemoteCommitsMissing(GuardFailure):
+    pass
+
+
 def run(args, *, env, cwd=None, input=None, discard=False, failure):
     result = subprocess.run(
         args,
@@ -286,7 +290,7 @@ class Isolated:
             local, old = source.oid(local_raw), source.oid(remote_raw)
             self.git("check-ref-format", os.fsdecode(remote_ref), failure="invalid destination ref in push input")
             if local != zero:
-                updates.append((local, old))
+                updates.append((local, old, os.fsdecode(remote_ref)))
         if not updates:
             return
         exclusion_names = [remote]
@@ -303,12 +307,27 @@ class Isolated:
             self.git("update-ref", ref, oid)
             remote_tips.append(tip)
         exclusions = ["--not", *(f"--remotes={name}" for name in exclusion_names)]
-        for local, old in updates:
+        for local, old, remote_ref in updates:
             local_commit = self.commit_oid(local)
             tips = [local_commit, *remote_tips]
             revisions = [local]
             if old != zero:
-                tips.append(self.commit_oid(old))
+                try:
+                    old_commit = self.commit_oid(old)
+                except GuardFailure:
+                    result = subprocess.run(
+                        [GIT, "--git-dir", str(self.repo), "cat-file", "-e", old],
+                        env=self.env, cwd=self.root,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+                    )
+                    if result.returncode == 1:
+                        raise RemoteCommitsMissing(
+                            f"the remote has commits you don't have locally ({remote_ref}). "
+                            "Run `git fetch` and rebase or merge, then push again. "
+                            "This is not a secret finding."
+                        ) from None
+                    raise
+                tips.append(old_commit)
                 revisions = [f"{old}..{local}"]
             self.complete_graph(tips)
             self.scan([*revisions, *exclusions])
@@ -341,6 +360,9 @@ def main():
             else:
                 isolated.pre_push(source, argv, stdin)
         return chain_hook(source, hook, argv, stdin)
+    except RemoteCommitsMissing as error:
+        print(f"secret-guard: {error}", file=sys.stderr)
+        return 1
     except GuardFailure as error:
         print(f"secret-guard: {error}. Stop and report; do not bypass the hook.", file=sys.stderr)
         return 1

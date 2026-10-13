@@ -731,6 +731,87 @@ class SecretGuardTests(unittest.TestCase):
         self.blocked_commit()
         self.blocked_push('HEAD:refs/heads/missing-history-new')
 
+    def test_remote_advanced_without_fetch_blocks_with_recovery_diagnostic(self):
+        control, calls = self.install_fake_scanner()
+        control.write_text('green')
+        self.install_local_hooks()
+        base = self.seed()
+        self.git(self.repo, 'push', 'origin', 'main')
+        peer = self.temp / 'peer'
+        self.git(self.temp, 'clone', str(self.remote), str(peer))
+        self.git(peer, 'config', 'user.name', 'Secret Guard Peer')
+        self.git(peer, 'config', 'user.email', 'peer@example.invalid')
+        self.put(peer, 'peer.txt', 'clean peer update\n')
+        self.commit('clean peer update', repo=peer)
+        peer_tip = self.head(peer)
+        self.git(peer, 'push', 'origin', 'main')
+        self.assertEqual(self.git(self.repo, 'rev-parse', 'origin/main').stdout.strip(), base)
+        self.git(self.repo, 'cat-file', '-e', peer_tip, ok=False)
+        self.put(self.repo, 'local.txt', 'clean local update\n')
+        self.commit('clean local update')
+        self.clear_events()
+        scanner_before = calls.read_text()
+        result = self.blocked_push('main')
+        diagnostic = (
+            "secret-guard: the remote has commits you don't have locally (refs/heads/main). "
+            "Run `git fetch` and rebase or merge, then push again. "
+            "This is not a secret finding.\n"
+        )
+        self.assertIn(diagnostic, result.stderr)
+        self.assertNotIn('Stop and report', result.stderr)
+        self.assertEqual(calls.read_text(), scanner_before, 'Unresolved push must not scan')
+        self.git(self.repo, 'fetch', 'origin')
+        self.git(self.repo, 'rebase', 'origin/main')
+        self.clear_events()
+        scanner_before = calls.read_text()
+        self.git(self.repo, 'push', 'origin', 'main')
+        self.assertIn(f'refs/heads/main {self.head()}\n', self.refs())
+        self.assertNotEqual(calls.read_text(), scanner_before, 'Recovered push must scan')
+        self.assertEqual(self.events(), [{
+            'hook': 'pre-push', 'args': ['origin', str(self.remote)],
+            'stdin': f'refs/heads/main {self.head()} refs/heads/main {peer_tip}\n',
+        }])
+
+    def test_unresolvable_push_objects_keep_stop_and_report_diagnostic(self):
+        control, calls = self.install_fake_scanner()
+        control.write_text('green')
+        base = self.seed()
+        self.install_local_hooks()
+        blob = self.git(self.repo, 'rev-parse', 'HEAD:README').stdout.strip()
+        missing = 'f' * 40
+        self.git(self.repo, 'cat-file', '-e', missing, ok=False)
+        scanner_before = calls.read_text()
+        refs_before = self.refs()
+        hook = self.dotfiles / 'cli/git/hooks/pre-push'
+        diagnostic = (
+            'secret-guard: push object is missing locally or does not resolve to a commit. '
+            'Stop and report; do not bypass the hook.\n'
+        )
+        for local, old in ((missing, base), (missing, missing),
+                           (blob, missing), (base, blob)):
+            with self.subTest(local=local, remote=old):
+                result = subprocess.run(
+                    [str(hook), 'origin', str(self.remote)], cwd=self.repo, env=self.env,
+                    input=f'refs/heads/main {local} refs/heads/main {old}\n',
+                    text=True, capture_output=True, timeout=30,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stderr, diagnostic)
+                self.assertEqual(calls.read_text(), scanner_before)
+                self.assertEqual(self.refs(), refs_before)
+                self.assertEqual(self.events(), [])
+        result = subprocess.run(
+            [str(hook), 'origin', str(self.remote)], cwd=self.repo, env=self.env,
+            input=f'(delete) {"0" * 40} refs/heads/main {missing}\n',
+            text=True, capture_output=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls.read_text(), scanner_before, 'Delete-only push must not scan')
+        self.assertEqual(self.events(), [{
+            'hook': 'pre-push', 'args': ['origin', str(self.remote)],
+            'stdin': f'(delete) {"0" * 40} refs/heads/main {missing}\n',
+        }])
+
     def test_missing_scanner_fails_closed_for_commit_and_push(self):
         self.seed(bypass=True)
         self.install_local_hooks()
