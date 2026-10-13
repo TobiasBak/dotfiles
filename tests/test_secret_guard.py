@@ -541,6 +541,28 @@ class SecretGuardTests(unittest.TestCase):
         self.require_scanner()
         self.check_fetched_upstream_sync_and_fork_secret()
 
+    def test_missing_original_hooks_skip_python_but_failed_discovery_does_not(self):
+        marker = self.temp / 'passthrough-python-called'
+        hooks = self.dotfiles / 'cli/git/hooks'
+        (hooks / 'secret-guard.py').write_text(
+            'import sys\n'
+            'from pathlib import Path\n'
+            f'Path({str(marker)!r}).write_text("called\\n")\n'
+            'sys.exit(71)\n'
+        )
+        for name in ('post-index-change', 'post-checkout'):
+            with self.subTest(hook=name):
+                self.assertFalse((self.repo / '.git/hooks' / name).exists())
+                self.git(self.repo, 'hook', 'run', name)
+                self.assertFalse(marker.exists(), 'Missing original hook must not start Python')
+        self.git(self.temp, 'rev-parse', '--path-format=absolute', '--git-common-dir', ok=False)
+        result = subprocess.run(
+            [str(hooks / 'post-checkout')], cwd=self.temp, env=self.env,
+            stdin=subprocess.DEVNULL, text=True, capture_output=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 71, 'Failed discovery must dispatch to Python')
+        self.assertEqual(marker.read_text(), 'called\n')
+
     def test_standard_hooks_preserve_commit_msg_veto_and_checkout_io(self):
         control, calls = self.install_fake_scanner()
         control.write_text('green')

@@ -1,2 +1,6 @@
 #!/bin/sh
+if common=$(/usr/bin/git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
+    [ ! -e "$common/hooks/${0##*/}" ]; then
+    exit 0
+fi
 exec /usr/bin/python3 "${0%/*}/secret-guard.py" passthrough "${0##*/}" "$@"

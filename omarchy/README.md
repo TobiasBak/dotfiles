@@ -92,6 +92,9 @@ For fork syncs, configure the fork's actual public parent as the remote named
 remote or a remote holding repository-owned work `upstream` to suppress a scan.
 The hook uses only cached fetched refs. It never fetches, uses the network or
 calls the GitHub API, and it does not exclude arbitrary local refs.
+Finishing a conflicted merge with `git commit` scans everything introduced
+relative to HEAD, so upstream content can block a local fork merge. Use the
+push-time upstream exclusion for fork syncs or merge on GitHub.
 
 Scanning runs in an isolated bare repository with the source object database
 available through alternates. Repository `.gitleaks.toml`, `.gitleaksignore`,
@@ -104,9 +107,10 @@ After scanning succeeds, the guarded hooks chain existing executable hooks
 from the repository's normal Git hooks directory, preserving arguments and
 push input. Other standard Git hooks pass directly through to that directory
 without scanning, preserving hooks such as `commit-msg` and Git LFS hooks.
-A repository-local `core.hooksPath` overrides the global guard;
-public checkouts must not retain such an override. Private repositories can
-own their hooks separately. Check the effective setting with
+A repository-local `core.hooksPath` bypasses the global guard. Current private
+examples are `orderready`, `rust-mutants` and `stepkit-geometry`. Before a
+repository with an override goes public, its own hooks must call the guard.
+Check the effective setting with
 `git config --show-origin --get core.hooksPath`.
 
 `cli/git/hooks/scanner.toml` owns scanner rules. False positives require
