@@ -1,0 +1,18 @@
+# synthetic test fixture, CoS-reviewed 2026-10-13
+140e2789267138b434bca8e7fb0cc1323e0e51d4:tests/test_nas.py:generic-api-key:20
+# synthetic test fixture, CoS-reviewed 2026-10-13
+2cd0b78e196bccd0d97f77c3bd119c9f0a192a11:tests/test_nas.py:generic-api-key:20
+# synthetic test fixture, CoS-reviewed 2026-10-13
+688c78381a37214173c0a10656ab7949db4e6594:tests/Hypa.UnitTests/Infrastructure/Mcp/CodexMcpConnectionImportSourceTests.cs:generic-api-key:201
+# synthetic test fixture, CoS-reviewed 2026-10-13
+3132e58efbfaf9c85d62420a2e2313c5fe0111db:tests/Hypa.UnitTests/Infrastructure/Mcp/CodexMcpConnectionImportSourceTests.cs:generic-api-key:201
+# real 2023 school-project token, risk accepted by Tobias 2026-10-13, history kept public
+38f94647aaa395586f6c1ae1a6c316a5ffc8f2af:.github/workflows/main.yml:github-pat:44
+# real 2023 school-project token, risk accepted by Tobias 2026-10-13, history kept public
+7c84333bdd185479a67950642bf133622f4261fb:.github/workflows/main.yml:github-pat:44
+# real 2023 school-project token, risk accepted by Tobias 2026-10-13, history kept public
+4cc35d4781758ce1a6c60af2318899242f645bbd:.github/workflows/main.yml:github-pat:37
+# real 2023 school-project token, risk accepted by Tobias 2026-10-13, history kept public
+1b05fa47e1aeb472c43b8ebf9393a34c38ea957a:.github/workflows/main.yml:github-pat:40
+# real 2023 school-project token, risk accepted by Tobias 2026-10-13, history kept public
+1b05fa47e1aeb472c43b8ebf9393a34c38ea957a:.github/workflows/main.yml:github-pat:54

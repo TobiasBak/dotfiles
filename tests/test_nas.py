@@ -17,7 +17,7 @@ PROPERTIES = {"FragmentPath", "DropInPaths", "NeedDaemonReload", "UnitFileState"
 MUTATIONS = {"start", "stop", "restart", "reload", "reload-or-restart", "enable", "disable",
              "reenable", "mask", "unmask", "link", "revert", "preset", "set-property",
              "daemon-reload", "daemon-reexec", "edit", "kill", "isolate", "import", "cat"}
-SECRET = "dummy-nas-secret-4c1f9d"
+SECRET = "nas-test-password"
 
 FAKE_SYSTEMCTL = """#!{python}
 import json

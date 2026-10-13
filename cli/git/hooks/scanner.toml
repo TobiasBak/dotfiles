@@ -1,0 +1,4 @@
+title = "Workstation secret guard"
+
+[extend]
+useDefault = true

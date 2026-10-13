@@ -49,6 +49,92 @@ migration. Desktop settings auto-reload; after applying Hyprland changes run
 `hyprctl reload` and `hyprctl configerrors`. Exercise the existing shell and
 normal application launch paths, not just a fresh parser.
 
+## Secret protection
+
+`cli/git/hooks` owns the workstation-wide Gitleaks pre-commit and pre-push
+hooks. `cli/git/overrides` sets `core.hooksPath` through the managed global
+Git config, so ordinary existing checkouts, fresh clones and worktrees need
+no repository installer. This Git config is Omarchy-only; never copy it to
+serv01 or the Windows VM. Root `mise.toml` owns the exact Gitleaks version pin.
+Before activation, install that pin with `mise install gitleaks@8.30.1`.
+Mise is used only for installation, never by the hook. The guard reads the pin
+from the trusted dotfiles checkout and uses
+`<mise-data-dir>/installs/gitleaks/<exact-pin>/gitleaks`, never a version alias.
+The data directory is the caller's nonempty `MISE_DATA_DIR`, otherwise
+`$XDG_DATA_HOME/mise` when nonempty, otherwise `$HOME/.local/share/mise`.
+An explicit `MISE_DATA_DIR` supports caller-provisioned installations.
+The version directory must be a real directory, not a symlink, and the binary
+must be a regular executable file, not a symlink. The guard runs its `version`
+command with a clean PATH/HOME environment and requires the exact pin,
+accepting only an optional trailing newline. Missing or invalid installations
+block the operation and report the pinned install command without scanner
+output. The hook never installs the scanner.
+The chief of staff activates the guard at a quiet moment by merging and
+immediately fast-forwarding `~/code/dotfiles`. That pull changes the included
+Git override and activates the hooks for every checkout at once; `dot apply`
+is not a separate activation gate. To roll back, revert the guard commit and
+pull the revert into the stable checkout. Do not point the live config at a
+development worktree.
+
+The commit hook scans the staged diff against HEAD, not the full tree or
+existing history. For a first commit, it scans the staged snapshot as a root
+commit. Unstaged changes cannot mask staged secrets. An inherited fixture in
+HEAD does not block an unrelated staged change.
+The push hook scans updated refs as old..new and new branches or tags from
+their tip. Both exclude commits reachable from cached destination
+remote-tracking refs and, when configured, the literal remote `upstream`.
+A stale `refs/remotes/upstream/` namespace does not count after that remote
+is removed. A new local secret-bearing commit remains blocked unless it is
+already reachable from the excluded remote-tracking refs.
+
+For fork syncs, configure the fork's actual public parent as the remote named
+`upstream` and run `git fetch upstream` before syncing. Never name a private
+remote or a remote holding repository-owned work `upstream` to suppress a scan.
+The hook uses only cached fetched refs. It never fetches, uses the network or
+calls the GitHub API, and it does not exclude arbitrary local refs.
+Finishing a conflicted merge with `git commit` scans everything introduced
+relative to HEAD, so upstream content can block a local fork merge. Use the
+push-time upstream exclusion for fork syncs or merge on GitHub.
+
+Scanning runs in an isolated bare repository with the source object database
+available through alternates. Repository `.gitleaks.toml`, `.gitleaksignore`,
+scanner environment overrides and inline `gitleaks:allow` comments cannot
+suppress this guard. Missing Gitleaks, shallow history and incomplete scans
+block the operation. Stop and report findings using only path, commit SHA and
+rule ID; never print matched lines or credential values.
+
+After scanning succeeds, the guarded hooks chain existing executable hooks
+from the repository's normal Git hooks directory, preserving arguments and
+push input. Other standard Git hooks pass directly through to that directory
+without scanning, preserving hooks such as `commit-msg` and Git LFS hooks.
+A repository-local `core.hooksPath` bypasses the global guard. Current private
+examples are `orderready`, `rust-mutants` and `stepkit-geometry`. Before a
+repository with an override goes public, its own hooks must call the guard.
+Check the effective setting with
+`git config --show-origin --get core.hooksPath`.
+
+`cli/git/hooks/scanner.toml` owns scanner rules. False positives require
+chief-of-staff review. Replace synthetic current fixtures with obviously
+nonsecret values; keep only exact historical commit/file/rule/line
+fingerprints and their reasons in the adjacent `historical.gitleaksignore`.
+Real historical credentials require Tobias's explicit risk decision for
+those exact fingerprints. Risk acceptance is not proof of expiry or
+revocation. Never baseline findings or add path or rule exclusions to unblock
+a commit.
+Private credentials stay outside Git, including `~/.keys/`,
+`~/.config/restic/t3-password` and `~/.config/samba/nas.credentials`; tracked
+configuration may reference those paths, never their contents.
+
+GitHub secret scanning and push protection provide an independent layer on
+public repositories. Check both under repository security settings, including
+when creating a new public repository. This is accidental-leak protection,
+not a guarantee against a same-user agent deliberately bypassing hooks or
+GitHub protection. GitHub only blocks supported secret patterns, permits
+writer bypasses and can skip large or timed-out scans. Neither layer detects
+every undocumented password or confidential document. Post-push alerts do
+not undo publication. A potentially live finding needs Tobias to decide
+credential rotation and history repair before work resumes.
+
 ## T3
 
 `agents/AGENTS.md` owns the shared leadership and delegation policy, linked

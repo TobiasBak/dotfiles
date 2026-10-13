@@ -8,6 +8,7 @@ Tobias develops entirely through agents.
 - Never hand-edit `CHANGELOG.md` or files marked generated.
 - Never capture the host desktop (`grim`, full-screen screenshots) without Tobias's explicit approval. Capture the app window or an isolated guest instead.
 - Keep customer identifiers and customer-derived content out of public repos and notes.
+- Never bypass a secret-scanning hook or GitHub push protection. On a finding or scan failure, stop and report only the path, commit SHA and rule ID. Reference private credential files by path; never copy their contents into tracked files or reports.
 
 ## Voice
 
