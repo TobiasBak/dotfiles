@@ -9,6 +9,7 @@
 "~/.claude/CLAUDE.md" = "agents/AGENTS.md"
 "~/.codex/AGENTS.md" = "agents/AGENTS.md"
 "~/.pi/agent/APPEND_SYSTEM.md" = "agents/AGENTS.md"
+"~/.pi/agent/extensions/report-to-cos.ts" = "agents/pi/report-to-cos.ts"
 "~/.codex/prompts/yeet.md" = "agents/codex/prompts/yeet.md"
 # Omarchy links its own skills into both directories; those stay untouched.
 "~/.agents/skills/*" = "../vault-public/skills/*"
