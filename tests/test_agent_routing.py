@@ -8,7 +8,7 @@ import unittest
 HOOK = Path(__file__).resolve().parents[1] / "agents/claude/route-subagents.sh"
 SOL = {"providerInstanceId": "pi", "model": "openai-codex/gpt-6.1-sol",
        "options": {"thinking": "high"}}
-SPACE_BUNNY = {"providerInstanceId": "opencode", "model": "opencode/space-bunny-free"}
+RETIRED_WORKER = {"providerInstanceId": "opencode", "model": "opencode/space-bunny-free"}
 
 
 class AgentRoutingTests(unittest.TestCase):
@@ -24,7 +24,6 @@ class AgentRoutingTests(unittest.TestCase):
         for fields in [{}, {"target": None}, {"target": {}},
                        {"target": {"providerInstanceId": "claudeAgent"}},
                        {"target": {"providerInstanceId": "pi"}},
-                       {"target": {"model": SPACE_BUNNY["model"]}},
                        {"target": {"model": "other-model", "options": {"effort": "high"}}},
                        {"target": {"providerInstanceId": "", "model": "other-model"}},
                        {"target": {"providerInstanceId": "pi", "model": ""}}]:
@@ -33,7 +32,7 @@ class AgentRoutingTests(unittest.TestCase):
                            "runtimeMode": "inherit", **fields}
                 actual = self.invoke("mcp__t3-code__delegate_task", payload)
                 self.assertEqual(actual["updatedInput"],
-                                 {**payload, "runtimeMode": "full-access", "target": SPACE_BUNNY})
+                                 {**payload, "runtimeMode": "full-access", "target": SOL})
         for target, expected in [
             ({"model": SOL["model"]}, SOL),
             ({"providerInstanceId": "", "model": SOL["model"]}, SOL),
@@ -52,14 +51,15 @@ class AgentRoutingTests(unittest.TestCase):
                  "options": {"effort": "high"}}
         xhigh_array = {**SOL, "options": [{"id": "thinking", "value": "xhigh"}]}
         haiku_array = {**haiku, "options": [{"id": "effort", "value": "high"}]}
-        for target in [xhigh, xhigh_array, SPACE_BUNNY,
+        for target in [xhigh, xhigh_array,
                        {"providerInstanceId": "other", "model": "other-model"}]:
             with self.subTest(target=target):
                 payload = {"task": "Read-only check", "target": target}
                 actual = self.invoke("mcp__t3-code__delegate_task", payload)
                 self.assertEqual(actual["updatedInput"],
                                  {**payload, "runtimeMode": "full-access"})
-        for target in [haiku, haiku_array]:
+        for target in [haiku, haiku_array, RETIRED_WORKER,
+                       {"model": RETIRED_WORKER["model"]}]:
             with self.subTest(target=target):
                 actual = self.invoke("mcp__t3-code__delegate_task",
                                      {"task": "Read-only check", "target": target})
