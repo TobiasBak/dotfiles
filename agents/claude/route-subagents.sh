@@ -16,12 +16,12 @@ case "$(jq -r '.tool_name' <<<"$input")" in
     }'
     ;;
   *delegate_task)
-    if jq -e '.tool_input.target.model // "" | test("haiku")' <<<"$input" >/dev/null; then
+    if jq -e '.tool_input.target.model // "" | test("haiku|space-bunny")' <<<"$input" >/dev/null; then
       jq -n '{
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           permissionDecision: "deny",
-          permissionDecisionReason: "Haiku is retired (Tobias, 2026-10-12). Delegate research and exploration to OpenCode Space Bunny (free); use Pi Sol 6.1 high after limit errors."
+          permissionDecisionReason: "Haiku and Space Bunny are retired from delegation. Use Pi GPT-6.1 Sol at thinking high (Tobias, 2026-10-13)."
         }
       }'
       exit 0
@@ -39,7 +39,8 @@ case "$(jq -r '.tool_name' <<<"$input")" in
                   options: (($requested.options // {}) |
                             if type == "array" then map(select(.id == "thinking"))
                             else {thinking: (.thinking // "high")} end)}
-            else {providerInstanceId: "opencode", model: "opencode/space-bunny-free"} end
+            else {providerInstanceId: "pi", model: "openai-codex/gpt-6.1-sol",
+                  options: {thinking: "high"}} end
        else $requested end) as $target |
       (if $target.providerInstanceId == "pi" and $target.model == "openai-codex/gpt-6.1-sol"
        then $target + {options: (($target.options // {}) | with_sol_thinking)}
