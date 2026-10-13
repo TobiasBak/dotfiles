@@ -1,3 +1,5 @@
+[core]
+	hooksPath = ~/.dotfiles/cli/git/hooks
 [user]
 	name = Tobias Bak
 	email = tobiasbak@live.dk

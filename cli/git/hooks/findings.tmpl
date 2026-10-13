@@ -1,0 +1,1 @@
+{{- range . }}{{ printf "{\"File\":%s,\"Commit\":%s,\"RuleID\":%s}\n" (toJson .File) (toJson .Commit) (toJson .RuleID) }}{{ end -}}
