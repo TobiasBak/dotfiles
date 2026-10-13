@@ -1,6 +1,7 @@
 [links]
 "~/.config/hunk/config.toml" = "cli/hunk/config.toml"
 "~/.gitconfig" = "cli/git/config"
+"~/.local/bin/pr-merge" = "cli/pr-merge.py"
 
 [[assert]]
 name = "Git config contains only current Omarchy defaults"

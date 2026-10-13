@@ -11,7 +11,7 @@ configuration for `tobias-serv01`. Omarchy never installs or runs Nix.
 - `agents/`: global instructions, Claude/Codex/Pi settings, skills, T3 and the OpenCode free-model tracker.
 - `desktop/`: monitor/animation overrides, transparent bar, wallpaper,
   Stremio, Taildrop and the LAN-only serv01 NAS automount.
-- `cli/`: Git overrides and hunk.
+- `cli/`: Git overrides, hunk and [pr-merge](cli/pr-merge.md).
 - `omarchy/README.md`: workstation setup, verification and manual recovery.
 - `nixos/`: serv01 only. See `nixos/README.md` for safe rebuilds.
 
