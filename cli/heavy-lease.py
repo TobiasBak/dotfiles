@@ -2,6 +2,7 @@
 import argparse
 import array
 from datetime import datetime, timezone
+import errno
 import fcntl
 import json
 import os
@@ -102,6 +103,26 @@ def run(lock, holder_path, command, try_only):
         os.execvp(command[0], command)
     finally:
         os.close(fd)
+
+
+def isolate(command):
+    raw_fd = os.environ.get("HEAVY_LEASE_FD", "-1")
+    for name in list(os.environ):
+        if name.startswith("HEAVY_LEASE_"):
+            del os.environ[name]
+    try:
+        fd = int(raw_fd)
+    except ValueError:
+        fd = -1
+    if fd >= 64:
+        try:
+            os.close(fd)
+        except OverflowError:
+            pass
+        except OSError as error:
+            if error.errno != errno.EBADF:
+                raise
+    os.execvp(command[0], command)
 
 
 def status(lock, holder_path, as_json):
@@ -329,9 +350,13 @@ def main():
     adopt_parser = commands.add_parser("adopt", help="Receive a held lease descriptor and exec a command.")
     adopt_parser.add_argument("--socket", required=True, help="Private socket provided by handoff.")
     adopt_parser.add_argument("command", nargs=argparse.REMAINDER, help="-- command [args ...]")
+    isolate_parser = commands.add_parser("isolate", help="Discard inherited lease context and exec an independent command.")
+    isolate_parser.add_argument("command", nargs=argparse.REMAINDER, help="-- command [args ...]")
     args = parser.parse_args()
     if args.action != "status" and (len(args.command) < 2 or args.command[0] != "--"):
         parser.error("expected -- followed by a command")
+    if args.action == "isolate":
+        return isolate(args.command[1:])
     directory = Path.home() / ".local/state/heavy-lease"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     lock = directory / "lock"

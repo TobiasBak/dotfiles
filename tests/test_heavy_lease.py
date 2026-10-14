@@ -58,6 +58,53 @@ with socket.socket(socket.AF_UNIX) as peer:
     peer.sendall(json.dumps({"pid": os.getpid(), "fd": int(os.environ["HEAVY_LEASE_FD"]), "socket": os.environ["HEAVY_LEASE_SOCKET"]}).encode() + b"\\n")
     assert peer.recv(1) == b"x"
 '''
+ISOLATION_HOLDER = '''
+import json
+import os
+import socket
+import subprocess
+import sys
+cli, path, program = sys.argv[1:]
+fd = int(os.environ["HEAVY_LEASE_FD"])
+with socket.socket(socket.AF_UNIX) as peer:
+    peer.connect(path)
+    peer.sendall(json.dumps({"pid": os.getpid(), "fd": fd, "socket": os.environ["HEAVY_LEASE_SOCKET"]}).encode() + b"\\n")
+    assert peer.recv(1) == b"i"
+    control = socket.socket(socket.AF_UNIX)
+    control.connect(path)
+    control.set_inheritable(True)
+    child = os.fork()
+    if child == 0:
+        peer.close()
+        os.environ["HEAVY_LEASE_FUTURE_FIELD"] = "future-capability"
+        os.execv(cli, [cli, "isolate", "--", sys.executable, "-c", program, cli, str(fd), str(control.fileno()), "--try", "a b", "*"])
+    peer.sendall(json.dumps({"child": child, "control_fd": control.fileno()}).encode() + b"\\n")
+    control.close()
+    assert peer.recv(1) == b"a"
+    adopted = subprocess.run([cli, "adopt", "--socket", os.environ["HEAVY_LEASE_SOCKET"], "--", "true"], capture_output=True)
+    peer.sendall(json.dumps({"adopt_exit": adopted.returncode, "error": adopted.stderr.decode()}).encode() + b"\\n")
+    assert peer.recv(1) == b"x"
+'''
+ISOLATED = '''
+import errno
+import json
+import os
+import socket
+import subprocess
+import sys
+cli, fd, control = sys.argv[1:4]
+try:
+    os.fstat(int(fd))
+except OSError as error:
+    closed = error.errno == errno.EBADF
+else:
+    closed = False
+scratch = [number for number in (3, 4, 8, 9) if os.fstat(number)]
+contender = subprocess.run([cli, "run", "--try", "--", "true"], capture_output=True)
+with socket.socket(fileno=int(control)) as peer:
+    peer.sendall(json.dumps({"pid": os.getpid(), "argv": sys.argv, "context": {name: value for name, value in os.environ.items() if name.startswith("HEAVY_LEASE_")}, "closed": closed, "scratch": scratch, "try_exit": contender.returncode}).encode() + b"\\n")
+    assert peer.recv(1) == b"x"
+'''
 NESTED = '''
 import json
 import os
@@ -357,6 +404,67 @@ class HeavyLeaseTests(unittest.TestCase):
         self.assertFalse(Path(observed["socket"]).parent.exists())
         self.assertFalse(list(self.home.glob("hl-*")))
         self.assertEqual(self.status(), {"busy": False, "holder": None})
+
+    def test_isolate_discards_adopted_context_without_releasing_parent_or_retaining_lease(self):
+        listener, ready_path = self.remote_listener()
+        launcher = self.start([
+            str(CLI), "handoff", "--", sys.executable, "-c", FAKE_MANAGER,
+            str(CLI), "adopt", "/bin/bash", "-c",
+            'exec 3>&1 4>&2; exec 8>"$HOME/build.lock" 9>"$HOME/env.lock"; '
+            'exec "$@"', "fixture", sys.executable, "-c", ISOLATION_HOLDER,
+            str(CLI), ready_path, ISOLATED,
+        ])
+        parent, inherited, parent_exit = self.remote_ready(listener)
+        original = self.status()["holder"]
+        metadata = (self.state / "holder.json").read_bytes()
+        parent_stream = parent.makefile("rb")
+        self.addCleanup(parent_stream.close)
+        parent.sendall(b"i")
+        self.ready([parent_stream])
+        forked = json.loads(parent_stream.readline())
+        child = forked["child"]
+        child_exit = os.pidfd_open(child)
+        self.addCleanup(os.close, child_exit)
+        isolated, _ = listener.accept()
+        self.addCleanup(isolated.close)
+        isolated.settimeout(10)
+        isolated_stream = isolated.makefile("rb")
+        self.addCleanup(isolated_stream.close)
+        self.ready([isolated_stream])
+        observed = json.loads(isolated_stream.readline())
+        self.assertEqual(observed["pid"], child)
+        self.assertEqual(observed["argv"], ["-c", str(CLI), str(inherited["fd"]), str(forked["control_fd"]), "--try", "a b", "*"])
+        self.assertEqual(observed["context"], {})
+        self.assertIs(observed["closed"], True)
+        self.assertEqual(observed["scratch"], [3, 4, 8, 9])
+        self.assertEqual(observed["try_exit"], 2)
+        self.assertEqual(self.status(), {"busy": True, "holder": original})
+        self.assertEqual((self.state / "holder.json").read_bytes(), metadata)
+        self.assertTrue(Path(inherited["socket"]).is_socket())
+        parent.sendall(b"a")
+        self.ready([parent_stream])
+        adoption = json.loads(parent_stream.readline())
+        self.assertEqual(adoption["adopt_exit"], 0, adoption["error"])
+        self.assertEqual(self.status(), {"busy": True, "holder": original})
+        parent.sendall(b"x")
+        self.ready([parent_exit])
+        self.finish(launcher)
+        os.kill(child, 0)
+        self.assertEqual(self.status(), {"busy": False, "holder": None})
+        isolated.sendall(b"x")
+        self.ready([child_exit])
+        self.assertFalse(Path(inherited["socket"]).parent.exists())
+
+        unavailable_home = self.home / "not-a-directory"
+        unavailable_home.write_text("fixture")
+        environment = {**self.env, "HOME": str(unavailable_home), "HEAVY_LEASE_FD": str(1 << 80), "HEAVY_LEASE_FUTURE_FIELD": "discard"}
+        result = self.invoke("isolate", "--", sys.executable, "-c", "raise SystemExit(23)", env=environment)
+        self.assertEqual(result.returncode, 23, result.stderr)
+        result = self.invoke("isolate", "--", sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGTERM)", env=environment)
+        self.assertEqual(result.returncode, -signal.SIGTERM, result.stderr)
+        result = self.invoke("isolate", "true", env=environment)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("expected -- followed by a command", result.stderr)
 
     def test_handoff_and_adopt_reject_bad_context_and_bound_missing_receiver(self):
         result = self.invoke("handoff", "--", "true")
