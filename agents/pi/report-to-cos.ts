@@ -3,17 +3,17 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 
 const SEND = "mcp__t3-code__t3_thread_send";
-const KINDS = ["go_request", "merge_ready", "done", "blocked", "tobias_decision"] as const;
+const KINDS = ["go_request", "slot_request", "merge_ready", "done", "blocked", "tobias_decision"] as const;
 const PARAMETERS = Type.Object({
   kind: Type.Union(KINDS.map((kind) => Type.Literal(kind))),
   text: Type.String({ minLength: 1, description: "The report for the chief of staff." }),
   pr_url: Type.Optional(Type.String({ description: "Required for merge_ready." })),
-  head_sha: Type.Optional(Type.String({ description: "Required for go_request and merge_ready: full 40-hex head SHA." })),
+  head_sha: Type.Optional(Type.String({ description: "Required for slot_request: full 40-hex commit or tree SHA. Required for merge_ready: full 40-hex PR head commit SHA." })),
   review: Type.Optional(Type.Object({
-    artifact_path: Type.String({ minLength: 1, description: "Path to the exact-head review artifact." }),
+    artifact_path: Type.String({ minLength: 1, description: "Path to the exact-head or tree review artifact." }),
     verdict: Type.Literal("no-blockers"),
-    head_sha: Type.String({ pattern: "^[0-9a-fA-F]{40}$", description: "Reviewed head SHA; must match head_sha." }),
-  }, { description: "Required for go_request, including heavy-slot and gate approval." })),
+    head_sha: Type.String({ pattern: "^[0-9a-fA-F]{40}$", description: "Reviewed commit or tree SHA; must match head_sha." }),
+  }, { description: "Required for slot_request for heavy-slot and gate requests." })),
 });
 
 type RecordValue = Record<string, unknown>;
@@ -116,7 +116,7 @@ export default function reportToCos(pi: ExtensionAPI) {
       name: "report_to_cos",
       label: "Report to CoS",
       exposure,
-      description: "Report to the chief of staff. Use go_request for approval, including heavy-slot and gate requests, merge_ready for a reviewed PR, done for completion, blocked for an obstacle, or tobias_decision for a decision Tobias must make. Do not send routine progress. go_request requires head_sha and a matching no-blockers review artifact. merge_ready requires pr_url and head_sha.",
+      description: "Report to the chief of staff. Use slot_request for heavy-slot and gate requests; go_request for design, scope and protected-surface approvals. Use merge_ready for a reviewed PR, done for completion, blocked for an obstacle, or tobias_decision for a decision Tobias must make. Do not send routine progress. slot_request requires head_sha (commit or tree SHA) and a matching no-blockers review artifact. merge_ready requires pr_url and head_sha.",
       promptGuidelines: ["Use report_to_cos, not t3_thread_send, to report to the CoS thread. Report before settling unless a delegated child is still live."],
       parameters: PARAMETERS,
       async execute(toolCallId, params, signal, _onUpdate, ctx) {
@@ -125,15 +125,15 @@ export default function reportToCos(pi: ExtensionAPI) {
         const reportRun = run;
         if (!destination || leadSession !== sessionId) throw new Error("No CoS marker in the first user message");
         if (!params.text.trim()) throw new Error("Report text must not be empty");
-        if (params.kind === "go_request") {
+        if (params.kind === "slot_request") {
           if (!params.head_sha || !/^[0-9a-fA-F]{40}$/.test(params.head_sha)) {
-            throw new Error("go_request requires a 40-hex head_sha and a no-blockers review of that same head");
+            throw new Error("slot_request requires a 40-hex head_sha (commit or tree SHA) and a no-blockers review of that same SHA");
           }
           if (!params.review?.artifact_path.trim() || params.review.verdict !== "no-blockers") {
-            throw new Error("go_request requires review.artifact_path and review.verdict of no-blockers");
+            throw new Error("slot_request requires review.artifact_path and review.verdict of no-blockers");
           }
           if (params.review.head_sha?.toLowerCase() !== params.head_sha.toLowerCase()) {
-            throw new Error("go_request review.head_sha must match head_sha");
+            throw new Error("slot_request review.head_sha must match head_sha");
           }
         }
         if (params.kind === "merge_ready") {
@@ -143,7 +143,7 @@ export default function reportToCos(pi: ExtensionAPI) {
           if (!params.head_sha || !/^[0-9a-fA-F]{40}$/.test(params.head_sha)) throw new Error("merge_ready requires a 40-hex head_sha");
         }
         const identity = params.kind === "merge_ready" ? params.head_sha!.toLowerCase() :
-          params.kind === "go_request" ? JSON.stringify([
+          params.kind === "slot_request" ? JSON.stringify([
             params.text, params.head_sha!.toLowerCase(), params.review!.artifact_path, params.review!.verdict,
           ]) : params.text;
         const requestId = "cos-" + createHash("sha256")
@@ -151,7 +151,7 @@ export default function reportToCos(pi: ExtensionAPI) {
         const message = `[${params.kind}] ${params.text}` +
           (params.pr_url ? `\nPR: ${params.pr_url}` : "") +
           (params.head_sha ? `\nHead: ${params.head_sha}` : "") +
-          (params.kind === "go_request" ? `\nReview: ${params.review!.artifact_path} (${params.review!.verdict}; head ${params.review!.head_sha})` : "");
+          (params.kind === "slot_request" ? `\nReview: ${params.review!.artifact_path} (${params.review!.verdict}; head ${params.review!.head_sha})` : "");
         authorizedParents.add(toolCallId);
         try {
           const args = { threadId: destination, message, clientRequestId: requestId };
