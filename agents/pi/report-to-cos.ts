@@ -56,6 +56,17 @@ function taskLiveness(data: RecordValue): "live" | "terminal" | "unknown" {
   return "unknown";
 }
 
+function messageText(content: string | { type: string; text?: string }[]): string {
+  return typeof content === "string" ? content :
+    content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+}
+
+function latestTarget(text: string): string | undefined {
+  let target: string | undefined;
+  for (const match of text.matchAll(/^CoS-thread:[ \t]+([^\s]+)[ \t]*\r?$/gm)) target = match[1];
+  return target;
+}
+
 function t3Tool(name: string, operation: string): boolean {
   return name === `mcp__t3-code__${operation}` || name === `mcp__t3_code__${operation}`;
 }
@@ -136,7 +147,7 @@ export default function reportToCos(pi: ExtensionAPI) {
               !["started", "queued", "steered", "restarted"].includes(String(receipt.delivery))) {
             throw new Error("CoS send returned no acceptance receipt");
           }
-          if (sessionId === leadSession && run === reportRun) reported = true;
+          if (sessionId === leadSession && run === reportRun && target === destination) reported = true;
           return {
             content: [{ type: "text", text: `Reported [${params.kind}] to CoS (${receipt.delivery}).` }],
             details: { kind: params.kind, threadId: destination, requestId, messageId: receipt.messageId },
@@ -166,13 +177,12 @@ export default function reportToCos(pi: ExtensionAPI) {
     const first = branch.find((entry) => entry.type === "message" && entry.message.role === "user");
     let text = prompt;
     if (first?.type === "message" && first.message.role === "user") {
-      text = typeof first.message.content === "string" ? first.message.content :
-        first.message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+      text = messageText(first.message.content);
     }
     if (text === undefined) return;
-    const match = /^CoS-thread:[ \t]+([^\s]+)[ \t]*\r?$/m.exec(text);
-    if (match) {
-      target = match[1];
+    const initialTarget = latestTarget(text);
+    if (initialTarget) {
+      target = initialTarget;
       register("direct");
       for (const entry of branch) {
         if (entry.type === "message" && entry.message.role === "toolResult" &&
@@ -180,9 +190,9 @@ export default function reportToCos(pi: ExtensionAPI) {
              t3Tool(entry.message.toolName, "task_cancel"))) {
           observeTask(entry.message, t3Tool(entry.message.toolName, "task_cancel"));
         } else if (entry.type === "message" && entry.message.role === "user") {
-          const content = entry.message.content;
-          observeCompletion(typeof content === "string" ? content :
-            content.filter((part) => part.type === "text").map((part) => part.text).join("\n"));
+          const content = messageText(entry.message.content);
+          target = latestTarget(content) ?? target;
+          observeCompletion(content);
         }
       }
     }
@@ -196,21 +206,32 @@ export default function reportToCos(pi: ExtensionAPI) {
     if (disabled) return;
     try {
       activate(ctx, event.text);
-      if (target) observeCompletion(event.text);
+      if (target) {
+        target = latestTarget(event.text) ?? target;
+        observeCompletion(event.text);
+      }
     } catch { disabled = true; }
   });
   pi.on("before_agent_start", (event, ctx) => {
     if (disabled) return;
     try {
       activate(ctx, event.prompt);
-      if (target) resetRun();
+      if (target) {
+        target = latestTarget(event.prompt) ?? target;
+        resetRun();
+      }
     } catch { disabled = true; }
   });
   // Steering and queued user messages can arrive without before_agent_start.
   // Custom reminder entries are not user messages and cannot reset this guard.
   pi.on("message_start", (event) => {
     if (disabled) return;
-    try { if (target && event.message.role === "user") resetRun(); } catch { disabled = true; }
+    try {
+      if (target && event.message.role === "user") {
+        target = latestTarget(messageText(event.message.content)) ?? target;
+        resetRun();
+      }
+    } catch { disabled = true; }
   });
   pi.on("tool_call", (event) => {
     if (disabled) return;

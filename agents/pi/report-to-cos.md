@@ -7,6 +7,9 @@ reload. Do not restart existing sessions. It does not cover Claude agents.
 Only a standalone `CoS-thread: <threadId>` line in the first user message
 activates it. Without that marker it exposes no tool, changes no prompt or
 loadout, and neither blocks tools nor requests a settle continuation.
+Once activated, the latest standalone `CoS-thread:` line in any user message,
+including later prompts and steers, retargets reporting and direct-send blocking.
+Deduplication is scoped per target, so the same report can reach a replacement CoS.
 
 `report_to_cos` takes:
 
