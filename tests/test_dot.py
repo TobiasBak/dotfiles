@@ -640,69 +640,72 @@ enable = ["new.service", "inactive.timer", "disabled.timer", "healthy.timer"]
         self.assertEqual([call for call in self.calls('systemctl') if 'daemon-reload' in call],
                          [['systemctl', '--user', 'daemon-reload']])
 
-    def test_mise_differing_tools_unknown_capture_and_runtime_exemptions(self):
-        self.put(self.repo / 'mise.toml', '''[tools]
+    def test_mise_links_preserve_foreign_content_and_install_missing_tools(self):
+        managed = '''[tools]
 python = "3.14"
+# Keep backend options and comments in the authoritative file.
 "npm:built" = { version = "latest", allow_builds = "built" }
+node = "26.8.2"
 [settings]
 experimental = true
 [env]
 PROJECT_FLAG = "enabled"
-''')
-        self.put(self.home / '.config/mise/config.toml', '''[tools]
+'''
+        self.put(self.repo / 'mise.toml', managed)
+        self.put(self.repo / 'mise.lock', '[tools.python]\nversion = "3.14"\n')
+        live_path = self.home / '.config/mise/config.toml'
+        foreign = '''[tools]
 python = "3.13"
-"npm:built" = "latest"
-node = "24"
-"npm:t3" = "nightly"
 unknown = "1"
 [settings]
 foreign = true
 [env]
 FOREIGN = "keep"
-''')
+'''
+        self.put(live_path, foreign)
+        lock_path = live_path.parent / 'mise.lock'
+        old_lock = '[tools.python]\nversion = "3.13"\n'
+        self.put(lock_path, old_lock)
+        local_path = live_path.parent / 'config.local.toml'
+        local = '[tools]\n"npm:t3" = "nightly"\n'
+        self.put(local_path, local)
         self.put(self.state / 'mise.json', json.dumps({
-            name: [{'version': version, 'requested_version': version, 'installed': True,
-                    'source': {'type': 'mise.toml', 'path': str(self.home / '.config/mise/config.toml')}}]
-            for name, version in [('python', '3.13'), ('npm:built', 'latest'), ('node', '24'), ('npm:t3', 'nightly'),
-                                  ('unknown', '1')]
+            name: [{'version': version, 'requested_version': version, 'installed': False,
+                    'source': {'type': 'mise.toml', 'path': str(live_path)}}]
+            for name, version in [('python', '3.14'), ('npm:built', 'latest'), ('node', '26.8.2')]
         }))
-        items = self.run_dot('check', code=1)
-        self.assertTrue(any('unknown' in str(item) and item['fix'] == 'capture' for item in items), items)
-        self.assertFalse(any(item['fix'] == 'capture' and item['target'] in ('node', 'npm:t3') for item in items), items)
+        items = self.run_dot('check', 'mise', code=1)
+        self.assertEqual({item['target'] for item in items if item['kind'] == 'link'},
+                         {str(live_path), str(lock_path)})
         before = self.snapshot()
-        self.run_dot('apply', code=1, dry_run=True)
+        self.run_dot('apply', 'mise', code=1, dry_run=True)
         self.assertEqual(before, self.snapshot())
         self.assertEqual((self.state / 'mutations').read_text(), '')
-        self.run_dot('apply')
-        uses = [call for call in self.calls('mise') if len(call) > 1 and call[1] == 'use']
-        self.assertEqual(uses, [['mise', 'use', '-g', '--quiet', 'python@3.14'],
-                                ['mise', 'use', '-g', '--quiet', 'npm:built[allow_builds="built"]@latest']])
-        self.assertEqual((self.state / 'release-age').read_text().splitlines()[0], '0')
-        live = tomllib.loads((self.home / '.config/mise/config.toml').read_text())
-        self.assertEqual(live['settings'], {'foreign': True, 'experimental': True})
-        self.assertEqual(live['env'], {'FOREIGN': 'keep', 'PROJECT_FLAG': 'enabled'})
-        items = self.run_dot('check', code=1)
-        self.assertFalse(any(item['fix'] == 'apply' and item['target'] in ('python', 'npm:built') for item in items), items)
+        self.run_dot('apply', 'mise', code=0)
+        self.assertEqual(live_path.readlink(), self.home / '.dotfiles/mise.toml')
+        self.assertEqual(lock_path.readlink(), self.home / '.dotfiles/mise.lock')
+        self.assertEqual(live_path.read_text(), managed)
+        self.assertEqual(lock_path.read_bytes(), (self.repo / 'mise.lock').read_bytes())
+        self.assertEqual([p.read_text() for p in live_path.parent.glob('config.toml.dotfiles-backup-*')],
+                         [foreign])
+        self.assertEqual([p.read_text() for p in live_path.parent.glob('mise.lock.dotfiles-backup-*')],
+                         [old_lock])
+        self.assertEqual(local_path.read_text(), local)
+        installs = [call for call in self.calls('mise') if call[1] == 'install']
+        self.assertEqual(installs, [['mise', 'install', 'node'], ['mise', 'install', 'npm:built'],
+                                   ['mise', 'install', 'python']])
+        self.assertFalse(any(call[1] in ('use', 'settings', 'set') for call in self.calls('mise')))
         self.assertIn(['mise', 'ls', '--global', '--json'], self.calls('mise'))
-        self.put(self.repo / 'mise.toml', '''[tools]
-python = "3.14"
-"npm:built" = { version = "latest", allow_builds = "built" }
-node = "24"
-"npm:t3" = "nightly"
-[settings]
-experimental = true
-[env]
-PROJECT_FLAG = "enabled"
-''')
-        installed = json.loads((self.state / 'mise.json').read_text())
-        for tool in ('node', 'npm:t3'):
-            installed[tool][0]['installed'] = False
-        self.put(self.state / 'mise.json', json.dumps(installed))
-        items = self.run_dot('check', code=1)
-        self.assertFalse(any(item['target'] in ('node', 'npm:t3') for item in items), items)
-        before = (self.state / 'mutations').read_text()
-        self.run_dot('apply', code=1)
-        self.assertEqual((self.state / 'mutations').read_text(), before)
+        before = self.snapshot()
+        self.run_dot('apply', 'mise', code=0)
+        self.assertEqual(before, self.snapshot())
+        result = subprocess.run(['mise', 'use', '-g', 'python@3.15'], cwd=self.home,
+                                env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(live_path.is_symlink())
+        self.assertEqual(tomllib.loads((self.repo / 'mise.toml').read_text())['tools']['python'], '3.15')
+        self.assertIn('# Keep backend options and comments', live_path.read_text())
+        self.run_dot('check', 'mise', code=0)
 
 
 if __name__ == '__main__':

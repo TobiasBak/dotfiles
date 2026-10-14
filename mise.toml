@@ -7,6 +7,8 @@ gcloud = "latest"
 gh = "latest"
 gitleaks = "8.30.1"
 go = "latest"
+# Omarchy Node version, shared by mise-managed npm tools.
+node = "26.8.2"
 # OpenCode 2. pnpm skips its postinstall, which links the native binary, unless allowed.
 "npm:@opencode/cli" = { version = "latest", allow_builds = "@opencode/cli" }
 "npm:@playwright/cli" = "latest"

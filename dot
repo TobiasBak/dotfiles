@@ -26,8 +26,6 @@ HOME = Path(os.environ["HOME"])
 STABLE = HOME / ".dotfiles"
 SIBLINGS = STABLE.resolve().parent if STABLE.exists() else REPO.parent
 OMARCHY = Path(os.environ.get("OMARCHY_PATH", "/usr/share/omarchy"))
-# These versions are owned by Omarchy's installer and agents/t3/nightly.sh.
-EXEMPT_TOOLS = {"node", "npm:t3"}
 
 
 class ManifestError(Exception):
@@ -79,14 +77,6 @@ def keys(data, allowed, context):
 def string_map(data, context):
     require(isinstance(data, dict), f"{context}: expected a table")
     require(all(isinstance(v, str) for v in data.values()), f"{context}: values must be strings")
-
-
-def mise_spec(tool, value):
-    """`mise use` argument; mise stores bracketed options as {version, options} in its config."""
-    if isinstance(value, str):
-        return f"{tool}@{value}"
-    options = ",".join(f"{key}={toml_quote(option)}" for key, option in value.items() if key != "version")
-    return f"{tool}[{options}]@{value['version']}"
 
 
 def string_list(data, context):
@@ -216,25 +206,6 @@ def command(argv, timeout=300, env=None, check=True, cwd=None):
         raise CommandError(f"{shlex.join(argv)}: exit {result.returncode}: " +
                            (result.stderr or result.stdout).strip()[-2000:])
     return result
-
-
-def flatten(values, prefix=""):
-    result = {}
-    for key, value in values.items():
-        name = f"{prefix}.{key}" if prefix else key
-        if isinstance(value, dict):
-            result.update(flatten(value, name))
-        else:
-            result[name] = value
-    return result
-
-
-def cli_value(value):
-    if isinstance(value, bool):
-        return str(value).lower()
-    if isinstance(value, (list, dict)):
-        return json.dumps(value)
-    return str(value)
 
 
 def unit_for(path):
@@ -406,24 +377,26 @@ class Engine:
             items.append(self.item("packages", "package", name, "undeclared", "explicit package not declared"))
         return items
 
+    def mise_links_phase(self):
+        if "mise" not in self.selected or self.mise is None:
+            return []
+        config = Path(os.environ.get("MISE_GLOBAL_CONFIG_FILE", HOME / ".config/mise/config.toml"))
+        items = []
+        for target, name in ((config, "mise.toml"), (config.parent / "mise.lock", "mise.lock")):
+            item = self.link_one("mise", target, STABLE / name, REPO / name)
+            if item:
+                items.append(item)
+        return items
+
     def mise_phase(self):
         if "mise" not in self.selected or self.mise is None:
             return []
-        live_path = Path(os.environ.get("MISE_GLOBAL_CONFIG_FILE", HOME / ".config/mise/config.toml"))
-        live = load_toml(live_path) if live_path.exists() else {}
-        tools = self.mise.get("tools", {})
         items = []
-        for tool, value in tools.items():
-            if live.get("tools", {}).get(tool) != value:
-                items.append(self.command_item("mise", "mise", tool, "differs", f"want {value}",
-                             ["mise", "use", "-g", "--quiet", mise_spec(tool, value)], {"MISE_MINIMUM_RELEASE_AGE": "0"}))
-        for tool in sorted(live.get("tools", {}).keys() - tools.keys() - EXEMPT_TOOLS):
-            items.append(self.item("mise", "mise", tool, "undeclared", "global tool not declared"))
         try:
             installed = json.loads(command(["mise", "ls", "--global", "--json"], cwd=HOME).stdout)
             if not isinstance(installed, dict):
                 raise ValueError("expected a JSON object")
-            for tool in sorted(tools.keys() - EXEMPT_TOOLS):
+            for tool in sorted(self.mise.get("tools", {})):
                 if any(entry.get("installed") is False for entry in installed.get(tool, [])):
                     items.append(self.command_item("mise", "mise", tool, "not-installed", "declared version is not installed",
                                                    ["mise", "install", tool]))
@@ -431,18 +404,6 @@ class Engine:
             items.append(self.error("mise", "mise", "mise", exc))
         except (ValueError, TypeError, AttributeError) as exc:
             items.append(self.error("mise", "mise", "mise", f"invalid mise ls output: {exc}"))
-        live_settings = flatten(live.get("settings", {}))
-        for key, value in flatten(self.mise.get("settings", {})).items():
-            if key not in live_settings or not subset(value, live_settings[key]):
-                items.append(self.command_item("mise", "mise", key, "differs", f"want setting {cli_value(value)}",
-                                               ["mise", "settings", "set", key, cli_value(value)]))
-        env = self.mise.get("env", {})
-        for key, value in env.items():
-            if key not in live.get("env", {}) or not subset(value, live["env"][key]):
-                items.append(self.command_item("mise", "mise", key, "differs", f"want environment {cli_value(value)}",
-                                               ["mise", "set", "-g", f"{key}={cli_value(value)}"]))
-        for key in sorted(live.get("env", {}).keys() - env.keys()):
-            items.append(self.item("mise", "mise", key, "undeclared", "global environment key not declared"))
         return items
 
     def link_one(self, module, target, source, probe):
@@ -637,7 +598,7 @@ class Engine:
 
     def run(self, apply=False):
         items, failures = [], []
-        for phase in (self.stable_phase, self.packages_phase, self.mise_phase, self.links_phase, self.merge_phase,
+        for phase in (self.stable_phase, self.packages_phase, self.mise_links_phase, self.mise_phase, self.links_phase, self.merge_phase,
                       self.omarchy_phase, self.systemd_phase, self.asserts_phase):
             results = phase()
             items.extend(item for item, _ in results)

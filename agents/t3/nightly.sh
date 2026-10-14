@@ -43,7 +43,7 @@ esac
 current="$(cli_version || true)"
 if [ "$current" != "$version" ]; then
   log "CLI ${current:-not installed} -> $version"
-  mise use --global --quiet "npm:t3@$version"
+  mise use --global --path "$HOME/.config/mise/config.local.toml" --quiet "npm:t3@$version"
   [ "$(cli_version)" = "$version" ] ||
     die "$t3 reports '$(cli_version)', not $version, after installing it"
   if [ -n "$current" ]; then

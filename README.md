@@ -7,7 +7,7 @@ configuration for `tobias-serv01`. Omarchy never installs or runs Nix.
 
 - `dot`: declarative apply and drift check.
 - `packages.toml`: extra system packages, with consumer notes.
-- `mise.toml`: global developer tools, settings and environment.
+- `mise.toml` and generated `mise.lock`: global developer tools, settings and environment.
 - `agents/`: global instructions, Claude/Codex/Pi settings, skills, T3 and the OpenCode free-model tracker.
 - `desktop/`: monitor/animation overrides, transparent bar, wallpaper,
   Stremio, Taildrop and the LAN-only serv01 NAS automount.
@@ -42,6 +42,14 @@ reports each item's module, target, state, detail and fix owner:
 `apply`, `tobias` or `capture`. Only `tobias` items may remain after a
 completed apply. Scope either command with module names, for example
 `./dot apply agents`; this replaces the old agent-context installer.
+
+`./dot apply mise` links `~/.config/mise/config.toml` and `mise.lock` to
+this checkout, backing up divergent files. `mise use -g` follows the config
+link. Regenerate the tracked lock with `mise lock --global`; see the
+[mise lockfile docs](https://mise.jdx.dev/dev-tools/mise-lock.html#global-lockfiles).
+T3's nightly updater keeps its rolling CLI pin in the machine-local
+`~/.config/mise/config.local.toml`. Its optional `mise.local.lock` stays
+machine-local too; `conf.d` fragments would share the tracked global lock.
 
 Omarchy owns all stock terminal, theme and desktop defaults. Live changes
 to its seeded configs are drift unless this repo captures their overrides.
