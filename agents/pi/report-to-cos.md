@@ -17,6 +17,9 @@ Deduplication is scoped per target, so the same report can reach a replacement C
 - `text`: nonempty report text.
 - `pr_url`, `head_sha`: required for `merge_ready`. The URL must be HTTP(S)
   without credentials; the SHA must contain exactly 40 hexadecimal digits.
+- `go_request`, including heavy-slot and gate approval, requires `head_sha` and
+  `review`: `artifact_path`, `verdict: "no-blockers"` and a matching `head_sha`.
+  The artifact path must be nonempty; both SHAs must be full 40-hex values.
 
 These are quiet, outcome-only kinds, not routine progress updates. Messages
 start with `[kind]` and include any supplied PR URL and SHA. Direct T3 sends
@@ -24,7 +27,8 @@ to the CoS target are blocked; only sends nested under the reporting tool are
 authorized. Reporting uses Pi's normal tool pipeline and T3's canonical tool
 name. It tries `steer`, then `auto` only for the exact `thread_not_sendable`
 error code, retaining a request ID scoped to the lead session and target.
-Merge reports deduplicate by kind and head SHA; other reports by kind and text.
+Merge reports deduplicate by kind and head SHA. Approval reports deduplicate by
+kind, text, head SHA and review artifact/verdict; other reports by kind and text.
 
 A successful report means T3 returned an acceptance receipt, including a
 message ID and delivery mode. It does not mean the CoS has read or acted on it.
