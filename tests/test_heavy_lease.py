@@ -70,16 +70,20 @@ with socket.socket(socket.AF_UNIX) as peer:
     peer.connect(path)
     peer.sendall(json.dumps({"pid": os.getpid(), "fd": fd, "socket": os.environ["HEAVY_LEASE_SOCKET"]}).encode() + b"\\n")
     assert peer.recv(1) == b"i"
-    control = socket.socket(socket.AF_UNIX)
-    control.connect(path)
-    control.set_inheritable(True)
+    extra = os.open(os.path.join(os.environ["HOME"], "extra-capability"), os.O_CREAT | os.O_RDWR, 0o600)
+    os.set_inheritable(extra, True)
+    capabilities = {}
+    for name, number in [("lease", fd), ("extra", extra), *((str(number), number) for number in (3, 4, 8, 9))]:
+        info = os.fstat(number)
+        capabilities[name] = [info.st_dev, info.st_ino, info.st_mode]
+    encoded = json.dumps(capabilities)
+    environment = {**os.environ, "HEAVY_LEASE_FUTURE_FIELD": "future-capability", "HEAVY_LEASE_UNKNOWN_EMPTY": "", "HEAVY_LEASE_": ""}
     child = os.fork()
     if child == 0:
         peer.close()
-        os.environ["HEAVY_LEASE_FUTURE_FIELD"] = "future-capability"
-        os.execv(cli, [cli, "isolate", "--", sys.executable, "-c", program, cli, str(fd), str(control.fileno()), "--try", "a b", "*"])
-    peer.sendall(json.dumps({"child": child, "control_fd": control.fileno()}).encode() + b"\\n")
-    control.close()
+        os.execve(cli, [cli, "isolate", "--", sys.executable, "-c", program, cli, path, encoded, "--try", "a b", "*"], environment)
+    peer.sendall(json.dumps({"child": child, "extra_fd": extra, "capabilities": encoded, "environment": environment}).encode() + b"\\n")
+    os.close(extra)
     assert peer.recv(1) == b"a"
     adopted = subprocess.run([cli, "adopt", "--socket", os.environ["HEAVY_LEASE_SOCKET"], "--", "true"], capture_output=True)
     peer.sendall(json.dumps({"adopt_exit": adopted.returncode, "error": adopted.stderr.decode()}).encode() + b"\\n")
@@ -92,18 +96,42 @@ import os
 import socket
 import subprocess
 import sys
-cli, fd, control = sys.argv[1:4]
-try:
-    os.fstat(int(fd))
-except OSError as error:
-    closed = error.errno == errno.EBADF
-else:
-    closed = False
-scratch = [number for number in (3, 4, 8, 9) if os.fstat(number)]
+cli, path, encoded = sys.argv[1:4]
+inherited = {}
+for name in os.listdir("/proc/self/fd"):
+    number = int(name)
+    if number < 3:
+        continue
+    try:
+        info = os.fstat(number)
+    except OSError as error:
+        if error.errno != errno.EBADF:
+            raise
+    else:
+        inherited[number] = [info.st_dev, info.st_ino, info.st_mode]
+retained = {name: identity in inherited.values() for name, identity in json.loads(encoded).items()}
 contender = subprocess.run([cli, "run", "--try", "--", "true"], capture_output=True)
-with socket.socket(fileno=int(control)) as peer:
-    peer.sendall(json.dumps({"pid": os.getpid(), "argv": sys.argv, "context": {name: value for name, value in os.environ.items() if name.startswith("HEAVY_LEASE_")}, "closed": closed, "scratch": scratch, "try_exit": contender.returncode}).encode() + b"\\n")
+print("isolate-target-stdout", flush=True)
+print("isolate-target-stderr", file=sys.stderr, flush=True)
+with socket.socket(socket.AF_UNIX) as peer:
+    peer.connect(path)
+    peer.sendall(json.dumps({"pid": os.getpid(), "pgid": os.getpgrp(), "argv": sys.argv, "environment": dict(os.environ), "context": {name: value for name, value in os.environ.items() if name.startswith("HEAVY_LEASE_")}, "retained": retained, "descriptors": sorted(inherited), "try_exit": contender.returncode}).encode() + b"\\n")
     assert peer.recv(1) == b"x"
+'''
+ISOLATE_MANAGER = '''
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+command = sys.argv[sys.argv.index("--") + 1:]
+request = Path(command[-1])
+receipt = {"request_mode": stat.S_IMODE(request.stat().st_mode), "directory_mode": stat.S_IMODE(request.parent.stat().st_mode)}
+service = subprocess.Popen(command, env={"PATH": os.defpath, "MANAGER_ONLY_SENTINEL": "manager-environment"}, close_fds=True, start_new_session=True)
+with Path(__file__).with_name("manager-events.jsonl").open("a") as stream:
+    stream.write(json.dumps({**receipt, "pid": service.pid}) + "\\n")
+sys.exit(service.wait())
 '''
 NESTED = '''
 import json
@@ -406,65 +434,117 @@ class HeavyLeaseTests(unittest.TestCase):
         self.assertEqual(self.status(), {"busy": False, "holder": None})
 
     def test_isolate_discards_adopted_context_without_releasing_parent_or_retaining_lease(self):
+        manager_bin = self.home / "manager-bin"
+        manager_bin.mkdir()
+        manager = manager_bin / "systemd-run"
+        manager.write_text(f"#!{sys.executable}\n" + ISOLATE_MANAGER)
+        manager.chmod(0o700)
+        manager_events = manager_bin / "manager-events.jsonl"
+        direct_bin = self.home / "direct-bin"
+        direct_bin.mkdir()
+        (direct_bin / "python3").symlink_to(sys.executable)
+        (direct_bin / "true").symlink_to("/usr/bin/true")
+        base_environment = self.env
         listener, ready_path = self.remote_listener()
-        launcher = self.start([
-            str(CLI), "handoff", "--", sys.executable, "-c", FAKE_MANAGER,
-            str(CLI), "adopt", "/bin/bash", "-c",
-            'exec 3>&1 4>&2; exec 8>"$HOME/build.lock" 9>"$HOME/env.lock"; '
-            'exec "$@"', "fixture", sys.executable, "-c", ISOLATION_HOLDER,
-            str(CLI), ready_path, ISOLATED,
-        ])
-        parent, inherited, parent_exit = self.remote_ready(listener)
-        original = self.status()["holder"]
-        metadata = (self.state / "holder.json").read_bytes()
-        parent_stream = parent.makefile("rb")
-        self.addCleanup(parent_stream.close)
-        parent.sendall(b"i")
-        self.ready([parent_stream])
-        forked = json.loads(parent_stream.readline())
-        child = forked["child"]
-        child_exit = os.pidfd_open(child)
-        self.addCleanup(os.close, child_exit)
-        isolated, _ = listener.accept()
-        self.addCleanup(isolated.close)
-        isolated.settimeout(10)
-        isolated_stream = isolated.makefile("rb")
-        self.addCleanup(isolated_stream.close)
-        self.ready([isolated_stream])
-        observed = json.loads(isolated_stream.readline())
-        self.assertEqual(observed["pid"], child)
-        self.assertEqual(observed["argv"], ["-c", str(CLI), str(inherited["fd"]), str(forked["control_fd"]), "--try", "a b", "*"])
-        self.assertEqual(observed["context"], {})
-        self.assertIs(observed["closed"], True)
-        self.assertEqual(observed["scratch"], [3, 4, 8, 9])
-        self.assertEqual(observed["try_exit"], 2)
-        self.assertEqual(self.status(), {"busy": True, "holder": original})
-        self.assertEqual((self.state / "holder.json").read_bytes(), metadata)
-        self.assertTrue(Path(inherited["socket"]).is_socket())
-        parent.sendall(b"a")
-        self.ready([parent_stream])
-        adoption = json.loads(parent_stream.readline())
-        self.assertEqual(adoption["adopt_exit"], 0, adoption["error"])
-        self.assertEqual(self.status(), {"busy": True, "holder": original})
-        parent.sendall(b"x")
-        self.ready([parent_exit])
-        self.finish(launcher)
-        os.kill(child, 0)
-        self.assertEqual(self.status(), {"busy": False, "holder": None})
-        isolated.sendall(b"x")
-        self.ready([child_exit])
-        self.assertFalse(Path(inherited["socket"]).parent.exists())
+        for ci in (None, "", "1"):
+            with self.subTest(CI=ci):
+                service = ci is None
+                self.env = {**base_environment, "PATH": f"{manager_bin}:{base_environment['PATH']}" if service else str(direct_bin)}
+                if ci is not None:
+                    self.env["CI"] = ci
+                events_before = manager_events.read_bytes() if manager_events.exists() else b""
+                launcher = self.start([
+                    str(CLI), "handoff", "--", sys.executable, "-c", FAKE_MANAGER,
+                    str(CLI), "adopt", "/bin/bash", "-c",
+                    'exec 3>&1 4>&2; exec 8>"$HOME/build.lock" 9>"$HOME/env.lock"; '
+                    'exec "$@"', "fixture", sys.executable, "-c", ISOLATION_HOLDER,
+                    str(CLI), ready_path, ISOLATED,
+                ])
+                parent, inherited, parent_exit = self.remote_ready(listener)
+                original = self.status()["holder"]
+                metadata = (self.state / "holder.json").read_bytes()
+                parent_stream = parent.makefile("rb")
+                self.addCleanup(parent_stream.close)
+                parent.sendall(b"i")
+                self.ready([parent_stream])
+                forked = json.loads(parent_stream.readline())
+                wrapper = forked["child"]
+                wrapper_exit = os.pidfd_open(wrapper)
+                self.addCleanup(os.close, wrapper_exit)
+                isolated, _ = listener.accept()
+                self.addCleanup(isolated.close)
+                isolated.settimeout(10)
+                isolated_stream = isolated.makefile("rb")
+                self.addCleanup(isolated_stream.close)
+                self.ready([isolated_stream])
+                observed = json.loads(isolated_stream.readline())
+                target_exit = os.pidfd_open(observed["pid"])
+                self.addCleanup(os.close, target_exit)
 
-        unavailable_home = self.home / "not-a-directory"
-        unavailable_home.write_text("fixture")
-        environment = {**self.env, "HOME": str(unavailable_home), "HEAVY_LEASE_FD": str(1 << 80), "HEAVY_LEASE_FUTURE_FIELD": "discard"}
-        result = self.invoke("isolate", "--", sys.executable, "-c", "raise SystemExit(23)", env=environment)
-        self.assertEqual(result.returncode, 23, result.stderr)
-        result = self.invoke("isolate", "--", sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGTERM)", env=environment)
-        self.assertEqual(result.returncode, -signal.SIGTERM, result.stderr)
-        result = self.invoke("isolate", "true", env=environment)
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("expected -- followed by a command", result.stderr)
+                def kill_target(pidfd):
+                    try:
+                        signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+                self.addCleanup(kill_target, target_exit)
+                if service:
+                    self.assertNotEqual(observed["pid"], wrapper)
+                    self.assertNotEqual(observed["pgid"], inherited["pid"])
+                    self.assertEqual(observed["descriptors"], [])
+                    events = [json.loads(line) for line in manager_events.read_text().splitlines()]
+                    self.assertEqual(len(events), 1)
+                    self.assertEqual(events[0], {"request_mode": 0o600, "directory_mode": 0o700, "pid": observed["pgid"]})
+                else:
+                    self.assertEqual(observed["pid"], wrapper)
+                    self.assertEqual(observed["pgid"], inherited["pid"])
+                    self.assertEqual(observed["descriptors"], sorted([3, 4, 8, 9, forked["extra_fd"]]))
+                self.assertEqual(observed["argv"], ["-c", str(CLI), ready_path, forked["capabilities"], "--try", "a b", "*"])
+                self.assertEqual(observed["context"], {})
+                expected_environment = {name: value for name, value in forked["environment"].items() if not name.startswith("HEAVY_LEASE_")}
+                self.assertEqual(observed["environment"], expected_environment)
+                self.assertNotIn("MANAGER_ONLY_SENTINEL", observed["environment"])
+                self.assertEqual(observed["retained"], {"lease": False, "extra": not service, **{str(number): not service for number in (3, 4, 8, 9)}})
+                self.assertEqual(observed["try_exit"], 2)
+                self.event(launcher, b"isolate-target-stdout\n")
+                self.assertEqual(self.status(), {"busy": True, "holder": original})
+                self.assertEqual((self.state / "holder.json").read_bytes(), metadata)
+                self.assertTrue(Path(inherited["socket"]).is_socket())
+                parent.sendall(b"a")
+                self.ready([parent_stream])
+                adoption = json.loads(parent_stream.readline())
+                self.assertEqual(adoption["adopt_exit"], 0, adoption["error"])
+                self.assertEqual(self.status(), {"busy": True, "holder": original})
+                parent.sendall(b"x")
+                self.ready([parent_exit])
+                self.finish(launcher)
+                os.kill(observed["pid"], 0)
+                with selectors.DefaultSelector() as selector:
+                    selector.register(target_exit, selectors.EVENT_READ)
+                    self.assertEqual(selector.select(timeout=0), [])
+                self.assertEqual(self.status(), {"busy": False, "holder": None})
+                isolated.sendall(b"x")
+                self.ready([target_exit])
+                self.ready([wrapper_exit])
+                output, error = launcher.communicate(timeout=10)
+                self.assertEqual(output, b"")
+                self.assertIn(b"isolate-target-stderr\n", error)
+                self.assertFalse(Path(inherited["socket"]).parent.exists())
+                self.assertFalse(list(self.home.glob("hl-isolate-*")))
+
+                unavailable_home = self.home / "not-a-directory"
+                unavailable_home.write_text("fixture")
+                environment = {**self.env, "HOME": str(unavailable_home), "HEAVY_LEASE_FD": str(1 << 80), "HEAVY_LEASE_FUTURE_FIELD": "discard"}
+                result = self.invoke("isolate", "--", sys.executable, "-c", "raise SystemExit(23)", env=environment)
+                self.assertEqual(result.returncode, 23, result.stderr)
+                result = self.invoke("isolate", "--", sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGTERM)", env=environment)
+                self.assertEqual(result.returncode, -signal.SIGTERM, result.stderr)
+                result = self.invoke("isolate", "true", env=environment)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("expected -- followed by a command", result.stderr)
+                if not service:
+                    self.assertEqual(manager_events.read_bytes(), events_before)
+        self.env = base_environment
 
     def test_handoff_and_adopt_reject_bad_context_and_bound_missing_receiver(self):
         result = self.invoke("handoff", "--", "true")
