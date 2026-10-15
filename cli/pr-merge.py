@@ -257,6 +257,9 @@ def snapshot(repo, number):
 
 def fetch_snapshot(directory, repo, number, observed):
     git(["init", "--bare", "--quiet", str(directory)], "temporary Git repository")
+    # Detached writers must not outlive this temporary repository's cleanup.
+    for key, value in (("gc.auto", "0"), ("maintenance.auto", "false"), ("fetch.writeCommitGraph", "false")):
+        git(["config", key, value], "disable automatic Git maintenance", directory)
     git(
         ["-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential",
          "fetch", "--no-tags", "--no-recurse-submodules", "--",
