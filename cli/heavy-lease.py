@@ -7,6 +7,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import selectors
 import signal
@@ -122,7 +123,60 @@ def isolate(command):
         except OSError as error:
             if error.errno != errno.EBADF:
                 raise
-    os.execvp(command[0], command)
+    if "CI" in os.environ or not sys.platform.startswith("linux"):
+        os.execvp(command[0], command)
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", str(Path.home() / ".cache/agent-tmp/heavy-lease")))
+    runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
+    folder = Path(tempfile.mkdtemp(prefix="hl-isolate-", dir=runtime))
+    request = folder / "request.json"
+    cwd = os.getcwd()
+    try:
+        with os.fdopen(os.open(request, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stream:
+            json.dump({"env": dict(os.environ), "cwd": cwd, "argv": command}, stream)
+        basename = re.sub(r"[^a-zA-Z0-9_-]", "-", Path(command[0]).name)[:80] or "command"
+        unit = f"heavy-lease-{basename}-{secrets.token_hex(8)}.service"
+        print(f"heavy-lease isolate unit: {unit}", file=sys.stderr, flush=True)
+        launcher = subprocess.Popen([
+            "systemd-run", "--user", "--collect", "--wait", "--pipe", "--quiet",
+            "--service-type=exec", "--slice=app.slice",
+            f"--working-directory={cwd}", "--expand-environment=no", f"--unit={unit}",
+            "--", sys.executable, str(Path(__file__).resolve()), "--internal-isolate-worker", str(request),
+        ])
+    except OSError:
+        request.unlink(missing_ok=True)
+        folder.rmdir()
+        raise
+    launcher.wait()
+    result = folder / "result.json"
+    try:
+        code = json.loads(result.read_text())
+        if type(code) is not int:
+            raise ValueError("invalid isolate result receipt")
+    except (OSError, ValueError) as error:
+        raise ValueError(f"isolate service {unit} has no valid result receipt (systemd-run exit {launcher.returncode}); private runtime: {folder}") from error
+    result.unlink()
+    folder.rmdir()
+    if launcher.returncode != 0:
+        raise ValueError(f"isolate service {unit}: systemd-run exited {launcher.returncode}")
+    if code < 0:
+        if -code != signal.SIGKILL:
+            signal.signal(-code, signal.SIG_DFL)
+        os.kill(os.getpid(), -code)
+    return code
+
+
+def isolate_worker(request):
+    request = Path(request)
+    try:
+        payload = json.loads(request.read_text())
+    finally:
+        request.unlink(missing_ok=True)
+    code = subprocess.run(payload["argv"], env=payload["env"], cwd=payload["cwd"], check=False).returncode
+    with tempfile.NamedTemporaryFile(mode="w", dir=request.parent, prefix=".result-", delete=False) as stream:
+        temporary = Path(stream.name)
+        json.dump(code, stream)
+    os.replace(temporary, request.parent / "result.json")
+    return 0
 
 
 def status(lock, holder_path, as_json):
@@ -350,7 +404,14 @@ def main():
     adopt_parser = commands.add_parser("adopt", help="Receive a held lease descriptor and exec a command.")
     adopt_parser.add_argument("--socket", required=True, help="Private socket provided by handoff.")
     adopt_parser.add_argument("command", nargs=argparse.REMAINDER, help="-- command [args ...]")
-    isolate_parser = commands.add_parser("isolate", help="Discard inherited lease context and exec an independent command.")
+    isolate_parser = commands.add_parser(
+        "isolate", help="Discard inherited lease context and run in an independent user service (direct exec in CI).",
+        description="Run independently of the caller's service or scope, preserving foreground I/O and exit status. "
+        "The service inherits only stdin, stdout and stderr, not other file descriptors. "
+        "Acquire locks inside the isolated process, not before calling isolate. "
+        "The unit name is printed on stderr. Interrupted callers may leave a private hl-isolate-* runtime directory; "
+        "the worker removes the environment request before starting the command.",
+    )
     isolate_parser.add_argument("command", nargs=argparse.REMAINDER, help="-- command [args ...]")
     args = parser.parse_args()
     if args.action != "status" and (len(args.command) < 2 or args.command[0] != "--"):
@@ -372,6 +433,10 @@ def main():
 
 if __name__ == "__main__":
     try:
+        if sys.argv[1:2] == ["--internal-isolate-worker"]:
+            if len(sys.argv) != 3:
+                raise ValueError("isolate worker requires a request path")
+            sys.exit(isolate_worker(sys.argv[2]))
         sys.exit(main())
     except (OSError, ValueError) as error:
         print(f"heavy-lease: {error}", file=sys.stderr)
