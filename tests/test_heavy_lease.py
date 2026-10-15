@@ -627,5 +627,120 @@ os.execv(sys.argv[1], [sys.argv[1], "adopt", "--socket", os.environ["HEAVY_LEASE
         self.assertTrue(result.stderr.startswith("heavy-lease: "), result.stderr)
 
 
+ORPHAN_DIAGNOSTIC = '''
+import fcntl
+import json
+import os
+from pathlib import Path
+import signal
+import sys
+child = os.fork()
+if child == 0:
+    inherited = int(os.environ["HEAVY_LEASE_FD"])
+    first = fcntl.fcntl(inherited, fcntl.F_DUPFD_CLOEXEC, 128)
+    second = fcntl.fcntl(inherited, fcntl.F_DUPFD_CLOEXEC, 256)
+    os.close(inherited)
+    Path("/proc/self/comm").write_text("hl-pin)\\x1b[31m\\n")
+    print(json.dumps({
+        "pid": os.getpid(),
+        "comm": Path("/proc/self/comm").read_text().removesuffix("\\n"),
+        "cgroup": Path("/proc/self/cgroup").read_text().removesuffix("\\n").removeprefix("0::"),
+        "fds": [first, second],
+    }), flush=True)
+    assert sys.stdin.readline() == "release\\n"
+    os._exit(0)
+signal.pause()
+'''
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux /proc lock diagnostics")
+class HeavyLeaseOrphanStatusTests(unittest.TestCase):
+    def ready(self, descriptor):
+        with selectors.DefaultSelector() as selector:
+            selector.register(descriptor, selectors.EVENT_READ)
+            self.assertTrue(selector.select(timeout=10), "timed out waiting for owned process event")
+
+    def stop_owned(self, descriptor):
+        try:
+            signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        self.ready(descriptor)
+
+    def close_streams(self, process):
+        for stream in (process.stdin, process.stdout, process.stderr):
+            stream.close()
+
+    def test_orphan_status_identifies_inherited_flocks_not_plain_openers(self):
+        scratch = Path.home() / ".cache/agent-tmp/heavy-lease"
+        scratch.mkdir(parents=True, exist_ok=True)
+        temporary = tempfile.TemporaryDirectory(prefix="heavy-lease-orphan-", dir=scratch)
+        self.addCleanup(temporary.cleanup)
+        home = Path(temporary.name)
+        environment = {"HOME": str(home), "PATH": os.environ["PATH"], "LC_ALL": "C", "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": os.environ.get("TMPDIR", str(Path.home() / ".cache/agent-tmp"))}
+
+        def invoke(*args):
+            return subprocess.run([str(CLI), *args], env=environment, cwd=home, capture_output=True, text=True, timeout=10)
+
+        root = subprocess.Popen(
+            [str(CLI), "run", "--", sys.executable, "-c", ORPHAN_DIAGNOSTIC],
+            env=environment, cwd=home, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, bufsize=0,
+        )
+        self.addCleanup(self.close_streams, root)
+        self.addCleanup(root.wait, timeout=10)
+        root_exit = os.pidfd_open(root.pid)
+        self.addCleanup(os.close, root_exit)
+        self.addCleanup(self.stop_owned, root_exit)
+        self.ready(root.stdout)
+        expected = json.loads(root.stdout.readline())
+        child_exit = os.pidfd_open(expected["pid"])
+        self.addCleanup(os.close, child_exit)
+        self.addCleanup(self.stop_owned, child_exit)
+        self.assertGreaterEqual(min(expected["fds"]), 128)
+        state = home / ".local/state/heavy-lease"
+        metadata = (state / "holder.json").read_bytes()
+        holder = json.loads(metadata)
+        self.assertEqual(holder["pid"], root.pid)
+        ordinary = invoke("status", "--json")
+        self.assertEqual(ordinary.returncode, 0, ordinary.stderr)
+        self.assertEqual(ordinary.stdout, json.dumps({"busy": True, "holder": holder}, sort_keys=True) + "\n")
+        self.assertEqual(invoke("status").stdout, "busy: " + json.dumps(holder, sort_keys=True) + "\n")
+        opener = (state / "lock").open("r+")
+        self.addCleanup(opener.close)
+        signal.pidfd_send_signal(root_exit, signal.SIGKILL)
+        self.ready(root_exit)
+        self.assertEqual(root.wait(timeout=10), -signal.SIGKILL)
+
+        result = invoke("status", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        observed = json.loads(result.stdout)
+        self.assertEqual(set(observed), {"busy", "holder", "orphan_pin", "lock_holders", "lock_holders_incomplete"})
+        self.assertIs(observed["busy"], True)
+        self.assertIs(observed["orphan_pin"], True)
+        self.assertEqual(observed["holder"], holder)
+        self.assertEqual(observed["lock_holders"], [expected])
+        self.assertIsInstance(observed["lock_holders_incomplete"], bool)
+        self.assertEqual((state / "holder.json").read_bytes(), metadata)
+        rejected = invoke("run", "--try", "--", "true")
+        self.assertEqual(rejected.returncode, 2, rejected.stderr)
+        text = invoke("status")
+        self.assertEqual(text.returncode, 0, text.stderr)
+        self.assertIn("orphan pin:", text.stdout)
+        self.assertIn(f"pid={expected['pid']}", text.stdout)
+        self.assertIn(f"comm={expected['comm']!r}", text.stdout)
+        self.assertIn(f"cgroup={expected['cgroup']!r}", text.stdout)
+        self.assertIn(f"fds={expected['fds']}", text.stdout)
+        self.assertNotIn("\x1b", text.stdout)
+        root.stdin.write(b"release\n")
+        self.ready(child_exit)
+        output, error = root.communicate(timeout=10)
+        self.assertEqual((output, error), (b"", b""))
+        released = invoke("status", "--json")
+        self.assertEqual(released.returncode, 0, released.stderr)
+        self.assertEqual(released.stdout, '{"busy": false, "holder": null}\n')
+        self.assertEqual(invoke("status").stdout, "free\n")
+
+
 if __name__ == "__main__":
     unittest.main()

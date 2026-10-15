@@ -179,6 +179,96 @@ def isolate_worker(request):
     return 0
 
 
+def process_identity(directory):
+    fields = (directory / "stat").read_text(errors="replace").rsplit(")", 1)[1].split()
+    return fields[0], int(fields[19])
+
+
+def metadata_owner_dead(holder):
+    pid = holder.get("pid") if holder else None
+    if type(pid) is not int or not 0 < pid < 2**31:
+        return False
+    try:
+        state, _ = process_identity(Path(f"/proc/{pid}"))
+        return state in ("Z", "X", "x")
+    except FileNotFoundError:
+        try:
+            descriptor = os.pidfd_open(pid)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return False
+        else:
+            os.close(descriptor)
+            return False
+    except (OSError, ValueError, IndexError):
+        return False
+
+
+def orphan_lock_holders(identity):
+    holders = []
+    incomplete = False
+    expected = (identity.st_dev, identity.st_ino)
+    try:
+        processes = sorted((path for path in Path("/proc").iterdir() if path.name.isdecimal()), key=lambda path: int(path.name))
+    except OSError:
+        return holders, True
+    for directory in processes:
+        try:
+            before = process_identity(directory)
+            if before[0] in ("Z", "X", "x"):
+                continue
+            fds = []
+            unreadable = False
+            for entry in (directory / "fdinfo").iterdir():
+                if not entry.name.isdecimal():
+                    continue
+                candidate = False
+                try:
+                    descriptor = directory / "fd" / entry.name
+                    target = descriptor.stat()
+                    if (target.st_dev, target.st_ino) != expected:
+                        continue
+                    candidate = True
+                    held = False
+                    for line in entry.read_text(errors="replace").splitlines():
+                        fields = line.split()
+                        if fields[:1] != ["lock:"] or fields[2:5] != ["FLOCK", "ADVISORY", "WRITE"]:
+                            continue
+                        held = True
+                        break
+                    target = descriptor.stat()
+                    if (target.st_dev, target.st_ino) != expected:
+                        unreadable = True
+                        continue
+                    if held:
+                        fds.append(int(entry.name))
+                except FileNotFoundError:
+                    unreadable = unreadable or candidate
+                    continue
+                except (OSError, ValueError, IndexError):
+                    unreadable = True
+            if fds:
+                comm = (directory / "comm").read_text(errors="replace").removesuffix("\n")
+                cgroup = (directory / "cgroup").read_text(errors="replace").removesuffix("\n")
+                if cgroup.startswith("0::"):
+                    cgroup = cgroup[3:]
+            after = process_identity(directory)
+            if after[0] in ("Z", "X", "x"):
+                continue
+            if before[1] != after[1]:
+                incomplete = True
+                continue
+            incomplete = incomplete or unreadable
+            if fds:
+                holders.append({"pid": int(directory.name), "comm": comm, "cgroup": cgroup, "fds": sorted(set(fds))})
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError, IndexError):
+            incomplete = True
+    return holders, incomplete
+
+
 def status(lock, holder_path, as_json):
     fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
     try:
@@ -189,10 +279,20 @@ def status(lock, holder_path, as_json):
         else:
             busy = False
         holder = read_holder(holder_path) if busy else None
+        result = {"busy": busy, "holder": holder}
+        if busy and sys.platform.startswith("linux") and metadata_owner_dead(holder):
+            holders, incomplete = orphan_lock_holders(os.fstat(fd))
+            result.update(orphan_pin=True, lock_holders=holders, lock_holders_incomplete=incomplete)
         if as_json:
-            print(json.dumps({"busy": busy, "holder": holder}, sort_keys=True))
+            print(json.dumps(result, sort_keys=True))
         else:
             print(f"busy: {holder_summary(holder)}" if busy else "free")
+            if result.get("orphan_pin"):
+                print("orphan pin: metadata owner is dead; lock holders (best effort):")
+                for process in result["lock_holders"]:
+                    print(f"  pid={process['pid']} comm={process['comm']!r} cgroup={process['cgroup']!r} fds={process['fds']}")
+                if result["lock_holders_incomplete"]:
+                    print("  lock holder scan incomplete")
     finally:
         os.close(fd)
     return 0
@@ -397,8 +497,15 @@ def main():
     mode.add_argument("--wait", action="store_true", help="Wait in the kernel for the lease (default).")
     mode.add_argument("--try", dest="try_only", action="store_true", help="Exit 2 if the lease is busy.")
     run_parser.add_argument("command", nargs=argparse.REMAINDER, help="-- command [args ...]")
-    status_parser = commands.add_parser("status", help="Probe the kernel lease, ignoring stale metadata.")
-    status_parser.add_argument("--json", action="store_true", help="Print {busy: bool, holder: object|null}.")
+    status_parser = commands.add_parser(
+        "status", help="Probe the kernel lease, ignoring stale metadata.",
+        description="Probe the kernel lease. On Linux, a busy lease with a demonstrably dead metadata PID "
+        "reports an orphan pin and a point-in-time, best-effort list of held FLOCK descriptors from /proc. "
+        "Process exits and /proc visibility or permissions may limit this list; lock_holders_incomplete "
+        "reports unreadable evidence. The metadata stores only a numeric PID, so a reused live PID "
+        "cannot be distinguished from the original owner and suppresses orphan diagnostics.",
+    )
+    status_parser.add_argument("--json", action="store_true", help="Print {busy: bool, holder: object|null}; orphan pins also add orphan_pin, lock_holders and lock_holders_incomplete.")
     handoff_parser = commands.add_parser("handoff", help="Broker a held lease to a manager-launched command.")
     handoff_parser.add_argument("command", nargs=argparse.REMAINDER, help="-- launcher [args ...]")
     adopt_parser = commands.add_parser("adopt", help="Receive a held lease descriptor and exec a command.")
