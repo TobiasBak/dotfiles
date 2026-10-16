@@ -24,10 +24,9 @@ The PR must be open and unmerged, and all these checks must pass:
 - The current base branch tip is an ancestor of that head.
 - `.github/merge-gate.toml` at that exact base tip declares top-level
   `protected` and `tests` arrays of strings. Missing or malformed config refuses.
-- No changed path matches `protected`.
-- No changed path matching `tests` has removed lines. Replacing lines counts
-  as removal; changed binary tests refuse. Content-detected renames check both
-  old and new paths, so moving a test outside the test globs cannot hide edits.
+- A formal review on the exact head names every flagged protected/test path,
+  as described below. Content-detected renames check both old and new paths,
+  so moving a test outside the test globs cannot hide edits.
 - The body contains a line in this form, with nonnegative integer counts:
 
   ```text
@@ -46,22 +45,28 @@ Globs use case-sensitive Python `fnmatch` on root-relative Git paths.
 not implicit globs. Empty arrays impose no restrictions for that category.
 The config comes from the base, never the PR version.
 
-The CoS creates the `cos-approved` label in each adopting repository before
-using it, and only the CoS applies it:
+## Protected and test changes
 
-```sh
-gh label create cos-approved --repo owner/name --description "CoS-approved protected-path or test change"
-```
+Flagged paths are changed paths matching `protected`, and paths matching
+`tests` with removed lines or binary changes. Replacing lines counts as removal;
+both sides of content-detected renames are checked.
 
-`cos-approved` waives only the protected-path and test-removal restrictions.
-It does not waive config validity, ancestry, statuses, or body metrics. Label
-authorship is not verified. Neither a label nor the metrics line proves who
-approved or performed work.
+When any paths are flagged, the latest `review` status's target URL must be
+`https://github.com/OWNER/REPO/pull/N#pullrequestreview-ID` for this repository
+and PR. The command fetches that formal review through the GitHub API and
+requires its `commit_id` to equal the exact head and its body to contain every
+flagged root-relative path verbatim. A bad URL, commit mismatch or missing path
+refuses. With no flagged paths, no review fetch is needed.
+
+Review authorship is not verified. A review body is evidence, not identity;
+neither it nor the metrics line proves who approved or performed work.
+
+## Merge recheck
 
 The command fetches complete base/head histories into a temporary bare repo
 under `~/.cache/agent-tmp`, using `gh auth git-credential` for private access.
 Local Git proves ancestry and inspects the diff, without GitHub patch limits.
-It rereads the head, current base tip/ref, body, labels, PR state, and latest
+It rereads the head, current base tip/ref, body, PR state, and latest
 relevant statuses before merging; observed changes refuse. There is still a
 race after that reread. Only the head is guarded by GitHub's merge command:
 

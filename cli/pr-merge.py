@@ -128,12 +128,12 @@ def arguments(argv):
         description="Check an exact GitHub PR head and merge it, printing only the merge SHA.",
         epilog=(
             "Requires latest gate/review statuses success, current base tip ancestry, "
-            f"base-tip {CONFIG} with protected/tests string glob lists, no protected path changes, "
-            "no removed test lines or changed binary tests, and a subagents: metrics line in the body. "
+            f"base-tip {CONFIG} with protected/tests string glob lists, and a subagents: metrics line in the body. "
+            "Protected path changes, removed test lines and changed binary tests require the latest "
+            "review status to link a formal review on this PR and exact head naming every flagged path. "
             "Globs use case-sensitive Python fnmatch against root-relative paths; * matches /, "
             "and ** has no special meaning. Both old/new rename paths are checked. "
-            "cos-approved waives only protected/test diff restrictions, not config validity; "
-            "label authorship is not verified. Rechecks observed metadata, base and statuses before "
+            "Review authorship is not verified. Rechecks observed metadata, base and statuses before "
             "merge; only the head match is atomic. See cli/pr-merge.md for the contract. "
             "Post evidence: pr-merge post <gate|review> --sha SHA --state <success|failure> "
             "--target URL [--repo owner/name]."
@@ -191,7 +191,6 @@ class Snapshot:
     base_ref: str
     base: str
     body: str
-    labels: tuple
     state: str
     merged: bool
     statuses: dict
@@ -204,7 +203,6 @@ def snapshot(repo, number):
         base_ref = pr["base"]["ref"]
         base_repo = pr["base"]["repo"]["full_name"]
         body = pr["body"]
-        labels = tuple(sorted(label["name"] for label in pr["labels"]))
         state = pr["state"]
         merged = pr["merged"]
         valid = (
@@ -212,13 +210,12 @@ def snapshot(repo, number):
             and isinstance(base_ref, str) and base_ref
             and isinstance(base_repo, str) and base_repo.lower() == repo.lower()
             and (body is None or isinstance(body, str))
-            and all(isinstance(label, str) for label in labels)
             and state in ("open", "closed") and isinstance(merged, bool)
         )
     except (KeyError, TypeError):
         valid = False
     if not valid:
-        raise Refusal("PR metadata: missing or malformed head/base/body/labels/state")
+        raise Refusal("PR metadata: missing or malformed head/base/body/state")
     base_response = api(
         f"repos/{repo}/git/ref/heads/{quote(base_ref, safe='')}", "current base tip"
     )
@@ -252,7 +249,7 @@ def snapshot(repo, number):
             if statuses[context] is not None:
                 raise Refusal(f"{context}: duplicate latest commit status in API response")
             statuses[context] = {key: status[key] for key in ("id", "state", "target_url", "description")}
-    return Snapshot(head, base_ref, base, body or "", labels, state, merged, statuses)
+    return Snapshot(head, base_ref, base, body or "", state, merged, statuses)
 
 
 def fetch_snapshot(directory, repo, number, observed):
@@ -356,18 +353,42 @@ def inspect_git(directory, observed, failures):
     elif ancestry.returncode:
         raise Refusal("ancestry: git merge-base failed: " + one_line(ancestry.stderr.decode(errors="replace")))
     config = policy(directory, observed.base)
-    if "cos-approved" in observed.labels:
-        return
+    flagged = set()
     for old, new, deleted in diff_records(directory, observed.base, observed.head):
         names = tuple(dict.fromkeys((old, new)))
         protected = [path for path in names if any(fnmatch.fnmatchcase(path, glob) for glob in config["protected"])]
         tests = [path for path in names if any(fnmatch.fnmatchcase(path, glob) for glob in config["tests"])]
-        for path in protected:
-            failures.append(f"protected: diff touches {path_name(path)}")
+        flagged.update(protected)
         if tests and (deleted is None or deleted > 0):
-            reason = "binary test change" if deleted is None else f"{deleted} removed test lines"
-            for path in tests:
-                failures.append(f"tests: {reason} at {path_name(path)}")
+            flagged.update(tests)
+    return flagged
+
+
+def review_attestation(flagged_paths, review_url, head, repo, number):
+    if not flagged_paths:
+        return []
+    match = re.fullmatch(
+        r"https://github\.com/([^/]+/[^/]+)/pull/([1-9][0-9]*)#pullrequestreview-([1-9][0-9]*)",
+        review_url,
+    ) if isinstance(review_url, str) else None
+    if match is None or match[1].lower() != repo.lower() or int(match[2]) != number:
+        return [
+            f"protected/tests review: target URL {path_name(review_url)} must be "
+            f"https://github.com/{repo}/pull/{number}#pullrequestreview-ID"
+        ]
+    review = api(f"repos/{repo}/pulls/{number}/reviews/{match[3]}", "protected/tests review")
+    if not isinstance(review, dict):
+        return ["protected/tests review: malformed review response"]
+    failures = []
+    if review.get("commit_id") != head:
+        failures.append(
+            f"protected/tests review: commit_id {path_name(review.get('commit_id'))} does not match head {head}"
+        )
+    body = review.get("body")
+    for path in sorted(flagged_paths):
+        if not isinstance(body, str) or path not in body:
+            failures.append(f"protected/tests review: body does not name {path_name(path)}")
+    return failures
 
 
 def merge(url, repo, number):
@@ -388,13 +409,17 @@ def merge(url, repo, number):
         with tempfile.TemporaryDirectory(prefix="pr-merge-", dir=cache) as temporary:
             directory = Path(temporary) / "repo.git"
             fetch_snapshot(directory, repo, number, observed)
-            inspect_git(directory, observed, failures)
+            flagged = inspect_git(directory, observed, failures)
+            review = observed.statuses["review"]
+            failures.extend(review_attestation(
+                flagged, review["target_url"] if review else None, observed.head, repo, number,
+            ))
     except Refusal as error:
         failures.extend(error.reasons)
     if failures:
         raise Refusal(*failures)
     current = snapshot(repo, number)
-    for field in ("head", "base_ref", "base", "body", "labels", "state", "merged"):
+    for field in ("head", "base_ref", "base", "body", "state", "merged"):
         if getattr(current, field) != getattr(observed, field):
             failures.append(f"snapshot {field}: changed before merge; rerun checks")
     for context in CONTEXTS:
