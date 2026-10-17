@@ -306,6 +306,38 @@ class HeavyLeaseTests(unittest.TestCase):
         combined.kill()
         self.finish(combined, -signal.SIGKILL)
 
+    def test_waiter_ignores_python3_on_project_path(self):
+        project_bin = self.home / "project-bin"
+        project_bin.mkdir()
+        python = project_bin / "python3"
+        python.write_text("#!/bin/sh\nexit 1\n")
+        python.chmod(0o700)
+        holders = []
+        for slot in range(POOL_SIZE):
+            holder = self.start(
+                [sys.executable, "-c", CONTROLLED, str(self.home / f"critical-{slot}")],
+                weight=1,
+            )
+            self.event(holder, b"entered\n")
+            holders.append(holder)
+        self.assertTrue(self.status()["busy"])
+        notifications = self.watch_waiters()
+        host_env = dict(self.env)
+        self.env["PATH"] = str(project_bin) + os.pathsep + self.env["PATH"]
+        waiter = self.start(["true"], mode=("--wait",), weight=None)
+        event = self.ready([notifications, waiter.stdout])
+        if event == notifications:
+            self.waiter_event(notifications, waiter)
+            queued = self.invoke("status", "--json", env=host_env)
+            self.assertEqual(queued.returncode, 0, queued.stderr)
+            self.assertEqual([item["pid"] for item in json.loads(queued.stdout)["waiters"]], [waiter.pid])
+        self.release(holders.pop(0))
+        output, error = waiter.communicate(timeout=10)
+        self.assertEqual(waiter.returncode, 0, error.decode())
+        self.assertEqual(output, b"")
+        for holder in holders:
+            self.release(holder)
+
     def test_contenders_serialize_across_directories_and_report_holder(self):
         self.assertEqual(self.status(), {"busy": False, "holder": None})
         critical = self.home / "critical"
