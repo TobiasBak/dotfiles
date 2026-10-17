@@ -33,9 +33,7 @@ to Omarchy-seeded config are reported as `capture`, never silently reset.
 Apply installs missing repository packages through `omarchy pkg add` in a
 terminal, or background `pkexec /usr/share/omarchy/bin/omarchy-pkg-add` from
 an agent. Polkit needs Tobias's approval. AUR packages require a terminal:
-`omarchy pkg aur add <pkg>`. The T3 desktop package has a dedicated
-`agents/t3/install-desktop.sh` because Omarchy's repository carries a
-same-named older package. Close the desktop client before running it.
+`omarchy pkg aur add <pkg>`.
 
 Global tools use mise with pnpm. Omarchy's Node pin and the nightly updater's
 `npm:t3` pin are intentionally excluded from the manifest's version ownership.
@@ -144,10 +142,9 @@ Policy edits reach the stable links once they land on `main`;
 already-loaded instructions need a new session to adopt them. Do not restart running jobs for this.
 
 T3's official service owns its unit and runtime. The repo owns its drop-in,
-55%/70% memory slice, update timer, Pi provider enablement and desktop-client
-settings. The server listens on loopback port 3773 and Tailscale Serve exposes
-it over Tailnet HTTPS. Pair the nightly desktop client with `t3 pair`;
-pairing links are credentials and never belong in Git.
+55%/70% memory slice, update timer and Pi provider enablement. The server
+listens on loopback port 3773 and Tailscale Serve exposes it over Tailnet HTTPS.
+Dotfiles does not install or configure the desktop app.
 
 ```sh
 systemctl --user status t3code.service
@@ -169,8 +166,6 @@ With approval, start a detached update using:
 systemctl --user start --no-block t3code-update.service
 journalctl --user -u t3code-update.service
 ```
-
-The timer does not update the desktop package. That remains a terminal action.
 
 ## Stremio and Taildrop
 

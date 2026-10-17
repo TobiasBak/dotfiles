@@ -31,7 +31,6 @@
 "~/.codex/config.toml" = "agents/codex/config.toml"
 "~/.pi/agent/settings.json" = "agents/pi/settings.json"
 "~/.t3/userdata/settings.json" = "agents/t3/settings.json"
-"~/.t3/userdata/desktop-settings.json" = "agents/t3/desktop-settings.json"
 
 [systemd]
 enable = ["t3code-update.timer", "t3-backup.timer", "opencode-free.timer", "systemd-tmpfiles-clean.timer"]

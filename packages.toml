@@ -11,7 +11,6 @@ xorg-server-xvfb = "Agents: headless desktop verification"
 [aur]
 spotify = "Desktop music player"
 stremio-service-bin = "Stremio Web local streaming companion; desktop/stremio owns the FFmpeg shim"
-t3code-nightly-bin = { reason = "T3 nightly desktop client", install = "bash ~/.dotfiles/agents/t3/install-desktop.sh" }
 
 [installer]
 amd-ucode = "Omarchy installation: AMD CPU microcode"
