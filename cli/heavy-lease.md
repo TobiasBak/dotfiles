@@ -112,8 +112,12 @@ SIGKILL releases locks when the last inherited descriptor closes. A surviving
 child can intentionally keep a lease pinned. `handoff` and `adopt` transfer the
 entire descriptor set across a manager boundary. Nested `run` passes through
 only with a matching token on live held resources and sufficient parent slots
-and named locks. It rejects requests beyond the parent's allocation rather than
-waiting on itself. Token-only nested subprocesses rely on the parent retaining
+and named locks. Without an explicit `--weight`, a matching live nested run
+requests exactly the parent's held weight, regardless of its command or working
+directory. An explicit `--weight` passes through only within the parent's
+allocation; larger requests are rejected rather than waiting on itself.
+Top-level runs keep the command and working-directory weight defaults.
+Token-only nested subprocesses rely on the parent retaining
 the locks. Start independent work with `heavy-lease isolate -- <command>`;
 this discards every inherited lease descriptor and environment field.
 
