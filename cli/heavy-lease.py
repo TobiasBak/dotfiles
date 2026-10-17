@@ -53,6 +53,8 @@ POOL_MEASUREMENTS = {
     "policy": "four 4GiB/four-core accounting units; two units per known heavy job; see heavy-lease.md",
 }
 POOL_SIZE = 4
+PER_SLOT_PEAK = 17 * 1024**3 // POOL_SIZE
+ADMISSION_CLASSES = ("gate", "interactive", "efficiency")
 DEFAULT_WEIGHTS = (("orderready", 2), ("stepkit-geometry", 2))
 
 
@@ -178,72 +180,241 @@ def wait_slot_worker(directory, name, parent):
     return 0
 
 
-def wait_for_slot(directory, blocked):
-    workers = []
-    descriptors = []
+def nonnegative_integer(value, source):
+    if not re.fullmatch(r"[0-9]+", value):
+        raise ValueError(f"invalid nonnegative integer in {source}")
+    return int(value)
+
+
+def memory_headroom(pid=None):
+    meminfo = Path(os.environ.get("HEAVY_LEASE_MEMINFO", "/proc/meminfo"))
+    available = [line.split() for line in meminfo.read_text().splitlines() if line.startswith("MemAvailable:")]
+    if len(available) != 1 or len(available[0]) != 3 or available[0][2] != "kB":
+        raise ValueError(f"missing or invalid MemAvailable in {meminfo}")
+    headroom = nonnegative_integer(available[0][1], meminfo) * 1024
+    membership = Path(os.environ.get("HEAVY_LEASE_CGROUP_FILE", f"/proc/{pid}/cgroup" if pid is not None else "/proc/self/cgroup"))
+    paths = [line[3:] for line in membership.read_text().splitlines() if line.startswith("0::")]
+    if len(paths) != 1 or not paths[0].startswith("/") or ".." in Path(paths[0]).parts:
+        raise ValueError(f"missing or invalid unified cgroup in {membership}")
+    root = Path(os.environ.get("HEAVY_LEASE_CGROUP_ROOT", "/sys/fs/cgroup")).resolve(strict=True)
+    current = (root / paths[0].lstrip("/")).resolve(strict=True)
+    if not current.is_relative_to(root):
+        raise ValueError("caller cgroup is outside the cgroup mount")
+    while True:
+        maximum_path = current / "memory.max"
+        try:
+            maximum = maximum_path.read_text().strip()
+        except FileNotFoundError:
+            if current != root:
+                raise
+            maximum = "max"
+        if maximum != "max":
+            limit = nonnegative_integer(maximum, maximum_path)
+            usage_path = current / "memory.current"
+            usage = nonnegative_integer(usage_path.read_text().strip(), usage_path)
+            stat_path = current / "memory.stat"
+            inactive = [line.split() for line in stat_path.read_text().splitlines() if line.split()[:1] == ["inactive_file"]]
+            if len(inactive) != 1 or len(inactive[0]) != 2:
+                raise ValueError(f"missing or invalid inactive_file in {stat_path}")
+            cache = nonnegative_integer(inactive[0][1], stat_path)
+            headroom = min(headroom, max(0, limit - max(0, usage - cache)))
+        if current == root:
+            return headroom
+        current = current.parent
+
+
+def named_resource_head(request, waiters):
+    if not request["exclusive"]:
+        return None
+    return next((entry for entry in waiters if entry["exclusive"] == request["exclusive"]), None)
+
+
+def named_lock_eligible_pool_head(waiters, occupied):
+    for entry in waiters:
+        if not entry["weight"]:
+            continue
+        if entry["exclusive"]:
+            if f"exclusive-{entry['exclusive']}" in occupied:
+                continue
+            if named_resource_head(entry, waiters)["pid"] != entry["pid"]:
+                continue
+        return entry
+    return None
+
+
+def queue_blocker(request, waiters, occupied):
+    named_head = named_resource_head(request, waiters)
+    if named_head is not None and named_head["pid"] != request["pid"]:
+        return named_head
+    if request["weight"]:
+        head = named_lock_eligible_pool_head(waiters, occupied)
+        if head is not None and head["pid"] != request["pid"]:
+            return head
+    return None
+
+
+def admission_reason(request, waiters, headroom, occupied):
+    if request["exclusive"] and f"exclusive-{request['exclusive']}" in occupied:
+        return "exclusive"
+    if queue_blocker(request, waiters, occupied) is not None:
+        return "queue"
+    if request["weight"] > POOL_SIZE - sum(name.startswith("slot-") for name in occupied):
+        return "slots"
+    if request["weight"] * PER_SLOT_PEAK > headroom:
+        return "memory"
+    return "ready"
+
+
+def admission_snapshot(directory, request, waiters):
+    names = [f"slot-{slot}" for slot in range(POOL_SIZE)]
+    names.extend(sorted({f"exclusive-{entry['exclusive']}" for entry in [request, *waiters] if entry["exclusive"]}))
+    occupied = {}
+    for name in names:
+        fd = open_resource(directory, name)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                occupied[name] = read_holder(resource_paths(directory, name)[1])
+        finally:
+            os.close(fd)
+    return admission_reason(request, waiters, memory_headroom(), occupied), occupied
+
+
+def acquire_resources(directory, request):
+    names = [f"exclusive-{request['exclusive']}"] if request["exclusive"] else []
+    names.extend(f"slot-{slot}" for slot in range(POOL_SIZE) if request["weight"])
+    held = {}
+    slots = 0
+    complete = False
     try:
-        with selectors.DefaultSelector() as selector:
+        for name in names:
+            fd = open_resource(directory, name)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                os.close(fd)
+                if name.startswith("exclusive-"):
+                    return None
+                continue
+            except BaseException:
+                os.close(fd)
+                raise
+            held[name] = fd
+            if name.startswith("slot-"):
+                slots += 1
+            if slots == request["weight"]:
+                complete = True
+                return held
+        return None
+    finally:
+        if not complete:
+            for fd in held.values():
+                os.close(fd)
+
+
+class AdmissionObserver:
+    def __init__(self, directory):
+        self.directory = directory
+        self.selector = selectors.DefaultSelector()
+        self.workers = []
+        self.descriptors = []
+        try:
+            libc = ctypes.CDLL(None, use_errno=True)
+            descriptor = libc.inotify_init1(os.O_CLOEXEC | os.O_NONBLOCK)
+            if descriptor < 0:
+                raise OSError(ctypes.get_errno(), "inotify_init1")
+            self.descriptors.append(descriptor)
+            if libc.inotify_add_watch(descriptor, os.fsencode(directory / "waiters"), 0x00000100 | 0x00000200 | 0x00000080) < 0:
+                raise OSError(ctypes.get_errno(), "inotify_add_watch")
+            self.selector.register(descriptor, selectors.EVENT_READ)
+        except BaseException:
+            self.close()
+            raise
+
+    def observe_blockers(self, request, waiters, reason, occupied):
+        head = queue_blocker(request, waiters, occupied) if reason == "queue" else None
+        if head is not None:
+            try:
+                descriptor = os.pidfd_open(head["pid"])
+            except ProcessLookupError:
+                return False
+            self.descriptors.append(descriptor)
+            self.selector.register(descriptor, selectors.EVENT_READ)
+        if reason == "memory":
+            descriptor = os.timerfd_create(time.CLOCK_MONOTONIC, flags=os.TFD_CLOEXEC | os.TFD_NONBLOCK)
+            self.descriptors.append(descriptor)
+            os.timerfd_settime(descriptor, initial=1.0)
+            self.selector.register(descriptor, selectors.EVENT_READ)
+        if reason in ("slots", "exclusive", "memory"):
+            blocked = [name for name in occupied if name.startswith("slot-")] if reason != "exclusive" else [f"exclusive-{request['exclusive']}"]
             for name in blocked:
                 worker = subprocess.Popen([
                     sys.executable, str(Path(__file__).resolve()), "--internal-wait-slot",
-                    str(directory), name, str(os.getpid()),
-                ], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                workers.append(worker)
+                    str(self.directory), name, str(os.getpid()),
+                ], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+                self.workers.append(worker)
                 descriptor = os.pidfd_open(worker.pid)
-                descriptors.append(descriptor)
-                selector.register(descriptor, selectors.EVENT_READ, worker)
-            events = selector.select()
-            worker = events[0][0].data
-            if worker.wait() != 0:
-                raise ValueError("pool slot waiter failed")
-    finally:
-        for worker in workers:
+                self.descriptors.append(descriptor)
+                self.selector.register(descriptor, selectors.EVENT_READ, worker)
+        return True
+
+    def wait(self):
+        for key, _ in self.selector.select():
+            if key.data is not None and key.data.wait() != 0:
+                raise ValueError("pool resource waiter failed")
+
+    def close(self):
+        for worker in self.workers:
             if worker.poll() is None:
                 worker.kill()
-        for worker in workers:
+        for worker in self.workers:
             worker.wait()
-        for descriptor in descriptors:
+        self.selector.close()
+        for descriptor in self.descriptors:
             os.close(descriptor)
 
 
-def acquire_slots(directory, weight, try_only):
-    slots = {f"slot-{slot}": open_resource(directory, f"slot-{slot}") for slot in range(POOL_SIZE)}
-    admission = None
-    held = {}
+def acquire_admission(directory, metadata, try_only, waiter):
+    admission = high_descriptor(os.open(directory / "admission.lock", os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600))
+    folder = directory / "waiters"
+    folder.mkdir(mode=0o700, exist_ok=True)
     try:
-        admission = high_descriptor(os.open(directory / "admission.lock", os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600))
         while True:
+            observer = AdmissionObserver(directory) if not try_only else None
             try:
-                fcntl.flock(admission, fcntl.LOCK_EX | (fcntl.LOCK_NB if try_only else 0))
-            except BlockingIOError:
-                print("busy: pool admission in progress", file=sys.stderr)
-                return None
-            try:
-                blocked = []
-                for name, fd in slots.items():
-                    try:
-                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    except BlockingIOError:
-                        blocked.append(name)
-                    else:
-                        held[name] = fd
-                        if len(held) == weight:
-                            return held
-                for fd in held.values():
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-                held.clear()
-                if try_only:
-                    print(f"busy: {holder_summary(read_holder(resource_paths(directory, blocked[0])[1]))}", file=sys.stderr)
+                try:
+                    fcntl.flock(admission, fcntl.LOCK_EX | (fcntl.LOCK_NB if try_only else 0))
+                except BlockingIOError:
+                    print("busy: pool admission in progress", file=sys.stderr)
                     return None
+                try:
+                    if not waiter:
+                        waiter.extend(register_waiter(directory, metadata))
+                    waiters = read_waiters(directory)
+                    reason, occupied = admission_snapshot(directory, metadata, waiters)
+                    if reason == "ready":
+                        held = acquire_resources(directory, metadata)
+                        if held is not None:
+                            clear_waiter(waiter)
+                            return held
+                        reason, occupied = admission_snapshot(directory, metadata, waiters)
+                    if try_only:
+                        summaries = "; ".join(holder_summary(holder) for name, holder in occupied.items() if name.startswith("slot-"))
+                        if reason == "exclusive":
+                            summaries = holder_summary(occupied.get(f"exclusive-{metadata['exclusive']}"))
+                        print(f"busy: {reason}" + (f": {summaries}" if summaries else ""), file=sys.stderr)
+                        return None
+                    retry = reason == "ready" or not observer.observe_blockers(metadata, waiters, reason, occupied)
+                finally:
+                    fcntl.flock(admission, fcntl.LOCK_UN)
+                if not retry:
+                    observer.wait()
             finally:
-                fcntl.flock(admission, fcntl.LOCK_UN)
-            wait_for_slot(directory, blocked)
+                if observer is not None:
+                    observer.close()
     finally:
-        for name, fd in slots.items():
-            if name not in held:
-                os.close(fd)
-        if admission is not None:
-            os.close(admission)
+        os.close(admission)
 
 
 def register_waiter(directory, metadata):
@@ -255,6 +426,8 @@ def register_waiter(directory, metadata):
     waiter = [fd, lock, holder]
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        holder.unlink(missing_ok=True)
+        metadata["sequence"] = max((entry["sequence"] for entry in read_waiters(directory)), default=0) + 1
         write_holder(holder, metadata)
         return waiter
     except BaseException:
@@ -282,13 +455,25 @@ def read_waiters(directory):
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                waiters.append(read_holder(lock.with_suffix(".json")))
+                holder = read_holder(lock.with_suffix(".json"))
+                if (
+                    holder and type(holder.get("pid")) is int and str(holder["pid"]) == lock.stem
+                    and 0 < holder["pid"] < 2**31
+                    and holder.get("class") in ADMISSION_CLASSES
+                    and type(holder.get("sequence")) is int and holder["sequence"] > 0
+                    and type(holder.get("weight")) is int and 0 <= holder["weight"] <= POOL_SIZE
+                    and "exclusive" in holder
+                    and (holder["exclusive"] is None or isinstance(holder["exclusive"], str)
+                         and re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", holder["exclusive"]))
+                    and (holder["weight"] > 0 or holder["exclusive"])
+                ):
+                    waiters.append(holder)
         finally:
             os.close(fd)
-    return waiters
+    return sorted(waiters, key=lambda entry: (ADMISSION_CLASSES.index(entry["class"]), entry["sequence"]))
 
 
-def run(directory, command, try_only, weight, exclusive):
+def run(directory, command, try_only, weight, exclusive, admission_class):
     token = os.environ.get("HEAVY_LEASE_TOKEN")
     inherited = nested_holder(directory, token)
     if inherited:
@@ -300,33 +485,24 @@ def run(directory, command, try_only, weight, exclusive):
         os.execvp(command[0], command)
     context = git_context()
     held = {}
-    exclusive_name = f"exclusive-{exclusive}" if exclusive else None
-    waiter = register_waiter(directory, {
+    metadata = {
         "pid": os.getpid(), "command": command, "weight": weight, "exclusive": exclusive,
+        "class": admission_class, "expected_peak": weight * PER_SLOT_PEAK,
         "start_time": datetime.now(timezone.utc).isoformat(), **context,
         **({"T3_THREAD_ID": os.environ["T3_THREAD_ID"]} if "T3_THREAD_ID" in os.environ else {}),
-    })
+    }
+    waiter = []
     try:
-        if exclusive_name:
-            fd = open_resource(directory, exclusive_name)
-            held[exclusive_name] = fd
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                if try_only:
-                    print(f"busy: {holder_summary(read_holder(resource_paths(directory, exclusive_name)[1]))}", file=sys.stderr)
-                    return 2
-                fcntl.flock(fd, fcntl.LOCK_EX)
-        if weight:
-            slots = acquire_slots(directory, weight, try_only)
-            if slots is None:
-                return 2
-            held.update(slots)
+        allocation = acquire_admission(directory, metadata, try_only, waiter)
+        if allocation is None:
+            return 2
+        held.update(allocation)
         token = secrets.token_hex(16)
         holder = {
             "token": token, "pid": os.getpid(), "pgid": os.getpgrp(),
             "start_time": datetime.now(timezone.utc).isoformat(), **context,
             "command": command, "resources": list(held), "weight": weight,
+            "class": admission_class, "expected_peak": weight * PER_SLOT_PEAK,
         }
         if "T3_THREAD_ID" in os.environ:
             holder["T3_THREAD_ID"] = os.environ["T3_THREAD_ID"]
@@ -513,7 +689,20 @@ def orphan_lock_holders(identity):
 def status(directory, as_json):
     slots = [entry for slot in range(POOL_SIZE) if (entry := probe_resource(directory, f"slot-{slot}"))]
     exclusive = [entry for path in sorted(directory.glob("exclusive-*.lock")) if (entry := probe_resource(directory, path.stem))]
-    result = {"pool_size": POOL_SIZE, "slots": slots, "exclusive": exclusive, "waiters": read_waiters(directory)}
+    waiters = read_waiters(directory)
+    headrooms = {}
+    for waiter in waiters:
+        try:
+            headrooms[waiter["pid"]] = memory_headroom(waiter["pid"])
+        except (FileNotFoundError, ProcessLookupError):
+            if any(entry["pid"] == waiter["pid"] and entry["sequence"] == waiter["sequence"] for entry in read_waiters(directory)):
+                raise
+    waiters = [waiter for waiter in waiters if waiter["pid"] in headrooms]
+    occupied = {entry["name"]: entry["holder"] for entry in [*slots, *exclusive]}
+    for waiter in waiters:
+        waiter["expected_peak"] = waiter["weight"] * PER_SLOT_PEAK
+        waiter["admission_reason"] = admission_reason(waiter, waiters, headrooms[waiter["pid"]], occupied)
+    result = {"pool_size": POOL_SIZE, "slots": slots, "exclusive": exclusive, "waiters": waiters}
     if as_json:
         print(json.dumps(result, sort_keys=True))
     else:
@@ -759,6 +948,7 @@ def main():
     mode.add_argument("--try", dest="try_only", action="store_true", help="Exit 2 if the lease is busy.")
     run_parser.add_argument("--weight", type=int, help=f"Pool slots, 1..{POOL_SIZE}; default from command table, otherwise 1. With --exclusive, default 0.")
     run_parser.add_argument("--exclusive", help="Separate named lock, e.g. win-vm; takes no slots unless --weight is given.")
+    run_parser.add_argument("--class", dest="admission_class", choices=ADMISSION_CLASSES, default="interactive", help="Admission priority, then FIFO within each class (default: interactive).")
     run_parser.add_argument("command", nargs=argparse.REMAINDER, help="-- command [args ...]")
     status_parser = commands.add_parser(
         "status", help="Probe pool slots and named exclusive locks, ignoring stale metadata.",
@@ -802,7 +992,7 @@ def main():
     weight = args.weight if args.weight is not None else (0 if args.exclusive else default_weight(args.command[1:]))
     if not 0 <= weight <= POOL_SIZE or (weight == 0 and not args.exclusive):
         parser.error(f"weight must be 1..{POOL_SIZE}, or 0 with --exclusive")
-    return run(directory, args.command[1:], args.try_only, weight, args.exclusive)
+    return run(directory, args.command[1:], args.try_only, weight, args.exclusive, args.admission_class)
 
 
 if __name__ == "__main__":
