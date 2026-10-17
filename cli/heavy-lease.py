@@ -265,7 +265,7 @@ def admission_reason(request, waiters, headroom, occupied):
     return "ready"
 
 
-def admission_snapshot(directory, request, waiters):
+def resource_occupancy(directory, request, waiters=()):
     names = [f"slot-{slot}" for slot in range(POOL_SIZE)]
     names.extend(sorted({f"exclusive-{entry['exclusive']}" for entry in [request, *waiters] if entry["exclusive"]}))
     occupied = {}
@@ -278,7 +278,19 @@ def admission_snapshot(directory, request, waiters):
                 occupied[name] = read_holder(resource_paths(directory, name)[1])
         finally:
             os.close(fd)
+    return occupied
+
+
+def admission_snapshot(directory, request, waiters):
+    occupied = resource_occupancy(directory, request, waiters)
     return admission_reason(request, waiters, memory_headroom(), occupied), occupied
+
+
+def report_busy(reason, occupied, request):
+    summaries = "; ".join(holder_summary(holder) for name, holder in occupied.items() if name.startswith("slot-"))
+    if request["exclusive"] and f"exclusive-{request['exclusive']}" in occupied:
+        summaries = holder_summary(occupied[f"exclusive-{request['exclusive']}"])
+    print(f"busy: {reason}" + (f": {summaries}" if summaries else ""), file=sys.stderr)
 
 
 def acquire_resources(directory, request):
@@ -386,7 +398,7 @@ def acquire_admission(directory, metadata, try_only, waiter):
                 try:
                     fcntl.flock(admission, fcntl.LOCK_EX | (fcntl.LOCK_NB if try_only else 0))
                 except BlockingIOError:
-                    print("busy: pool admission in progress", file=sys.stderr)
+                    report_busy("pool admission in progress", resource_occupancy(directory, metadata), metadata)
                     return None
                 try:
                     if not waiter:
@@ -400,10 +412,7 @@ def acquire_admission(directory, metadata, try_only, waiter):
                             return held
                         reason, occupied = admission_snapshot(directory, metadata, waiters)
                     if try_only:
-                        summaries = "; ".join(holder_summary(holder) for name, holder in occupied.items() if name.startswith("slot-"))
-                        if reason == "exclusive":
-                            summaries = holder_summary(occupied.get(f"exclusive-{metadata['exclusive']}"))
-                        print(f"busy: {reason}" + (f": {summaries}" if summaries else ""), file=sys.stderr)
+                        report_busy(reason, occupied, metadata)
                         return None
                     retry = reason == "ready" or not observer.observe_blockers(metadata, waiters, reason, occupied)
                 finally:

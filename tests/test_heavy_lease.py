@@ -1,6 +1,7 @@
 import array
 import ctypes
 from datetime import datetime
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -386,6 +387,19 @@ class HeavyLeaseTests(unittest.TestCase):
                 self.release(head)
                 self.release(small)
                 self.assertEqual(self.scheduler_status()["waiters"], [])
+
+    def test_try_reports_live_holder_during_an_admission_transaction(self):
+        holder = self.start([sys.executable, "-c", CONTROLLED, str(self.home / "critical")])
+        self.event(holder, b"entered\n")
+        with (self.state / "admission.lock").open("r+") as admission:
+            fcntl.flock(admission, fcntl.LOCK_EX)
+            rejected = self.invoke("run", "--try", "--", "true")
+            self.assertEqual(rejected.returncode, 2, rejected.stderr)
+            self.assertTrue(rejected.stderr.startswith("busy: pool admission in progress"), rejected.stderr)
+            self.assertIn(str(holder.pid), rejected.stderr)
+            self.assertIn("fixture-thread", rejected.stderr)
+            self.assertEqual(rejected.stdout, "")
+        self.release(holder)
 
     def test_zero_weight_exclusive_lane_has_zero_expected_peak_without_memory_headroom(self):
         Path(self.env["HEAVY_LEASE_MEMINFO"]).write_text("MemAvailable: 0 kB\n")
