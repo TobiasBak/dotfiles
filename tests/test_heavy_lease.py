@@ -605,6 +605,30 @@ class HeavyLeaseTests(unittest.TestCase):
         self.assertEqual(json.loads((self.state / "slot-0.json").read_text()), original)
         self.assertEqual(self.status(), {"busy": False, "holder": None})
 
+    def test_nested_default_weight_inherits_parent_across_cwd_change(self):
+        nested_cwd = self.home / "stepkit-geometry"
+        nested_cwd.mkdir()
+        launcher = self.home / "nested.py"
+        launcher.write_text(
+            "import os, sys\n"
+            "from pathlib import Path\n"
+            'os.chdir(Path.home() / "stepkit-geometry")\n'
+            'os.execv(sys.argv[1], [sys.argv[1], "run", "--try", "--", *sys.argv[2:]])\n'
+        )
+        process = self.start(
+            [sys.executable, str(launcher), str(CLI), sys.executable, "-c", CONTROLLED, str(self.home / "critical")],
+            weight=None,
+        )
+        self.event(process, b"entered\n")
+        occupied = self.invoke("status", "--json")
+        self.assertEqual(occupied.returncode, 0, occupied.stderr)
+        slots = json.loads(occupied.stdout)["slots"]
+        self.assertEqual(len(slots), 1)
+        self.assertEqual(slots[0]["holder"]["weight"], 1)
+        self.assertEqual(slots[0]["holder"]["pid"], process.pid)
+        self.release(process)
+        self.assertEqual(self.status(), {"busy": False, "holder": None})
+
     def test_token_only_sibling_reentry_and_stale_token_rejection(self):
         self.state.mkdir(parents=True)
         stale = {"pid": os.getpid(), "command": ["stale-holder"], "token": "expired-context"}

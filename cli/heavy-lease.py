@@ -488,11 +488,16 @@ def run(directory, command, try_only, weight, exclusive, admission_class):
     inherited = nested_holder(directory, token)
     if inherited:
         resources = inherited["resources"]
-        if sum(name.startswith("slot-") for name in resources) < weight or (
+        held_weight = sum(name.startswith("slot-") for name in resources)
+        if weight is None:
+            weight = held_weight
+        if held_weight < weight or (
             exclusive and f"exclusive-{exclusive}" not in resources
         ):
             raise ValueError("nested run requests resources not held by its parent; use isolate for independent work")
         os.execvp(command[0], command)
+    if weight is None:
+        weight = 0 if exclusive else default_weight(command)
     context = git_context()
     held = {}
     metadata = {
@@ -956,7 +961,7 @@ def main():
     mode = run_parser.add_mutually_exclusive_group()
     mode.add_argument("--wait", action="store_true", help="Wait in the kernel for the lease (default).")
     mode.add_argument("--try", dest="try_only", action="store_true", help="Exit 2 if the lease is busy.")
-    run_parser.add_argument("--weight", type=int, help=f"Pool slots, 1..{POOL_SIZE}; default from command table, otherwise 1. With --exclusive, default 0.")
+    run_parser.add_argument("--weight", type=int, help=f"Pool slots, 1..{POOL_SIZE}; nested default is the parent allocation, otherwise command table or 1. Top-level --exclusive defaults to 0.")
     run_parser.add_argument("--exclusive", help="Separate named lock, e.g. win-vm; takes no slots unless --weight is given.")
     run_parser.add_argument("--class", dest="admission_class", choices=ADMISSION_CLASSES, default="interactive", help="Admission priority, then FIFO within each class (default: interactive).")
     run_parser.add_argument("command", nargs=argparse.REMAINDER, help="-- command [args ...]")
@@ -999,10 +1004,9 @@ def main():
         return adopt(args.socket, directory, args.command[1:])
     if args.exclusive and not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", args.exclusive):
         parser.error("exclusive name must contain 1..80 letters, digits, underscores or hyphens")
-    weight = args.weight if args.weight is not None else (0 if args.exclusive else default_weight(args.command[1:]))
-    if not 0 <= weight <= POOL_SIZE or (weight == 0 and not args.exclusive):
+    if args.weight is not None and (not 0 <= args.weight <= POOL_SIZE or (args.weight == 0 and not args.exclusive)):
         parser.error(f"weight must be 1..{POOL_SIZE}, or 0 with --exclusive")
-    return run(directory, args.command[1:], args.try_only, weight, args.exclusive, args.admission_class)
+    return run(directory, args.command[1:], args.try_only, args.weight, args.exclusive, args.admission_class)
 
 
 if __name__ == "__main__":
