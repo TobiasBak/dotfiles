@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import array
+import ctypes
 from datetime import datetime, timezone
 import errno
 import fcntl
@@ -18,6 +19,41 @@ import sys
 import tempfile
 import threading
 import time
+
+
+POOL_MEASUREMENTS = {
+    "date": "2026-10-17",
+    "host_cores": 16,
+    "host_memory_gib": 30.51,
+    "source": "~/.cache/agent-tmp/heavy-lease-37/report.md",
+    "orderready": {
+        "command": "tools/or test --full",
+        "sha": "8f08e1b2b050625f122c863b8a589f42df0c1edc",
+        "elapsed_s": 391.420,
+        "cpu_s_cgroup": 1392.674,
+        "largest_process_rss_mib": 1814.79,
+        "peak_cgroup_gib": 7.4018,
+        "result": "exit 2: 139 obligations passed; GUI case blocked by 27s budget",
+        "conditions": "empty verdict cache, warm toolchain/artifacts, four build jobs",
+    },
+    "stepkit-geometry": {
+        "command": "tools/sg gate --json",
+        "sha": "0d8011aa2372c67bfacd7b22811880d7c373a6ec",
+        "elapsed_s": 6.912,
+        "cpu_s_outer": 1.14,
+        "cpu_s_worker": 9.064,
+        "peak_worker_cgroup_mib": 517.8,
+        "result": "exit 0: six static gates; no corpus/parity selected",
+        "historical_sha": "e759c706ea2536e60394ab07dd6f279c704d41ff",
+        "historical_parity_cpu_s": 543.440,
+        "historical_parity_peak_cgroup_gib": 4,
+        "conditions": "warm gate; historical 285-model parity capped at 4GiB/four cores",
+    },
+    "limits": "single runs; cgroup memory includes cache, not RSS; CPU is cumulative, not peak",
+    "policy": "four 4GiB/four-core accounting units; two units per known heavy job; see heavy-lease.md",
+}
+POOL_SIZE = 4
+DEFAULT_WEIGHTS = (("orderready", 2), ("stepkit-geometry", 2))
 
 
 class Parser(argparse.ArgumentParser):
@@ -71,58 +107,263 @@ def write_holder(path, holder):
             temporary.unlink(missing_ok=True)
 
 
-def run(lock, holder_path, command, try_only):
-    context = git_context()
-    fd = high_descriptor(os.open(lock, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600))
+def resource_paths(directory, name):
+    if not re.fullmatch(r"slot-[0-9]+|exclusive-[a-zA-Z0-9_-]+", name):
+        raise ValueError("invalid lease resource")
+    return directory / f"{name}.lock", directory / f"{name}.json"
+
+
+def open_resource(directory, name):
+    lock, _ = resource_paths(directory, name)
+    return high_descriptor(os.open(lock, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600))
+
+
+def default_weight(command):
+    executable = Path(command[0]).name
+    context = str(Path.cwd()) + " " + " ".join(command)
+    if executable == "or" and any(arg in ("--full", "--strict") for arg in command):
+        return dict(DEFAULT_WEIGHTS)["orderready"]
+    if executable == "sg" and any(arg in ("gate", "corpus", "parity") for arg in command):
+        return dict(DEFAULT_WEIGHTS)["stepkit-geometry"]
+    for pattern, weight in DEFAULT_WEIGHTS:
+        if pattern in context:
+            return weight
+    return 1
+
+
+def probe_resource(directory, name):
+    lock, metadata = resource_paths(directory, name)
+    fd = open_resource(directory, name)
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            holder = read_holder(holder_path)
-            token = os.environ.get("HEAVY_LEASE_TOKEN")
-            if token and holder is not None and holder.get("token") == token:
-                os.execvp(command[0], command)
-            if try_only:
-                print(f"busy: {holder_summary(holder)}", file=sys.stderr)
-                return 2
-            fcntl.flock(fd, fcntl.LOCK_EX)
-        token = secrets.token_hex(16)
-        holder = {
-            "token": token,
-            "pid": os.getpid(),
-            "pgid": os.getpgrp(),
-            "start_time": datetime.now(timezone.utc).isoformat(),
-            **context,
-            "command": command,
-        }
-        if "T3_THREAD_ID" in os.environ:
-            holder["T3_THREAD_ID"] = os.environ["T3_THREAD_ID"]
-        write_holder(holder_path, holder)
-        os.set_inheritable(fd, True)
-        os.environ["HEAVY_LEASE_FD"] = str(fd)
-        os.environ["HEAVY_LEASE_TOKEN"] = token
-        os.execvp(command[0], command)
+            result = {"name": name, "holder": read_holder(metadata)}
+            if sys.platform.startswith("linux") and metadata_owner_dead(result["holder"]):
+                holders, incomplete = orphan_lock_holders(os.fstat(fd))
+                result.update(orphan_pin=True, lock_holders=holders, lock_holders_incomplete=incomplete)
+            return result
+        return None
     finally:
         os.close(fd)
 
 
+def nested_holder(directory, token):
+    if not token:
+        return None
+    for path in sorted(directory.glob("*.json")):
+        holder = read_holder(path)
+        if not holder or holder.get("token") != token:
+            continue
+        resources = holder.get("resources", [])
+        if resources and all(
+            (entry := probe_resource(directory, name)) is not None
+            and (entry["holder"] or {}).get("token") == token for name in resources
+        ):
+            return holder
+    return None
+
+
+def wait_slot_worker(directory, name, parent):
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(1, signal.SIGKILL, 0, 0, 0) < 0:
+        raise OSError(ctypes.get_errno(), "PR_SET_PDEATHSIG")
+    if os.getppid() != parent:
+        return 1
+    fd = open_resource(Path(directory), name)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    finally:
+        os.close(fd)
+    return 0
+
+
+def wait_for_slot(directory, blocked):
+    workers = []
+    descriptors = []
+    try:
+        with selectors.DefaultSelector() as selector:
+            for name in blocked:
+                worker = subprocess.Popen([
+                    sys.executable, str(Path(__file__).resolve()), "--internal-wait-slot",
+                    str(directory), name, str(os.getpid()),
+                ], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                workers.append(worker)
+                descriptor = os.pidfd_open(worker.pid)
+                descriptors.append(descriptor)
+                selector.register(descriptor, selectors.EVENT_READ, worker)
+            events = selector.select()
+            worker = events[0][0].data
+            if worker.wait() != 0:
+                raise ValueError("pool slot waiter failed")
+    finally:
+        for worker in workers:
+            if worker.poll() is None:
+                worker.kill()
+        for worker in workers:
+            worker.wait()
+        for descriptor in descriptors:
+            os.close(descriptor)
+
+
+def acquire_slots(directory, weight, try_only):
+    slots = {f"slot-{slot}": open_resource(directory, f"slot-{slot}") for slot in range(POOL_SIZE)}
+    admission = None
+    held = {}
+    try:
+        admission = high_descriptor(os.open(directory / "admission.lock", os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600))
+        while True:
+            try:
+                fcntl.flock(admission, fcntl.LOCK_EX | (fcntl.LOCK_NB if try_only else 0))
+            except BlockingIOError:
+                print("busy: pool admission in progress", file=sys.stderr)
+                return None
+            try:
+                blocked = []
+                for name, fd in slots.items():
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        blocked.append(name)
+                    else:
+                        held[name] = fd
+                        if len(held) == weight:
+                            return held
+                for fd in held.values():
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                held.clear()
+                if try_only:
+                    print(f"busy: {holder_summary(read_holder(resource_paths(directory, blocked[0])[1]))}", file=sys.stderr)
+                    return None
+            finally:
+                fcntl.flock(admission, fcntl.LOCK_UN)
+            wait_for_slot(directory, blocked)
+    finally:
+        for name, fd in slots.items():
+            if name not in held:
+                os.close(fd)
+        if admission is not None:
+            os.close(admission)
+
+
+def register_waiter(directory, metadata):
+    folder = directory / "waiters"
+    folder.mkdir(mode=0o700, exist_ok=True)
+    lock = folder / f"{os.getpid()}.lock"
+    holder = lock.with_suffix(".json")
+    fd = high_descriptor(os.open(lock, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600))
+    waiter = [fd, lock, holder]
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        write_holder(holder, metadata)
+        return waiter
+    except BaseException:
+        clear_waiter(waiter)
+        raise
+
+
+def clear_waiter(waiter):
+    if waiter:
+        fd, lock, holder = waiter
+        waiter.clear()
+        holder.unlink(missing_ok=True)
+        lock.unlink(missing_ok=True)
+        os.close(fd)
+
+
+def read_waiters(directory):
+    waiters = []
+    for lock in sorted((directory / "waiters").glob("*.lock")):
+        try:
+            fd = os.open(lock, os.O_RDWR | os.O_CLOEXEC)
+        except FileNotFoundError:
+            continue
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                waiters.append(read_holder(lock.with_suffix(".json")))
+        finally:
+            os.close(fd)
+    return waiters
+
+
+def run(directory, command, try_only, weight, exclusive):
+    token = os.environ.get("HEAVY_LEASE_TOKEN")
+    inherited = nested_holder(directory, token)
+    if inherited:
+        resources = inherited["resources"]
+        if sum(name.startswith("slot-") for name in resources) < weight or (
+            exclusive and f"exclusive-{exclusive}" not in resources
+        ):
+            raise ValueError("nested run requests resources not held by its parent; use isolate for independent work")
+        os.execvp(command[0], command)
+    context = git_context()
+    held = {}
+    exclusive_name = f"exclusive-{exclusive}" if exclusive else None
+    waiter = register_waiter(directory, {
+        "pid": os.getpid(), "command": command, "weight": weight, "exclusive": exclusive,
+        "start_time": datetime.now(timezone.utc).isoformat(), **context,
+        **({"T3_THREAD_ID": os.environ["T3_THREAD_ID"]} if "T3_THREAD_ID" in os.environ else {}),
+    })
+    try:
+        if exclusive_name:
+            fd = open_resource(directory, exclusive_name)
+            held[exclusive_name] = fd
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                if try_only:
+                    print(f"busy: {holder_summary(read_holder(resource_paths(directory, exclusive_name)[1]))}", file=sys.stderr)
+                    return 2
+                fcntl.flock(fd, fcntl.LOCK_EX)
+        if weight:
+            slots = acquire_slots(directory, weight, try_only)
+            if slots is None:
+                return 2
+            held.update(slots)
+        token = secrets.token_hex(16)
+        holder = {
+            "token": token, "pid": os.getpid(), "pgid": os.getpgrp(),
+            "start_time": datetime.now(timezone.utc).isoformat(), **context,
+            "command": command, "resources": list(held), "weight": weight,
+        }
+        if "T3_THREAD_ID" in os.environ:
+            holder["T3_THREAD_ID"] = os.environ["T3_THREAD_ID"]
+        for name in held:
+            write_holder(resource_paths(directory, name)[1], holder)
+        clear_waiter(waiter)
+        export_descriptors(held)
+        os.environ["HEAVY_LEASE_TOKEN"] = token
+        os.execvp(command[0], command)
+    finally:
+        clear_waiter(waiter)
+        for fd in held.values():
+            os.close(fd)
+
+
 def isolate(command):
-    raw_fd = os.environ.get("HEAVY_LEASE_FD", "-1")
+    raw_fds = [os.environ.get("HEAVY_LEASE_FD", "-1")]
+    try:
+        raw_fds.extend(json.loads(os.environ.get("HEAVY_LEASE_FDS", "{}")).values())
+    except (ValueError, AttributeError):
+        pass
     for name in list(os.environ):
         if name.startswith("HEAVY_LEASE_"):
             del os.environ[name]
-    try:
-        fd = int(raw_fd)
-    except ValueError:
-        fd = -1
-    if fd >= 64:
+    for raw_fd in set(map(str, raw_fds)):
         try:
-            os.close(fd)
-        except OverflowError:
-            pass
-        except OSError as error:
-            if error.errno != errno.EBADF:
-                raise
+            fd = int(raw_fd)
+        except ValueError:
+            continue
+        if fd >= 64:
+            try:
+                os.close(fd)
+            except OverflowError:
+                pass
+            except OSError as error:
+                if error.errno != errno.EBADF:
+                    raise
     if "CI" in os.environ or not sys.platform.startswith("linux"):
         os.execvp(command[0], command)
     runtime = Path(os.environ.get("XDG_RUNTIME_DIR", str(Path.home() / ".cache/agent-tmp/heavy-lease")))
@@ -269,32 +510,22 @@ def orphan_lock_holders(identity):
     return holders, incomplete
 
 
-def status(lock, holder_path, as_json):
-    fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
-    try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            busy = True
-        else:
-            busy = False
-        holder = read_holder(holder_path) if busy else None
-        result = {"busy": busy, "holder": holder}
-        if busy and sys.platform.startswith("linux") and metadata_owner_dead(holder):
-            holders, incomplete = orphan_lock_holders(os.fstat(fd))
-            result.update(orphan_pin=True, lock_holders=holders, lock_holders_incomplete=incomplete)
-        if as_json:
-            print(json.dumps(result, sort_keys=True))
-        else:
-            print(f"busy: {holder_summary(holder)}" if busy else "free")
-            if result.get("orphan_pin"):
+def status(directory, as_json):
+    slots = [entry for slot in range(POOL_SIZE) if (entry := probe_resource(directory, f"slot-{slot}"))]
+    exclusive = [entry for path in sorted(directory.glob("exclusive-*.lock")) if (entry := probe_resource(directory, path.stem))]
+    result = {"pool_size": POOL_SIZE, "slots": slots, "exclusive": exclusive, "waiters": read_waiters(directory)}
+    if as_json:
+        print(json.dumps(result, sort_keys=True))
+    else:
+        print(f"pool: {len(slots)}/{POOL_SIZE} slots in use; {len(exclusive)} exclusive locks; {len(result['waiters'])} waiters")
+        for entry in [*slots, *exclusive]:
+            print(f"{entry['name']}: {holder_summary(entry['holder'])}")
+            if entry.get("orphan_pin"):
                 print("orphan pin: metadata owner is dead; lock holders (best effort):")
-                for process in result["lock_holders"]:
+                for process in entry["lock_holders"]:
                     print(f"  pid={process['pid']} comm={process['comm']!r} cgroup={process['cgroup']!r} fds={process['fds']}")
-                if result["lock_holders_incomplete"]:
+                if entry["lock_holders_incomplete"]:
                     print("  lock holder scan incomplete")
-    finally:
-        os.close(fd)
     return 0
 
 
@@ -331,7 +562,7 @@ def same_uid(peer):
 
 
 def receive_message(peer):
-    data, ancillary, flags, _ = peer.recvmsg(128, socket.CMSG_SPACE(4 * 2), socket.MSG_CMSG_CLOEXEC)
+    data, ancillary, flags, _ = peer.recvmsg(16384, socket.CMSG_SPACE(4 * (POOL_SIZE + 2)), socket.MSG_CMSG_CLOEXEC)
     descriptors = []
     unexpected = bool(flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC))
     for level, kind, content in ancillary:
@@ -344,7 +575,28 @@ def receive_message(peer):
     return data, descriptors, unexpected
 
 
-def receive_lease(path, lock, holder_path, token):
+def valid_descriptors(held, directory, token):
+    if not held:
+        return False
+    for name, fd in held.items():
+        lock, holder_path = resource_paths(directory, name)
+        holder = read_holder(holder_path) or {}
+        if set(holder.get("resources", [])) != set(held) or not held_descriptor(fd, lock, holder_path, token):
+            return False
+    return True
+
+
+def inherited_descriptors():
+    try:
+        held = json.loads(os.environ.get("HEAVY_LEASE_FDS", "{}"))
+        if not isinstance(held, dict) or any(not isinstance(name, str) or type(fd) is not int for name, fd in held.items()):
+            return {}
+        return held
+    except ValueError:
+        return {}
+
+
+def receive_lease(path, directory, token):
     if not token:
         raise ValueError("HEAVY_LEASE_TOKEN is required for adoption")
     descriptors = []
@@ -355,40 +607,51 @@ def receive_lease(path, lock, holder_path, token):
             same_uid(peer)
             peer.sendall(token.encode())
             data, descriptors, unexpected = receive_message(peer)
-        if unexpected or data != b"lease" or len(descriptors) != 1:
-            raise ValueError("lease adoption requires exactly one descriptor and a valid reply")
-        fd = descriptors[0]
-        if not held_descriptor(fd, lock, holder_path, token):
+        try:
+            names = json.loads(data)
+        except ValueError:
+            names = None
+        if unexpected or not isinstance(names, list) or not names or any(not isinstance(name, str) for name in names) or len(names) != len(descriptors) or len(set(names)) != len(names):
+            raise ValueError("lease adoption requires exactly one descriptor per resource and a valid reply")
+        held = dict(zip(names, descriptors))
+        if not valid_descriptors(held, directory, token):
             raise ValueError("adopted descriptor is not the current held lease")
-        return high_descriptor(descriptors.pop())
+        promoted = {}
+        while descriptors:
+            fd = descriptors.pop(0)
+            promoted[names[len(promoted)]] = high_descriptor(fd)
+        return promoted
     finally:
         for fd in descriptors:
             os.close(fd)
 
 
-def export_descriptor(fd):
-    os.set_inheritable(fd, True)
-    os.environ["HEAVY_LEASE_FD"] = str(fd)
+def export_descriptors(held):
+    for fd in held.values():
+        os.set_inheritable(fd, True)
+    os.environ["HEAVY_LEASE_FDS"] = json.dumps(held)
+    os.environ["HEAVY_LEASE_FD"] = str(next(iter(held.values())))
 
 
-def adopt(path, lock, holder_path, command):
-    fd = receive_lease(path, lock, holder_path, os.environ.get("HEAVY_LEASE_TOKEN"))
+def adopt(path, directory, command):
+    held = receive_lease(path, directory, os.environ.get("HEAVY_LEASE_TOKEN"))
     try:
-        export_descriptor(fd)
+        export_descriptors(held)
         os.environ["HEAVY_LEASE_SOCKET"] = path
         os.execvp(command[0], command)
     finally:
-        os.close(fd)
+        for fd in held.values():
+            os.close(fd)
 
 
-def serve_adoption(peer, fd, lock, holder_path, token):
+def serve_adoption(peer, held, directory, token):
     descriptors = []
     try:
         data, descriptors, unexpected = receive_message(peer)
-        if unexpected or descriptors or data != token.encode() or not held_descriptor(fd, lock, holder_path, token):
+        if unexpected or descriptors or data != token.encode() or not valid_descriptors(held, directory, token):
             peer.sendall(b"rejected")
             return False
-        peer.sendmsg([b"lease"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [fd]))])
+        peer.sendmsg([json.dumps(list(held)).encode()], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", held.values()))])
         return True
     except (OSError, ValueError):
         return False
@@ -397,9 +660,10 @@ def serve_adoption(peer, fd, lock, holder_path, token):
             os.close(received)
 
 
-def broker(listener, fd, lock, holder_path, token, command, path):
-    environment = {**os.environ, "HEAVY_LEASE_FD": str(fd), "HEAVY_LEASE_SOCKET": path}
-    process = subprocess.Popen(command, env=environment, pass_fds=(fd,))
+def broker(listener, held, directory, token, command, path):
+    export_descriptors(held)
+    environment = {**os.environ, "HEAVY_LEASE_SOCKET": path}
+    process = subprocess.Popen(command, env=environment, pass_fds=tuple(held.values()))
     exited, notification = socket.socketpair()
 
     def wait_launcher():
@@ -441,7 +705,7 @@ def broker(listener, fd, lock, holder_path, token, command, path):
                             peer.close()
                     else:
                         peer = key.fileobj
-                        adopted = serve_adoption(peer, fd, lock, holder_path, token) or adopted
+                        adopted = serve_adoption(peer, held, directory, token) or adopted
                         selector.unregister(peer)
                         clients.remove(peer)
                         peer.close()
@@ -459,18 +723,14 @@ def broker(listener, fd, lock, holder_path, token, command, path):
             peer.close()
 
 
-def handoff(lock, holder_path, command):
+def handoff(directory, command):
     token = os.environ.get("HEAVY_LEASE_TOKEN")
-    try:
-        fd = int(os.environ.get("HEAVY_LEASE_FD", "-1"))
-    except ValueError:
-        fd = -1
-    if not held_descriptor(fd, lock, holder_path, token):
+    held = inherited_descriptors()
+    if not valid_descriptors(held, directory, token):
         inherited_socket = os.environ.get("HEAVY_LEASE_SOCKET")
         if not inherited_socket:
             raise ValueError("handoff requires a held lease descriptor or a live inherited lease socket")
-        fd = receive_lease(inherited_socket, lock, holder_path, token)
-    fd = high_descriptor(fd)
+        held = receive_lease(inherited_socket, directory, token)
     try:
         runtime = Path(os.environ.get("XDG_RUNTIME_DIR", str(Path.home() / ".cache/agent-tmp/heavy-lease")))
         runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -479,9 +739,10 @@ def handoff(lock, holder_path, command):
             with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as listener:
                 listener.bind(path)
                 listener.listen()
-                code = broker(listener, fd, lock, holder_path, token, command, path)
+                code = broker(listener, held, directory, token, command, path)
     finally:
-        os.close(fd)
+        for fd in held.values():
+            os.close(fd)
     if code < 0:
         if -code != signal.SIGKILL:
             signal.signal(-code, signal.SIG_DFL)
@@ -490,22 +751,25 @@ def handoff(lock, holder_path, command):
 
 
 def main():
-    parser = Parser(description="Serialize heavy commands with a process-inherited Linux lease.")
+    parser = Parser(description="Admit heavy commands to a measured, process-inherited Linux slot pool.")
     commands = parser.add_subparsers(dest="action", required=True)
-    run_parser = commands.add_parser("run", help="Exec a command while holding the lease.")
+    run_parser = commands.add_parser("run", help="Exec a command while holding weighted pool slots or a named exclusive lock.")
     mode = run_parser.add_mutually_exclusive_group()
     mode.add_argument("--wait", action="store_true", help="Wait in the kernel for the lease (default).")
     mode.add_argument("--try", dest="try_only", action="store_true", help="Exit 2 if the lease is busy.")
+    run_parser.add_argument("--weight", type=int, help=f"Pool slots, 1..{POOL_SIZE}; default from command table, otherwise 1. With --exclusive, default 0.")
+    run_parser.add_argument("--exclusive", help="Separate named lock, e.g. win-vm; takes no slots unless --weight is given.")
     run_parser.add_argument("command", nargs=argparse.REMAINDER, help="-- command [args ...]")
     status_parser = commands.add_parser(
-        "status", help="Probe the kernel lease, ignoring stale metadata.",
-        description="Probe the kernel lease. On Linux, a busy lease with a demonstrably dead metadata PID "
+        "status", help="Probe pool slots and named exclusive locks, ignoring stale metadata.",
+        description="Probe kernel locks. Waiters use per-process flock metadata; no daemon is used. "
+        "On Linux, a busy resource with a demonstrably dead metadata PID "
         "reports an orphan pin and a point-in-time, best-effort list of held FLOCK descriptors from /proc. "
         "Process exits and /proc visibility or permissions may limit this list; lock_holders_incomplete "
         "reports unreadable evidence. The metadata stores only a numeric PID, so a reused live PID "
         "cannot be distinguished from the original owner and suppresses orphan diagnostics.",
     )
-    status_parser.add_argument("--json", action="store_true", help="Print {busy: bool, holder: object|null}; orphan pins also add orphan_pin, lock_holders and lock_holders_incomplete.")
+    status_parser.add_argument("--json", action="store_true", help="Print pool_size, occupied slots, exclusive locks and live waiters. Each resource has a name and holder; orphan pins add diagnostics.")
     handoff_parser = commands.add_parser("handoff", help="Broker a held lease to a manager-launched command.")
     handoff_parser.add_argument("command", nargs=argparse.REMAINDER, help="-- launcher [args ...]")
     adopt_parser = commands.add_parser("adopt", help="Receive a held lease descriptor and exec a command.")
@@ -527,19 +791,26 @@ def main():
         return isolate(args.command[1:])
     directory = Path.home() / ".local/state/heavy-lease"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    lock = directory / "lock"
-    holder = directory / "holder.json"
     if args.action == "status":
-        return status(lock, holder, args.json)
+        return status(directory, args.json)
     if args.action == "handoff":
-        return handoff(lock, holder, args.command[1:])
+        return handoff(directory, args.command[1:])
     if args.action == "adopt":
-        return adopt(args.socket, lock, holder, args.command[1:])
-    return run(lock, holder, args.command[1:], args.try_only)
+        return adopt(args.socket, directory, args.command[1:])
+    if args.exclusive and not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", args.exclusive):
+        parser.error("exclusive name must contain 1..80 letters, digits, underscores or hyphens")
+    weight = args.weight if args.weight is not None else (0 if args.exclusive else default_weight(args.command[1:]))
+    if not 0 <= weight <= POOL_SIZE or (weight == 0 and not args.exclusive):
+        parser.error(f"weight must be 1..{POOL_SIZE}, or 0 with --exclusive")
+    return run(directory, args.command[1:], args.try_only, weight, args.exclusive)
 
 
 if __name__ == "__main__":
     try:
+        if sys.argv[1:2] == ["--internal-wait-slot"]:
+            if len(sys.argv) != 5:
+                raise ValueError("slot waiter requires directory, resource and parent PID")
+            sys.exit(wait_slot_worker(sys.argv[2], sys.argv[3], int(sys.argv[4])))
         if sys.argv[1:2] == ["--internal-isolate-worker"]:
             if len(sys.argv) != 3:
                 raise ValueError("isolate worker requires a request path")

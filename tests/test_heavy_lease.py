@@ -1,4 +1,5 @@
 import array
+import ctypes
 from datetime import datetime
 import json
 import os
@@ -14,6 +15,13 @@ import unittest
 
 
 CLI = Path(__file__).resolve().parents[1] / "cli/heavy-lease.py"
+POOL_SIZE = 4
+FREE_TEXT = f"pool: 0/{POOL_SIZE} slots in use; 0 exclusive locks; 0 waiters\n"
+
+
+def pool_summary(value):
+    return {"busy": bool(value["slots"]), "holder": value["slots"][0]["holder"] if value["slots"] else None}
+
 CONTROLLED = '''
 import os
 from pathlib import Path
@@ -139,14 +147,14 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-holder = json.loads((Path.home() / ".local/state/heavy-lease/holder.json").read_text())
+holder = json.loads((Path.home() / ".local/state/heavy-lease/slot-0.json").read_text())
 status = subprocess.run([sys.argv[1], "status", "--json"], capture_output=True, text=True, check=True)
 wrong_token = subprocess.run(
-    [sys.argv[1], "run", "--try", "--", sys.executable, "-c", "raise SystemExit(99)"],
+    [sys.argv[1], "run", "--weight", "4", "--try", "--", sys.executable, "-c", "raise SystemExit(99)"],
     env={**os.environ, "HEAVY_LEASE_TOKEN": "not-matching-" + holder["token"]},
     capture_output=True, text=True,
 )
-print(json.dumps({"pid": os.getpid(), "holder": holder, "status": json.loads(status.stdout), "wrong_token_exit": wrong_token.returncode, "inherited_fd": os.environ.get("HEAVY_LEASE_FD")}))
+print(json.dumps({"pid": os.getpid(), "holder": holder, "status": {"busy": bool(json.loads(status.stdout)["slots"]), "holder": json.loads(status.stdout)["slots"][0]["holder"]}, "wrong_token_exit": wrong_token.returncode, "inherited_fd": os.environ.get("HEAVY_LEASE_FD")}))
 sys.exit(37)
 '''
 
@@ -175,16 +183,16 @@ class HeavyLeaseTests(unittest.TestCase):
                 if stream is not None:
                     stream.close()
 
-    def invoke(self, *args, env=None, pass_fds=(), cwd=None):
+    def invoke(self, *args, env=None, pass_fds=(), cwd=None, weight=POOL_SIZE):
         return subprocess.run(
-            [str(CLI), *args], env=self.env if env is None else env,
+            [str(CLI), *([args[0], "--weight", str(weight), *args[1:]] if args[0] == "run" and weight is not None else args)], env=self.env if env is None else env,
             cwd=self.home if cwd is None else cwd, pass_fds=pass_fds,
             capture_output=True, text=True, timeout=10,
         )
 
-    def start(self, command, mode=(), cwd=None):
+    def start(self, command, mode=(), cwd=None, weight=POOL_SIZE):
         process = subprocess.Popen(
-            [str(CLI), "run", *mode, "--", *command],
+            [str(CLI), "run", *(("--weight", str(weight)) if weight is not None else ()), *mode, "--", *command],
             env=self.env, cwd=self.home if cwd is None else cwd,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             start_new_session=True, bufsize=0,
@@ -215,7 +223,88 @@ class HeavyLeaseTests(unittest.TestCase):
     def status(self):
         result = self.invoke("status", "--json")
         self.assertEqual(result.returncode, 0, result.stderr)
-        return json.loads(result.stdout)
+        value = json.loads(result.stdout)
+        self.assertEqual(set(value), {"pool_size", "slots", "exclusive", "waiters"})
+        self.assertEqual(value["pool_size"], POOL_SIZE)
+        self.assertIsInstance(value["waiters"], list)
+        if value["slots"]:
+            self.assertEqual(len(value["slots"]), POOL_SIZE)
+        return pool_summary(value)
+
+    def watch_waiters(self):
+        folder = self.state / "waiters"
+        folder.mkdir(parents=True, exist_ok=True)
+        libc = ctypes.CDLL(None, use_errno=True)
+        fd = libc.inotify_init1(os.O_CLOEXEC | os.O_NONBLOCK)
+        self.assertGreaterEqual(fd, 0)
+        self.addCleanup(os.close, fd)
+        self.assertGreaterEqual(libc.inotify_add_watch(fd, os.fsencode(folder), 0x00000080), 0)
+        return fd
+
+    def waiter_event(self, fd, process):
+        target = f"{process.pid}.json".encode() + b"\0"
+        while True:
+            self.ready([fd])
+            if target in os.read(fd, 65536):
+                return
+
+    def test_weighted_sleep_pool_and_exclusive_lanes(self):
+        sleeper = ["/bin/bash", "-c", 'echo entered; exec sleep 600']
+        named_command = self.home / "or"
+        named_command.write_text("#!/bin/sh\necho entered\nexec sleep 600\n")
+        named_command.chmod(0o700)
+        first = self.start([str(named_command), "test", "--full"], weight=None)
+        self.event(first, b"entered\n")
+        second = self.start(sleeper, mode=("--weight", "2"))
+        self.event(second, b"entered\n")
+        occupied = json.loads(self.invoke("status", "--json").stdout)
+        self.assertEqual(len(occupied["slots"]), POOL_SIZE)
+        self.assertEqual({entry["holder"]["pid"] for entry in occupied["slots"]}, {first.pid, second.pid})
+        self.assertEqual(self.invoke("run", "--try", "--weight", "1", "--", "true").returncode, 2)
+        notifications = self.watch_waiters()
+        third = self.start(sleeper, mode=("--weight", "2"))
+        self.waiter_event(notifications, third)
+        queued = json.loads(self.invoke("status", "--json").stdout)["waiters"]
+        self.assertEqual([(item["pid"], item["weight"]) for item in queued], [(third.pid, 2)])
+        third.kill()
+        self.finish(third, -signal.SIGKILL)
+        self.assertEqual(json.loads(self.invoke("status", "--json").stdout)["waiters"], [])
+        third = self.start(sleeper, mode=("--weight", "2"))
+        self.waiter_event(notifications, third)
+        with selectors.DefaultSelector() as selector:
+            selector.register(third.stdout, selectors.EVENT_READ)
+            self.assertEqual(selector.select(timeout=0), [])
+        second.terminate()
+        self.finish(second, -signal.SIGTERM)
+        self.event(third, b"entered\n")
+        self.assertIsNone(first.poll())
+        third.kill()
+        self.finish(third, -signal.SIGKILL)
+        first.terminate()
+        self.finish(first, -signal.SIGTERM)
+        self.assertEqual(self.status(), {"busy": False, "holder": None})
+        vm = self.start(sleeper, mode=("--exclusive", "win-vm"), weight=None)
+        self.event(vm, b"entered\n")
+        exclusive = json.loads(self.invoke("status", "--json").stdout)
+        self.assertEqual(exclusive["slots"], [])
+        self.assertEqual([entry["name"] for entry in exclusive["exclusive"]], ["exclusive-win-vm"])
+        blocked = self.start(sleeper, mode=("--exclusive", "win-vm"), weight=None)
+        self.assertEqual(self.invoke("run", "--try", "--weight", "0", "--exclusive", "win-vm", "--", "true").returncode, 2)
+        self.assertEqual(self.invoke("run", "--try", "--weight", "4", "--", "true").returncode, 0)
+        vm.kill()
+        self.finish(vm, -signal.SIGKILL)
+        self.event(blocked, b"entered\n")
+        blocked.terminate()
+        self.finish(blocked, -signal.SIGTERM)
+        self.assertEqual(json.loads(self.invoke("status", "--json").stdout)["exclusive"], [])
+        combined = self.start(sleeper, mode=("--weight", "2", "--exclusive", "win-vm"))
+        self.event(combined, b"entered\n")
+        state = json.loads(self.invoke("status", "--json").stdout)
+        self.assertEqual(len(state["slots"]), 2)
+        self.assertEqual(len(state["exclusive"]), 1)
+        self.assertEqual(self.invoke("run", "--try", "--weight", "2", "--", "true").returncode, 0)
+        combined.kill()
+        self.finish(combined, -signal.SIGKILL)
 
     def test_contenders_serialize_across_directories_and_report_holder(self):
         self.assertEqual(self.status(), {"busy": False, "holder": None})
@@ -250,7 +339,7 @@ class HeavyLeaseTests(unittest.TestCase):
             self.release(active)
             contenders.remove(active)
         self.assertEqual(self.status(), {"busy": False, "holder": None})
-        self.assertEqual(self.invoke("status").stdout, "free\n")
+        self.assertEqual(self.invoke("status").stdout, FREE_TEXT)
         self.assertFalse(critical.exists())
 
     def test_killed_holder_leaves_live_orphan_holding_lease(self):
@@ -294,13 +383,13 @@ class HeavyLeaseTests(unittest.TestCase):
         self.assertEqual(original["branch"], "fixture-branch")
         self.assertEqual(observed["status"], {"busy": True, "holder": original})
         self.assertEqual(observed["wrong_token_exit"], 2)
-        self.assertEqual(json.loads((self.state / "holder.json").read_text()), original)
+        self.assertEqual(json.loads((self.state / "slot-0.json").read_text()), original)
         self.assertEqual(self.status(), {"busy": False, "holder": None})
 
     def test_token_only_sibling_reentry_and_stale_token_rejection(self):
         self.state.mkdir(parents=True)
         stale = {"pid": os.getpid(), "command": ["stale-holder"], "token": "expired-context"}
-        metadata = self.state / "holder.json"
+        metadata = self.state / "slot-0.json"
         metadata.write_text(json.dumps(stale))
         self.assertEqual(self.status(), {"busy": False, "holder": None})
         command = [sys.executable, "-c", CONTROLLED, str(self.home / "critical")]
@@ -462,7 +551,7 @@ class HeavyLeaseTests(unittest.TestCase):
                 ])
                 parent, inherited, parent_exit = self.remote_ready(listener)
                 original = self.status()["holder"]
-                metadata = (self.state / "holder.json").read_bytes()
+                metadata = (self.state / "slot-0.json").read_bytes()
                 parent_stream = parent.makefile("rb")
                 self.addCleanup(parent_stream.close)
                 parent.sendall(b"i")
@@ -508,7 +597,7 @@ class HeavyLeaseTests(unittest.TestCase):
                 self.assertEqual(observed["try_exit"], 2)
                 self.event(launcher, b"isolate-target-stdout\n")
                 self.assertEqual(self.status(), {"busy": True, "holder": original})
-                self.assertEqual((self.state / "holder.json").read_bytes(), metadata)
+                self.assertEqual((self.state / "slot-0.json").read_bytes(), metadata)
                 self.assertTrue(Path(inherited["socket"]).is_socket())
                 parent.sendall(b"a")
                 self.ready([parent_stream])
@@ -553,7 +642,7 @@ class HeavyLeaseTests(unittest.TestCase):
         self.assertNotIn(result.returncode, (0, 2), result)
         holder = self.start([sys.executable, "-c", CONTROLLED, str(self.home / "critical")])
         self.event(holder, b"entered\n")
-        token = json.loads((self.state / "holder.json").read_text())["token"]
+        token = json.loads((self.state / "slot-0.json").read_text())["token"]
         result = self.invoke("handoff", "--", "true", env={**self.env, "HEAVY_LEASE_TOKEN": token, "HEAVY_LEASE_SOCKET": str(self.home / "dead")})
         self.assertNotIn(result.returncode, (0, 2), result)
         self.release(holder)
@@ -576,7 +665,7 @@ sys.exit(result.returncode)
     def test_adopt_rejects_missing_extra_or_unlocked_descriptors(self):
         holder = self.start([sys.executable, "-c", CONTROLLED, str(self.home / "critical")])
         self.event(holder, b"entered\n")
-        token = json.loads((self.state / "holder.json").read_text())["token"]
+        token = json.loads((self.state / "slot-0.json").read_text())["token"]
         for count in (0, 1, 2):
             with self.subTest(descriptors=count):
                 path = self.home / f"bad-broker-{count}"
@@ -590,11 +679,13 @@ sys.exit(result.returncode)
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
                     )
                     self.processes.append(process)
-                    with listener.accept()[0] as peer, (self.state / "lock").open("r+") as file:
+                    with listener.accept()[0] as peer, (self.state / "slot-0.lock").open("r+") as file:
                         peer.settimeout(10)
                         self.assertEqual(peer.recv(128), token.encode())
-                        ancillary = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [file.fileno()] * count))] if count else []
-                        peer.sendmsg([b"lease"], ancillary)
+                        names = [f"slot-{slot}" for slot in range(POOL_SIZE)] if count == 1 else ["slot-0"]
+                        actual_count = POOL_SIZE if count == 1 else count
+                        ancillary = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [file.fileno()] * actual_count))] if actual_count else []
+                        peer.sendmsg([json.dumps(names).encode()], ancillary)
                     _, error = process.communicate(timeout=10)
                     self.assertNotIn(process.returncode, (0, 2), error)
                     expected = b"not the current held lease" if count == 1 else b"exactly one descriptor"
@@ -605,6 +696,9 @@ sys.exit(result.returncode)
         result = self.invoke("run", "--", sys.executable, "-c", "import sys; print(repr(sys.argv[1:])); sys.exit(23)", "--try", "a b", "*")
         self.assertEqual(result.returncode, 23, result.stderr)
         self.assertEqual(result.stdout, "['--try', 'a b', '*']\n")
+        result = self.invoke("run", "--weight", "1", "--", str(CLI), "run", "--weight", "2", "--", "true")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("resources not held by its parent", result.stderr)
         result = self.invoke("run", "--", sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGTERM)")
         self.assertEqual(result.returncode, -signal.SIGTERM, result.stderr)
         launcher = '''
@@ -615,13 +709,13 @@ os.execv(sys.argv[1], [sys.argv[1], "adopt", "--socket", os.environ["HEAVY_LEASE
         for program, expected in (("raise SystemExit(37)", 37), ("import os, signal; os.kill(os.getpid(), signal.SIGTERM)", -signal.SIGTERM)):
             result = self.invoke("run", "--", str(CLI), "handoff", "--", sys.executable, "-c", launcher, str(CLI), program)
             self.assertEqual(result.returncode, expected, result.stderr)
-        for args in (("run",), ("run", "--"), ("run", "--wait", "--try", "--", "true"), ("status", "--unknown"), ("run", "--", "missing-fixture-command")):
+        for args in (("run",), ("run", "--"), ("run", "--wait", "--try", "--", "true"), ("run", "--weight", "0", "--", "true"), ("run", "--weight", str(POOL_SIZE + 1), "--", "true"), ("run", "--exclusive", "../escape", "--", "true"), ("status", "--unknown"), ("run", "--", "missing-fixture-command")):
             result = self.invoke(*args)
             self.assertNotIn(result.returncode, (0, 2), (args, result))
             self.assertTrue(result.stderr)
         self.assertEqual(self.status(), {"busy": False, "holder": None})
-        (self.state / "lock").unlink()
-        (self.state / "lock").mkdir()
+        (self.state / "slot-0.lock").unlink()
+        (self.state / "slot-0.lock").mkdir()
         result = self.invoke("status", "--json")
         self.assertNotIn(result.returncode, (0, 2), result)
         self.assertTrue(result.stderr.startswith("heavy-lease: "), result.stderr)
@@ -683,7 +777,7 @@ class HeavyLeaseOrphanStatusTests(unittest.TestCase):
             return subprocess.run([str(CLI), *args], env=environment, cwd=home, capture_output=True, text=True, timeout=10)
 
         root = subprocess.Popen(
-            [str(CLI), "run", "--", sys.executable, "-c", ORPHAN_DIAGNOSTIC],
+            [str(CLI), "run", "--weight", str(POOL_SIZE), "--", sys.executable, "-c", ORPHAN_DIAGNOSTIC],
             env=environment, cwd=home, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, bufsize=0,
         )
@@ -699,14 +793,14 @@ class HeavyLeaseOrphanStatusTests(unittest.TestCase):
         self.addCleanup(self.stop_owned, child_exit)
         self.assertGreaterEqual(min(expected["fds"]), 128)
         state = home / ".local/state/heavy-lease"
-        metadata = (state / "holder.json").read_bytes()
+        metadata = (state / "slot-0.json").read_bytes()
         holder = json.loads(metadata)
         self.assertEqual(holder["pid"], root.pid)
         ordinary = invoke("status", "--json")
         self.assertEqual(ordinary.returncode, 0, ordinary.stderr)
-        self.assertEqual(ordinary.stdout, json.dumps({"busy": True, "holder": holder}, sort_keys=True) + "\n")
-        self.assertEqual(invoke("status").stdout, "busy: " + json.dumps(holder, sort_keys=True) + "\n")
-        opener = (state / "lock").open("r+")
+        self.assertEqual(pool_summary(json.loads(ordinary.stdout)), {"busy": True, "holder": holder})
+        self.assertIn("slot-0: " + json.dumps(holder, sort_keys=True), invoke("status").stdout)
+        opener = (state / "slot-0.lock").open("r+")
         self.addCleanup(opener.close)
         signal.pidfd_send_signal(root_exit, signal.SIGKILL)
         self.ready(root_exit)
@@ -714,14 +808,16 @@ class HeavyLeaseOrphanStatusTests(unittest.TestCase):
 
         result = invoke("status", "--json")
         self.assertEqual(result.returncode, 0, result.stderr)
-        observed = json.loads(result.stdout)
-        self.assertEqual(set(observed), {"busy", "holder", "orphan_pin", "lock_holders", "lock_holders_incomplete"})
-        self.assertIs(observed["busy"], True)
+        pool = json.loads(result.stdout)
+        self.assertEqual(len(pool["slots"]), POOL_SIZE)
+        observed = pool["slots"][0]
+        self.assertEqual(set(observed), {"name", "holder", "orphan_pin", "lock_holders", "lock_holders_incomplete"})
+        self.assertEqual(observed["name"], "slot-0")
         self.assertIs(observed["orphan_pin"], True)
         self.assertEqual(observed["holder"], holder)
         self.assertEqual(observed["lock_holders"], [expected])
         self.assertIsInstance(observed["lock_holders_incomplete"], bool)
-        self.assertEqual((state / "holder.json").read_bytes(), metadata)
+        self.assertEqual((state / "slot-0.json").read_bytes(), metadata)
         rejected = invoke("run", "--try", "--", "true")
         self.assertEqual(rejected.returncode, 2, rejected.stderr)
         text = invoke("status")
@@ -738,8 +834,8 @@ class HeavyLeaseOrphanStatusTests(unittest.TestCase):
         self.assertEqual((output, error), (b"", b""))
         released = invoke("status", "--json")
         self.assertEqual(released.returncode, 0, released.stderr)
-        self.assertEqual(released.stdout, '{"busy": false, "holder": null}\n')
-        self.assertEqual(invoke("status").stdout, "free\n")
+        self.assertEqual(pool_summary(json.loads(released.stdout)), {"busy": False, "holder": None})
+        self.assertEqual(invoke("status").stdout, FREE_TEXT)
 
 
 if __name__ == "__main__":
