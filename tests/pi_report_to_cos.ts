@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Value } from "typebox/value";
 import reportToCos from "../agents/pi/report-to-cos.ts";
 
 function harness(messages: string[] = []) {
@@ -65,30 +66,9 @@ export default async function () {
     await approval.report(design);
     assert.equal(approval.sends[0].clientRequestId, approval.sends[1].clientRequestId);
     const readiness = harness(["CoS-thread: cos"]);
-    const head = "a".repeat(40);
-    const slot = { kind: "slot_request", text: "Request the heavy slot for the final gate", head_sha: head };
-    const review = { artifact_path: "reviews/final-head.json", verdict: "no-blockers", head_sha: head };
-    await assert.rejects(readiness.report(slot), /review.artifact_path/);
-    await assert.rejects(readiness.report({ ...slot, head_sha: undefined, review }), /40-hex head_sha/);
-    await assert.rejects(readiness.report({ ...slot, head_sha: "short", review }), /40-hex head_sha/);
-    await assert.rejects(readiness.report({ ...slot, review: { ...review, head_sha: "b".repeat(40) } }), /must match/);
-    await assert.rejects(readiness.report({ ...slot, review: { ...review, head_sha: undefined } }), /must match/);
-    await assert.rejects(readiness.report({ ...slot, review: { ...review, verdict: "blockers" } }), /no-blockers/);
-    await assert.rejects(readiness.report({ ...slot, review: { ...review, artifact_path: " " } }), /review.artifact_path/);
-    assert.equal(readiness.sends.length, 0, "unreviewed requests must never reach CoS");
-    const accepted = await readiness.report({ ...slot, review: { ...review, head_sha: head.toUpperCase() } });
-    assert.equal(accepted.details.kind, "slot_request");
-    assert.equal(readiness.sends.length, 1);
-    assert.match(readiness.sends[0].message, /Head: a{40}/);
-    assert.match(readiness.sends[0].message, /Review: reviews\/final-head.json \(no-blockers; head A{40}\)/);
-    await readiness.report({ ...slot, review });
-    assert.equal(readiness.sends[0].clientRequestId, readiness.sends[1].clientRequestId);
-    const treeSha = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-    const treeAccepted = await readiness.report({ ...slot, head_sha: treeSha, review: { ...review, head_sha: treeSha } });
-    assert.equal(treeAccepted.details.kind, "slot_request");
-    assert.equal(readiness.sends.length, 3);
-    assert.ok(readiness.sends[2].message.includes(`Head: ${treeSha}`));
-    assert.notEqual(readiness.sends[1].clientRequestId, readiness.sends[2].clientRequestId);
+    assert.equal(Value.Check(readiness.tools.get("report_to_cos").parameters,
+      { kind: "slot_request", text: "Request the heavy slot for the final gate" }), false,
+      "retired slot_request kind must be rejected by the tool schema");
     const resumed = harness(["CoS-thread: old-cos", "CoS-thread: new-cos"]);
     assert.equal(resumed.blocked("old-cos"), false);
     await resumed.report();
@@ -102,7 +82,7 @@ export default async function () {
       assert.equal(inactive.tools.size, 0, "later markers must not activate an unmarked session");
       assert.equal(inactive.blocked("new-cos"), false);
     }
-    console.log("PASS report-to-cos: later prompts, steers, current-target blocking, delivery, per-target dedup, resume, activation gate, pre-implementation design approval, exact-head or tree slot readiness");
+    console.log("PASS report-to-cos: later prompts, steers, current-target blocking, delivery, per-target dedup, resume, activation gate, pre-implementation design approval, retired slot_request rejection");
     process.exit(0);
   } catch (error) {
     console.error(error);
