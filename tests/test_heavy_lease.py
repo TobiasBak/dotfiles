@@ -16,7 +16,27 @@ import unittest
 
 CLI = Path(__file__).resolve().parents[1] / "cli/heavy-lease.py"
 POOL_SIZE = 4
+MEMORY_PER_SLOT = 17 * 1024**3 // POOL_SIZE
 FREE_TEXT = f"pool: 0/{POOL_SIZE} slots in use; 0 exclusive locks; 0 waiters\n"
+
+
+def fake_memory_environment(home):
+    meminfo = home / "meminfo"
+    meminfo.write_text(f"MemAvailable: {64 * 1024**2} kB\n")
+    root = home / "cgroup"
+    for relative in ("", "parent", "parent/leaf"):
+        group = root / relative
+        group.mkdir(parents=True, exist_ok=True)
+        (group / "memory.max").write_text("max\n")
+        (group / "memory.current").write_text("0\n")
+        (group / "memory.stat").write_text("inactive_file 0\n")
+    membership = home / "self.cgroup"
+    membership.write_text("0::/parent/leaf\n")
+    return {
+        "HEAVY_LEASE_MEMINFO": str(meminfo),
+        "HEAVY_LEASE_CGROUP_ROOT": str(root),
+        "HEAVY_LEASE_CGROUP_FILE": str(membership),
+    }
 
 
 def pool_summary(value):
@@ -168,6 +188,7 @@ class HeavyLeaseTests(unittest.TestCase):
         self.home = Path(temporary.name)
         self.state = self.home / ".local/state/heavy-lease"
         self.env = {"HOME": str(self.home), "PATH": os.environ["PATH"], "LC_ALL": "C", "T3_THREAD_ID": "fixture-thread", "XDG_RUNTIME_DIR": str(self.home)}
+        self.env.update(fake_memory_environment(self.home))
         self.processes = []
         self.addCleanup(self.stop_processes)
 
@@ -247,6 +268,140 @@ class HeavyLeaseTests(unittest.TestCase):
             self.ready([fd])
             if target in os.read(fd, 65536):
                 return
+
+    def scheduler_status(self):
+        result = self.invoke("status", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_class_priority_fifo_default_interactive_and_no_preemption(self):
+        command = [sys.executable, "-c", CONTROLLED, str(self.home / "critical")]
+        holder = self.start(command, mode=("--class", "efficiency"))
+        self.event(holder, b"entered\n")
+        notifications = self.watch_waiters()
+        efficiency = self.start(command, mode=("--class", "efficiency"))
+        self.waiter_event(notifications, efficiency)
+        interactive_first = self.start(command, weight=None)
+        self.waiter_event(notifications, interactive_first)
+        interactive_second = self.start(command, mode=("--class", "interactive"))
+        self.waiter_event(notifications, interactive_second)
+        gate = self.start(command, mode=("--class", "gate"))
+        self.waiter_event(notifications, gate)
+        queued = self.scheduler_status()
+        self.assertEqual({item["holder"]["pid"] for item in queued["slots"]}, {holder.pid})
+        self.assertIsNone(holder.poll())
+        expected_classes = {
+            efficiency.pid: "efficiency", interactive_first.pid: "interactive",
+            interactive_second.pid: "interactive", gate.pid: "gate",
+        }
+        self.assertEqual({item["pid"]: item["class"] for item in queued["waiters"]}, expected_classes)
+        expected_peaks = {pid: POOL_SIZE * MEMORY_PER_SLOT for pid in expected_classes}
+        expected_peaks[interactive_first.pid] = MEMORY_PER_SLOT
+        self.assertEqual({item["pid"]: item["expected_peak"] for item in queued["waiters"]}, expected_peaks)
+        self.release(holder)
+        remaining = [gate, interactive_first, interactive_second, efficiency]
+        for expected in tuple(remaining):
+            self.assertIs(self.ready([process.stdout for process in remaining]), expected.stdout)
+            self.assertEqual(expected.stdout.readline(), b"entered\n")
+            admitted = self.scheduler_status()
+            holders = [entry["holder"] for entry in admitted["slots"]]
+            self.assertEqual({item["pid"] for item in holders}, {expected.pid})
+            self.assertEqual({item["class"] for item in holders}, {expected_classes[expected.pid]})
+            self.assertEqual({item["expected_peak"] for item in holders}, {expected_peaks[expected.pid]})
+            remaining.remove(expected)
+            self.release(expected)
+        self.assertEqual(self.scheduler_status()["waiters"], [])
+
+    def test_memory_head_cannot_be_skipped_and_rereads_host_and_ancestor_headroom(self):
+        unit = MEMORY_PER_SLOT
+        scenarios = (
+            ("finite-parent-reclaims-inactive-file", 64 * unit, 4 * unit, 3 * unit, 0, "cache"),
+            ("memavailable-minimum", unit, 4 * unit, 3 * unit, 2 * unit, "host"),
+            ("unlimited-ancestors-still-use-host", unit, None, 0, 0, "host"),
+            ("root-ancestor-cap", 64 * unit, 4 * unit, 0, 0, "root"),
+            ("inactive-cache-cannot-make-usage-negative", 64 * unit, unit, unit, 2 * unit, "limit"),
+        )
+        for name, available, maximum, current, inactive, restore in scenarios:
+            with self.subTest(headroom=name):
+                self.env.update(fake_memory_environment(self.home))
+                meminfo = Path(self.env["HEAVY_LEASE_MEMINFO"])
+                meminfo.write_text(f"MemAvailable: {available // 1024} kB\n")
+                root = Path(self.env["HEAVY_LEASE_CGROUP_ROOT"])
+                parent = root / "parent"
+                if maximum is not None:
+                    (root / "memory.max").write_text(f"{32 * unit}\n")
+                    (parent / "memory.max").write_text(f"{maximum}\n")
+                    (parent / "memory.current").write_text(f"{current}\n")
+                    (parent / "memory.stat").write_text(f"inactive_file {inactive}\n")
+                    (parent / "leaf/memory.max").write_text(f"{16 * unit}\n")
+                if restore == "root":
+                    (root / "memory.max").write_text(f"{unit}\n")
+                notifications = self.watch_waiters()
+                head = self.start(
+                    [sys.executable, "-c", CONTROLLED, str(self.home / "memory-head")],
+                    mode=("--class", "gate"), weight=2,
+                )
+                self.waiter_event(notifications, head)
+                blocked = self.scheduler_status()
+                self.assertEqual(blocked["slots"], [])
+                self.assertEqual(len(blocked["waiters"]), 1)
+                self.assertEqual(
+                    {key: blocked["waiters"][0][key] for key in ("pid", "class", "expected_peak", "admission_reason")},
+                    {"pid": head.pid, "class": "gate", "expected_peak": 2 * unit, "admission_reason": "memory"},
+                )
+                small = self.start(
+                    [sys.executable, "-c", CONTROLLED, str(self.home / "memory-small")],
+                    mode=("--class", "efficiency"), weight=1,
+                )
+                self.waiter_event(notifications, small)
+                blocked = self.scheduler_status()
+                self.assertEqual(blocked["slots"], [])
+                self.assertEqual({item["pid"] for item in blocked["waiters"]}, {head.pid, small.pid})
+                by_pid = {item["pid"]: item for item in blocked["waiters"]}
+                self.assertEqual(by_pid[head.pid]["admission_reason"], "memory")
+                self.assertEqual(by_pid[small.pid]["class"], "efficiency")
+                self.assertEqual(by_pid[small.pid]["expected_peak"], unit)
+                rejected = self.invoke("run", "--try", "--class", "efficiency", "--", "true", weight=1)
+                self.assertEqual(rejected.returncode, 2, rejected.stderr)
+                with selectors.DefaultSelector() as selector:
+                    selector.register(head.stdout, selectors.EVENT_READ)
+                    selector.register(small.stdout, selectors.EVENT_READ)
+                    self.assertEqual(selector.select(timeout=0), [])
+                if restore == "cache":
+                    restored, contents = parent / "memory.stat", f"inactive_file {2 * unit}\n"
+                elif restore == "root":
+                    restored, contents = root / "memory.max", f"{3 * unit}\n"
+                elif restore == "limit":
+                    restored, contents = parent / "memory.max", f"{3 * unit}\n"
+                else:
+                    restored, contents = meminfo, f"MemAvailable: {3 * unit // 1024} kB\n"
+                replacement = restored.with_suffix(".next")
+                replacement.write_text(contents)
+                os.replace(replacement, restored)
+                self.event(head, b"entered\n")
+                self.event(small, b"entered\n")
+                admitted = self.scheduler_status()
+                self.assertEqual(len(admitted["slots"]), 3)
+                self.assertEqual({item["holder"]["pid"] for item in admitted["slots"]}, {head.pid, small.pid})
+                self.release(head)
+                self.release(small)
+                self.assertEqual(self.scheduler_status()["waiters"], [])
+
+    def test_zero_weight_exclusive_lane_has_zero_expected_peak_without_memory_headroom(self):
+        Path(self.env["HEAVY_LEASE_MEMINFO"]).write_text("MemAvailable: 0 kB\n")
+        holder = self.start(
+            [sys.executable, "-c", CONTROLLED, str(self.home / "exclusive-critical")],
+            mode=("--class", "gate", "--exclusive", "win-vm"), weight=0,
+        )
+        self.event(holder, b"entered\n")
+        admitted = self.scheduler_status()
+        self.assertEqual(admitted["slots"], [])
+        self.assertEqual(len(admitted["exclusive"]), 1)
+        metadata = admitted["exclusive"][0]["holder"]
+        self.assertEqual(metadata["class"], "gate")
+        self.assertEqual(metadata["expected_peak"], 0)
+        self.assertEqual(metadata["pid"], holder.pid)
+        self.release(holder)
 
     def test_weighted_sleep_pool_and_exclusive_lanes(self):
         sleeper = ["/bin/bash", "-c", 'echo entered; exec sleep 600']
@@ -804,6 +959,8 @@ class HeavyLeaseOrphanStatusTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         home = Path(temporary.name)
         environment = {"HOME": str(home), "PATH": os.environ["PATH"], "LC_ALL": "C", "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": os.environ.get("TMPDIR", str(Path.home() / ".cache/agent-tmp"))}
+
+        environment.update(fake_memory_environment(home))
 
         def invoke(*args):
             return subprocess.run([str(CLI), *args], env=environment, cwd=home, capture_output=True, text=True, timeout=10)

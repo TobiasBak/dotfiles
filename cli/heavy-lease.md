@@ -1,13 +1,14 @@
-# Heavy verification pool
+# Host work scheduler
 
-`heavy-lease` admits heavy Linux verification to a host-wide weighted pool.
+`heavy-lease` admits heavy Linux work to a host-wide four-slot weighted pool,
+ordered by priority and constrained by live memory headroom.
 Light work never leases: formatting, launcher self-builds, status, individual
 cases and static checks run directly. Repo entry points own admission.
 
 ```sh
-heavy-lease run --wait -- tools/or test --full
-heavy-lease run --wait --weight 2 -- sleep 30
-heavy-lease run --try --weight 1 -- sleep 30
+heavy-lease run --wait --class gate -- tools/or test --full
+heavy-lease run --wait --weight 2 -- command
+heavy-lease run --try --class efficiency --weight 1 -- command
 heavy-lease run --wait --exclusive win-vm -- vm-command
 heavy-lease run --wait --exclusive win-vm --weight 2 -- vm-command
 heavy-lease status --json
@@ -31,12 +32,14 @@ larger unmeasured job. Explicit weights override the table.
 
 Measurements, date, commit SHAs and local evidence source live beside
 `POOL_SIZE` and `DEFAULT_WEIGHTS` in [heavy-lease.py](heavy-lease.py).
-The initial policy treats each slot as a four-GiB/four-core accounting unit.
-Two known heavy jobs fit, but a third waits. This gives each an eight-GiB
-envelope against the observed 7.40-GiB Orderready peak, reserves roughly
-14.5 GiB of the 30.51-GiB host for desktop, agents and other work, and admits
-at most two of these jobs on 16 cores. These are admission estimates, not
-cgroup memory limits or CPU quotas.
+The original sizing treated each slot as a four-GiB/four-core accounting unit.
+The current memory estimate is `weight × PER_SLOT_PEAK`, where the single
+`PER_SLOT_PEAK` constant divides the 17-GiB slice memory budget by four slots
+(4.25 GiB per slot). Two weight-two jobs fill the slots, but live headroom
+may admit fewer. These are admission estimates, not cgroup memory limits or
+CPU quotas. There is no completion history or learned peak estimate.
+The slot count stays at four until Orderready's load-immune budget work proves
+CPU contention cannot fail cases. See dotfiles issue #40.
 
 Evidence was collected on 2026-10-17 through the installed mutex, using kernel
 wait accounting and cgroup counters because `/usr/bin/time` was absent.
@@ -60,25 +63,47 @@ before raising concurrency or reducing these weights.
 
 ## Admission and lifetime
 
-Each slot and named resource has its own kernel-held `flock`. An allocation-only
-lock serializes the short, nonblocking slot scan in ascending slot order, not
-the admitted commands. A failed scan releases every partial claim. A combined
-request takes its named lock before scanning the pool. Waiters sleep on kernel
-locks through short-lived per-slot helpers and wake when any blocked slot is
-released. Helpers inherit no lease descriptors and die with their parent.
-There is no daemon, fixed sleep or polling interval. Admission is not FIFO.
+`--class gate|interactive|efficiency` orders waiting work in that priority order.
+The default is `interactive`, including callers that pass no new flags. FIFO
+applies within a class. Running work is never preempted. Among pool contenders,
+a memory-blocked head is never skipped for smaller or lower-priority work.
+A waiter blocked on an unavailable named resource does not block unrelated
+resources. Named-only VM work remains independent of the slot pool. Combined
+requests acquire all resources together; queued work holds no partial allocation.
 
-Locks live under `~/.local/state/heavy-lease`. Never unlink active resource lock files.
-Sidecar JSON files are display metadata, not admission authority. Metadata can
-be stale or briefly unavailable during acquisition; it never blocks new work.
-`status --json` is a point-in-time, non-atomic snapshot with `pool_size`, occupied
-`slots`, held `exclusive` resources and live `waiters`. Waiters have per-process
-flocks and display metadata with requested weight and exclusive resource; the
-list is not FIFO and may briefly include an allocation in progress. Dead waiter
-metadata is ignored, including after SIGKILL. No queue daemon is needed.
-Each resource includes its name and holder metadata. Linux orphan-pin diagnostics
-identify surviving inherited descriptors when the metadata PID is dead, subject
-to `/proc` visibility and PID reuse limits described by `status --help`.
+Each slot and named resource has its own kernel-held `flock`. One short
+admission transaction serializes live queue order, the memory check, and the
+nonblocking resource scan. Kernel descriptors own resources; queue order and
+live memory decide admission. Dead waiter metadata is ignored, including after
+SIGKILL. There is no queue daemon.
+
+Headroom is the minimum of host `MemAvailable` from `/proc/meminfo` and each
+finite caller-cgroup ancestor's `memory.max − (memory.current − inactive_file)`.
+Used memory and headroom are clamped to zero. This excludes reclaimable inactive
+file cache from cgroup usage and respects the tightest ancestor, not just the
+caller's direct limit. With no finite cgroup limit, only host availability
+constrains memory admission. `memory.high` is not an admission limit. A request
+must have headroom at least its expected peak as well as free resources.
+No memory limit, CPU quota, history, or identical-command deduplication is added.
+
+Waiters wake on resource release and queue events. Lock helpers inherit no lease
+descriptors and die with their parent. Memory-only blocking also uses a bounded
+timerfd reread because memory recovery has no reliable release event. There are
+no sleep-based polling loops.
+
+Locks live under `~/.local/state/heavy-lease`. Never unlink active resource lock
+files. `status --json` is a point-in-time, non-atomic snapshot with `pool_size`,
+occupied `slots`, held `exclusive` resources and live `waiters`. Each waiter
+reports its class, expected peak in bytes, and admission reason, including
+`memory` when headroom blocks admission. Each resource includes its name and
+holder metadata. Linux orphan-pin diagnostics identify surviving inherited
+descriptors when the metadata PID is dead, subject to `/proc` visibility and
+PID reuse limits described by `status --help`.
+
+Black-box fixtures can override memory input paths with `HEAVY_LEASE_MEMINFO`,
+`HEAVY_LEASE_CGROUP_ROOT`, and `HEAVY_LEASE_CGROUP_FILE`. Normal invocations read
+`/proc/meminfo`, `/sys/fs/cgroup`, and `/proc/self/cgroup`. Input errors fail
+loudly rather than admitting against invented headroom.
 
 `exec` preserves high-numbered lock descriptors and the holder token. Exit or
 SIGKILL releases locks when the last inherited descriptor closes. A surviving
@@ -90,7 +115,15 @@ waiting on itself. Token-only nested subprocesses rely on the parent retaining
 the locks. Start independent work with `heavy-lease isolate -- <command>`;
 this discards every inherited lease descriptor and environment field.
 
-## Rollout from the single lock
+## Rollout
+
+When upgrading an existing pool, pause launchers and watcher triggers and drain
+queued old-version invocations before landing the scheduler. They already loaded
+the old non-FIFO allocator and cannot obey the new queue policy. Existing holders
+remain visible through their resource flocks. Resume triggers with fresh callers
+after the reviewed change lands; never unlink locks to force a drain.
+
+### From the single lock
 
 The pool does not acquire the old `lock` file. An old mutex holder and new pool
 jobs could otherwise run concurrently outside the measured pool.
