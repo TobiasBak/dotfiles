@@ -258,9 +258,10 @@ def admission_reason(request, waiters, headroom, occupied):
         return "exclusive"
     if queue_blocker(request, waiters, occupied) is not None:
         return "queue"
-    if request["weight"] > POOL_SIZE - sum(name.startswith("slot-") for name in occupied):
+    held_slots = sum(name.startswith("slot-") for name in occupied)
+    if request["weight"] > POOL_SIZE - held_slots:
         return "slots"
-    if request["weight"] * PER_SLOT_PEAK > headroom:
+    if held_slots and request["weight"] * PER_SLOT_PEAK > headroom:
         return "memory"
     return "ready"
 

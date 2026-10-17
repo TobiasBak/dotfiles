@@ -83,7 +83,9 @@ Used memory and headroom are clamped to zero. This excludes reclaimable inactive
 file cache from cgroup usage and respects the tightest ancestor, not just the
 caller's direct limit. With no finite cgroup limit, only host availability
 constrains memory admission. `memory.high` is not an admission limit. A request
-must have headroom at least its expected peak as well as free resources.
+must have free resources. While any pool slot is held, it also needs headroom
+at least its expected peak. An empty pool admits the eligible head waiter
+regardless of headroom, so a lone pool job always runs.
 No memory limit, CPU quota, history, or identical-command deduplication is added.
 
 Waiters wake on resource release and queue events. Lock helpers inherit no lease

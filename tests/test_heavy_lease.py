@@ -313,6 +313,16 @@ class HeavyLeaseTests(unittest.TestCase):
             self.release(expected)
         self.assertEqual(self.scheduler_status()["waiters"], [])
 
+    def test_empty_pool_admits_full_weight_without_memory_headroom(self):
+        Path(self.env["HEAVY_LEASE_MEMINFO"]).write_text("MemAvailable: 0 kB\n")
+        parent = Path(self.env["HEAVY_LEASE_CGROUP_ROOT"]) / "parent"
+        (parent / "memory.max").write_text("1024\n")
+        (parent / "memory.current").write_text("1024\n")
+        self.assertEqual(self.scheduler_status()["slots"], [])
+        result = self.invoke("run", "--wait", "--", "true", weight=4)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.scheduler_status()["waiters"], [])
+
     def test_memory_head_cannot_be_skipped_and_rereads_host_and_ancestor_headroom(self):
         unit = MEMORY_PER_SLOT
         scenarios = (
@@ -325,6 +335,11 @@ class HeavyLeaseTests(unittest.TestCase):
         for name, available, maximum, current, inactive, restore in scenarios:
             with self.subTest(headroom=name):
                 self.env.update(fake_memory_environment(self.home))
+                holder = self.start(
+                    [sys.executable, "-c", CONTROLLED, str(self.home / "memory-holder")],
+                    weight=1,
+                )
+                self.event(holder, b"entered\n")
                 meminfo = Path(self.env["HEAVY_LEASE_MEMINFO"])
                 meminfo.write_text(f"MemAvailable: {available // 1024} kB\n")
                 root = Path(self.env["HEAVY_LEASE_CGROUP_ROOT"])
@@ -344,7 +359,8 @@ class HeavyLeaseTests(unittest.TestCase):
                 )
                 self.waiter_event(notifications, head)
                 blocked = self.scheduler_status()
-                self.assertEqual(blocked["slots"], [])
+                self.assertEqual(len(blocked["slots"]), 1)
+                self.assertEqual({item["holder"]["pid"] for item in blocked["slots"]}, {holder.pid})
                 self.assertEqual(len(blocked["waiters"]), 1)
                 self.assertEqual(
                     {key: blocked["waiters"][0][key] for key in ("pid", "class", "expected_peak", "admission_reason")},
@@ -356,7 +372,8 @@ class HeavyLeaseTests(unittest.TestCase):
                 )
                 self.waiter_event(notifications, small)
                 blocked = self.scheduler_status()
-                self.assertEqual(blocked["slots"], [])
+                self.assertEqual(len(blocked["slots"]), 1)
+                self.assertEqual({item["holder"]["pid"] for item in blocked["slots"]}, {holder.pid})
                 self.assertEqual({item["pid"] for item in blocked["waiters"]}, {head.pid, small.pid})
                 by_pid = {item["pid"]: item for item in blocked["waiters"]}
                 self.assertEqual(by_pid[head.pid]["admission_reason"], "memory")
@@ -382,10 +399,11 @@ class HeavyLeaseTests(unittest.TestCase):
                 self.event(head, b"entered\n")
                 self.event(small, b"entered\n")
                 admitted = self.scheduler_status()
-                self.assertEqual(len(admitted["slots"]), 3)
-                self.assertEqual({item["holder"]["pid"] for item in admitted["slots"]}, {head.pid, small.pid})
+                self.assertEqual(len(admitted["slots"]), 4)
+                self.assertEqual({item["holder"]["pid"] for item in admitted["slots"]}, {holder.pid, head.pid, small.pid})
                 self.release(head)
                 self.release(small)
+                self.release(holder)
                 self.assertEqual(self.scheduler_status()["waiters"], [])
 
     def test_try_reports_live_holder_during_an_admission_transaction(self):
