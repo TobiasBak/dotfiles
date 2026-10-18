@@ -141,20 +141,29 @@ The subsequent admitted and exited events add `admitted_at`, `command_pid`,
 `exited_at` and `exit_code`. Times are UTC ISO 8601 wall times. Exit codes use
 negative signal numbers for signal termination. `--try` rejection records exit 2
 without an admission. CLI validation errors and nested passthrough do not create
-independent requests. Appends and their directory entry are fsynced.
+independent requests. The initial queued event is published atomically; later
+events append to that journal. File data and directory entries are fsynced.
+A failed queued/admitted write prevents starting the command. After any journal
+write fails, no later event is appended to its possibly torn tail. Completion
+write failures are reported on stderr without replacing the payload's known
+exit status or signal.
 
 `status --json` folds events into one entry per request with a `state` of
 `queued`, `admitted`, `exited` or `interrupted`. Request IDs also appear in live
 waiter and holder metadata. Records with a dead or reused request PID and no
 exit event are `interrupted`: SIGKILL, host shutdown or a failed journal write
 cannot supply a trustworthy exit timestamp or code. Those fields remain null,
-not an invented successful exit. A partial last journal line is ignored.
+not an invented successful exit. An incomplete or malformed tail is ignored
+and marks the retained valid prefix as interrupted; it cannot poison other
+requests' admission or status.
 `exited_at` measures direct command completion, not the last inherited lock's
 release. Resource flocks remain authoritative for surviving descendants.
 
 Each new request and completion prunes inactive journals to the latest 1024
 requests and seven days by queue time. Live requests are never pruned, even if
-older. Retention removes whole journals, never rewrites events. Status only reads
+older. Retention removes whole journals, never rewrites events. Retention I/O
+errors are reported on stderr without blocking admission or changing a payload
+result; later requests retry pruning. Status only reads
 history. Old running invocations have no journal and are not backfilled. This
 change does not alter pool size, priority, FIFO, weights or memory admission.
 

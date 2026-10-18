@@ -322,6 +322,89 @@ class HeavyLeaseTests(unittest.TestCase):
         self.assertEqual(result.returncode, 23, result.stderr)
         self.assertEqual(self.scheduler_status()["requests"][-1]["exit_code"], 23)
 
+    def test_torn_admission_journal_does_not_poison_status_or_later_admission(self):
+        injected = '''
+import errno
+import importlib.util
+from pathlib import Path
+import sys
+spec = importlib.util.spec_from_file_location("heavy_lease", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+append = module.append_request
+
+def fail_admitted(path, event):
+    if event["event"] == "admitted":
+        with path.open("a") as stream:
+            stream.write('{"event":"admit')
+        raise OSError(errno.ENOSPC, "injected short write")
+    append(path, event)
+
+module.append_request = fail_admitted
+sys.argv = [sys.argv[1], "run", "--weight", "4", "--", "touch", sys.argv[2]]
+try:
+    sys.exit(module.main())
+except (OSError, ValueError) as error:
+    print(error, file=sys.stderr)
+    sys.exit(1)
+'''
+        target = self.home / "must-not-start"
+        result = subprocess.run(
+            [sys.executable, "-c", injected, str(CLI), str(target)],
+            env=self.env, cwd=self.home, capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertFalse(target.exists())
+        snapshot = self.scheduler_status()
+        self.assertEqual(snapshot["slots"], [])
+        self.assertEqual(snapshot["requests"][0]["state"], "interrupted")
+        self.assertIsNone(snapshot["requests"][0]["exited_at"])
+        self.assertIsNone(snapshot["requests"][0]["exit_code"])
+        journal = next((self.state / "requests").glob("*.jsonl"))
+        self.assertTrue(journal.read_bytes().endswith(b'{"event":"admit'))
+        result = self.invoke("run", "--", "true")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.scheduler_status()["requests"]), 2)
+        with journal.open("a") as stream:
+            stream.write('{"event":"exited"}\n')
+        self.assertEqual(self.scheduler_status()["requests"][0]["state"], "interrupted")
+        self.assertEqual(self.invoke("run", "--", "true").returncode, 0)
+
+    def test_completion_journal_and_retention_errors_preserve_payload_status(self):
+        for failure in ("append", "append-signal", "retention"):
+            with self.subTest(failure=failure):
+                payload = '''
+import json
+import os
+from pathlib import Path
+import signal
+import sys
+folder = Path.home() / ".local/state/heavy-lease/requests"
+path = max(folder.glob("*.jsonl"), key=lambda entry: entry.stat().st_mtime_ns)
+if sys.argv[1].startswith("append"):
+    path.chmod(0o400)
+else:
+    queued = json.loads(path.read_text().splitlines()[0])
+    queued.update(request_id="old", pid=2147483647, queued_at="2000-01-01T00:00:00+00:00")
+    (folder / "old.jsonl").write_text(json.dumps(queued) + "\\n")
+    folder.chmod(0o500)
+if sys.argv[1] == "append-signal":
+    os.kill(os.getpid(), signal.SIGTERM)
+sys.exit(23)
+'''
+                result = self.invoke("run", "--", sys.executable, "-c", payload, failure)
+                folder = self.state / "requests"
+                folder.chmod(0o700)
+                self.assertEqual(result.returncode, -signal.SIGTERM if failure == "append-signal" else 23, result.stderr)
+                self.assertIn("heavy-lease:", result.stderr)
+                record = self.scheduler_status()["requests"][-1]
+                if failure.startswith("append"):
+                    self.assertEqual(record["state"], "interrupted")
+                    self.assertIsNone(record["exit_code"])
+                else:
+                    self.assertEqual(record["state"], "exited")
+                    self.assertEqual(record["exit_code"], 23)
+
     def test_request_history_survives_sigkill_and_bounds_inactive_retention(self):
         holder = self.start([sys.executable, "-c", CONTROLLED, str(self.home / "critical")])
         self.event(holder, b"entered\n")

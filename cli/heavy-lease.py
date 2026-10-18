@@ -112,15 +112,44 @@ def write_holder(path, holder):
 
 
 def append_request(path, event):
-    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC, 0o600), "w") as stream:
-        stream.write(json.dumps(event, separators=(",", ":"), sort_keys=True) + "\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    temporary = None
     try:
-        os.fsync(descriptor)
+        if event["event"] == "queued":
+            descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=".request-")
+            temporary = Path(name)
+        else:
+            descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CLOEXEC)
+        with os.fdopen(descriptor, "w") as stream:
+            stream.write(json.dumps(event, separators=(",", ":"), sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        if temporary is not None:
+            os.replace(temporary, path)
+        descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
     finally:
-        os.close(descriptor)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+class RequestJournal:
+    def __init__(self, path):
+        self.path = path
+        self.failed = False
+
+    def append(self, event):
+        if self.failed:
+            return False
+        try:
+            append_request(self.path, event)
+            return True
+        except (OSError, ValueError) as error:
+            self.failed = True
+            print(f"heavy-lease: request journal {self.path}: {error}", file=sys.stderr)
+            return False
 
 
 def request_alive(request):
@@ -140,25 +169,39 @@ def read_requests(directory):
             lines = path.read_text().splitlines(keepends=True)
         except FileNotFoundError:
             continue
+        except OSError as error:
+            print(f"heavy-lease: cannot read request journal {path}: {error}", file=sys.stderr)
+            continue
         request = {}
+        damaged = False
         for line in lines:
-            if not line.endswith("\n"):
+            try:
+                if not line.endswith("\n"):
+                    raise ValueError("partial event")
+                event = json.loads(line)
+                if not isinstance(event, dict):
+                    raise ValueError("invalid event")
+            except ValueError:
+                damaged = True
                 break
-            request.update(json.loads(line))
+            request.update(event)
         if request:
             request["state"] = request.pop("event")
-            if request["exited_at"] is None and not request_alive(request):
+            if damaged or request["exited_at"] is None and not request_alive(request):
                 request["state"] = "interrupted"
             requests.append(request)
     return sorted(requests, key=lambda entry: (entry["queued_at"], entry["request_id"]))
 
 
 def prune_requests(directory):
-    inactive = [entry for entry in read_requests(directory) if entry["state"] in ("exited", "interrupted")]
-    cutoff = time.time() - REQUEST_MAX_AGE
-    for index, entry in enumerate(inactive):
-        if index < len(inactive) - REQUEST_RETENTION or datetime.fromisoformat(entry["queued_at"]).timestamp() < cutoff:
-            (directory / "requests" / f"{entry['request_id']}.jsonl").unlink(missing_ok=True)
+    try:
+        inactive = [entry for entry in read_requests(directory) if entry["state"] in ("exited", "interrupted")]
+        cutoff = time.time() - REQUEST_MAX_AGE
+        for index, entry in enumerate(inactive):
+            if index < len(inactive) - REQUEST_RETENTION or datetime.fromisoformat(entry["queued_at"]).timestamp() < cutoff:
+                (directory / "requests" / f"{entry['request_id']}.jsonl").unlink(missing_ok=True)
+    except (OSError, ValueError) as error:
+        print(f"heavy-lease: request retention failed: {error}", file=sys.stderr)
 
 
 def resource_paths(directory, name):
@@ -554,8 +597,8 @@ def run(directory, command, try_only, weight, exclusive, admission_class):
     request_id = secrets.token_hex(16)
     folder = directory / "requests"
     folder.mkdir(mode=0o700, exist_ok=True)
-    request_path = folder / f"{request_id}.jsonl"
-    append_request(request_path, {
+    journal = RequestJournal(folder / f"{request_id}.jsonl")
+    if not journal.append({
         "event": "queued", "request_id": request_id, "pid": os.getpid(),
         "process_start_ticks": process_identity(Path("/proc/self"))[1],
         "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
@@ -563,7 +606,8 @@ def run(directory, command, try_only, weight, exclusive, admission_class):
         "exclusive": exclusive, "cwd": os.getcwd(),
         "command_head": [part[:256] for part in command[:4]],
         "queued_at": started, "admitted_at": None, "exited_at": None, "exit_code": None,
-    })
+    }):
+        return 1
     prune_requests(directory)
     context = git_context()
     held = {}
@@ -592,7 +636,7 @@ def run(directory, command, try_only, weight, exclusive, admission_class):
             holder["T3_THREAD_ID"] = os.environ["T3_THREAD_ID"]
         export_descriptors(held)
         os.environ["HEAVY_LEASE_TOKEN"] = token
-        code = supervise_command(directory, command, held, holder, request_path)
+        code = supervise_command(directory, command, held, holder, journal)
         return code
     except KeyboardInterrupt:
         code = 130
@@ -601,13 +645,13 @@ def run(directory, command, try_only, weight, exclusive, admission_class):
         clear_waiter(waiter)
         for fd in held.values():
             os.close(fd)
-        append_request(request_path, {
+        journal.append({
             "event": "exited", "exited_at": datetime.now(timezone.utc).isoformat(), "exit_code": code,
         })
         prune_requests(directory)
 
 
-def supervise_command(directory, command, held, holder, request_path):
+def supervise_command(directory, command, held, holder, journal):
     forwarded = (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM, signal.SIGUSR1, signal.SIGUSR2, signal.SIGALRM)
     previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, forwarded)
     reader, writer = os.pipe2(os.O_CLOEXEC)
@@ -653,9 +697,10 @@ def supervise_command(directory, command, held, holder, request_path):
             holder["admitted_at"] = datetime.now(timezone.utc).isoformat()
             for name in held:
                 write_holder(resource_paths(directory, name)[1], holder)
-            append_request(request_path, {
+            if not journal.append({
                 "event": "admitted", "admitted_at": holder["admitted_at"], "command_pid": child,
-            })
+            }):
+                raise ValueError("cannot record admission; command not started")
             os.write(writer, b"x")
         finally:
             os.close(writer)
