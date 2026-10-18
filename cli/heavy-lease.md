@@ -37,7 +37,7 @@ The current memory estimate is `weight × PER_SLOT_PEAK`, where the single
 `PER_SLOT_PEAK` constant divides the 17-GiB slice memory budget by four slots
 (4.25 GiB per slot). Two weight-two jobs fill the slots, but live headroom
 may admit fewer. These are admission estimates, not cgroup memory limits or
-CPU quotas. There is no completion history or learned peak estimate.
+CPU quotas. Request history is diagnostic only; it does not learn peak estimates.
 The slot count stays at four until Orderready's load-immune budget work proves
 CPU contention cannot fail cases. See dotfiles issue #40.
 
@@ -86,7 +86,7 @@ constrains memory admission. `memory.high` is not an admission limit. A request
 must have free resources. While any pool slot is held, it also needs headroom
 at least its expected peak. An empty pool admits the eligible head waiter
 regardless of headroom, so a lone pool job always runs.
-No memory limit, CPU quota, history, or identical-command deduplication is added.
+No memory limit, CPU quota, or identical-command deduplication is added.
 
 Waiters wake on resource release and queue events. Lock helpers inherit no lease
 descriptors and die with their parent. Memory-only blocking also uses a bounded
@@ -95,7 +95,8 @@ no sleep-based polling loops.
 
 Locks live under `~/.local/state/heavy-lease`. Never unlink active resource lock
 files. `status --json` is a point-in-time, non-atomic snapshot with `pool_size`,
-occupied `slots`, held `exclusive` resources and live `waiters`. Each waiter
+occupied `slots`, held `exclusive` resources, live `waiters` and retained
+`requests`. Each waiter
 reports its class, expected peak in bytes, and admission reason, including
 `memory` when headroom blocks admission. Each resource includes its name and
 holder metadata. Linux orphan-pin diagnostics identify surviving inherited
@@ -107,9 +108,15 @@ Black-box fixtures can override memory input paths with `HEAVY_LEASE_MEMINFO`,
 `/proc/meminfo`, `/sys/fs/cgroup`, and `/proc/self/cgroup`. Input errors fail
 loudly rather than admitting against invented headroom.
 
-`exec` preserves high-numbered lock descriptors and the holder token. Exit or
-SIGKILL releases locks when the last inherited descriptor closes. A surviving
-child can intentionally keep a lease pinned. `handoff` and `adopt` transfer the
+A top-level `run` supervises one command child to record its real exit code.
+Holder `pid` identifies the supervising request; `command_pid` identifies the
+payload. The supervisor retains no lease or other non-stdio descriptors after
+launch, forwards HUP/INT/QUIT/TERM/USR1/USR2/ALRM to the command, and returns its
+exit status or signal. Linux parent-death SIGKILL prevents a killed supervisor
+from leaving its direct command running. Nested `run` still uses `exec`, so it
+preserves the command PID, high-numbered lock descriptors and holder token.
+Exit or SIGKILL releases locks when the last inherited descriptor closes. A
+surviving descendant or adopted service can intentionally keep a lease pinned. `handoff` and `adopt` transfer the
 entire descriptor set across a manager boundary. Nested `run` passes through
 only with a matching token on live held resources and sufficient parent slots
 and named locks. Without an explicit `--weight`, a matching live nested run
@@ -120,6 +127,36 @@ Top-level runs keep the command and working-directory weight defaults.
 Token-only nested subprocesses rely on the parent retaining
 the locks. Start independent work with `heavy-lease isolate -- <command>`;
 this discards every inherited lease descriptor and environment field.
+
+## Request records
+
+`requests/<request_id>.jsonl` under the state directory is an append-only,
+mode-0600 lifecycle journal. Each queued record contains the random request ID,
+request PID, UTC start time, Linux process-start ticks and boot ID, class, weight,
+exclusive name, cwd, and command head. The head is limited to four arguments of
+256 characters each; no environment or holder token is copied to the journal.
+Do not put credentials in command arguments.
+
+The subsequent admitted and exited events add `admitted_at`, `command_pid`,
+`exited_at` and `exit_code`. Times are UTC ISO 8601 wall times. Exit codes use
+negative signal numbers for signal termination. `--try` rejection records exit 2
+without an admission. CLI validation errors and nested passthrough do not create
+independent requests. Appends and their directory entry are fsynced.
+
+`status --json` folds events into one entry per request with a `state` of
+`queued`, `admitted`, `exited` or `interrupted`. Request IDs also appear in live
+waiter and holder metadata. Records with a dead or reused request PID and no
+exit event are `interrupted`: SIGKILL, host shutdown or a failed journal write
+cannot supply a trustworthy exit timestamp or code. Those fields remain null,
+not an invented successful exit. A partial last journal line is ignored.
+`exited_at` measures direct command completion, not the last inherited lock's
+release. Resource flocks remain authoritative for surviving descendants.
+
+Each new request and completion prunes inactive journals to the latest 1024
+requests and seven days by queue time. Live requests are never pruned, even if
+older. Retention removes whole journals, never rewrites events. Status only reads
+history. Old running invocations have no journal and are not backfilled. This
+change does not alter pool size, priority, FIFO, weights or memory admission.
 
 ## Rollout
 
