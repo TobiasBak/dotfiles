@@ -246,7 +246,7 @@ class HeavyLeaseTests(unittest.TestCase):
         result = self.invoke("status", "--json")
         self.assertEqual(result.returncode, 0, result.stderr)
         value = json.loads(result.stdout)
-        self.assertEqual(set(value), {"pool_size", "slots", "exclusive", "waiters"})
+        self.assertEqual(set(value), {"pool_size", "slots", "exclusive", "waiters", "requests"})
         self.assertEqual(value["pool_size"], POOL_SIZE)
         self.assertIsInstance(value["waiters"], list)
         if value["slots"]:
@@ -274,6 +274,164 @@ class HeavyLeaseTests(unittest.TestCase):
         result = self.invoke("status", "--json")
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
+
+    def test_durable_request_queue_admission_exit_and_try_rejection(self):
+        command = [sys.executable, "-c", CONTROLLED, str(self.home / "critical")]
+        holder = self.start(command, mode=("--class", "efficiency", "--exclusive", "win-vm"))
+        self.event(holder, b"entered\n")
+        notifications = self.watch_waiters()
+        waiter = self.start(command, mode=("--class", "gate"))
+        self.waiter_event(notifications, waiter)
+        snapshot = self.scheduler_status()
+        by_pid = {entry["pid"]: entry for entry in snapshot["requests"]}
+        admitted, queued = by_pid[holder.pid], by_pid[waiter.pid]
+        self.assertEqual(admitted["state"], "admitted")
+        self.assertEqual(admitted["class"], "efficiency")
+        self.assertEqual(admitted["weight"], POOL_SIZE)
+        self.assertEqual(admitted["exclusive"], "win-vm")
+        self.assertEqual(admitted["cwd"], str(self.home))
+        self.assertEqual(admitted["command_head"], [part[:256] for part in command[:4]])
+        self.assertEqual(admitted["start_time"], admitted["queued_at"])
+        self.assertLessEqual(datetime.fromisoformat(admitted["queued_at"]), datetime.fromisoformat(admitted["admitted_at"]))
+        self.assertEqual(queued["state"], "queued")
+        self.assertIsNone(queued["admitted_at"])
+        self.assertIsNone(queued["exited_at"])
+        self.assertIsNone(queued["exit_code"])
+        self.assertEqual(snapshot["waiters"][0]["request_id"], queued["request_id"])
+        self.assertEqual(snapshot["slots"][0]["holder"]["request_id"], admitted["request_id"])
+        record = self.state / "requests" / f"{queued['request_id']}.jsonl"
+        initial = record.read_bytes()
+        self.assertEqual(stat.S_IMODE(record.stat().st_mode), 0o600)
+        rejected = self.invoke("run", "--try", "--", "true")
+        self.assertEqual(rejected.returncode, 2, rejected.stderr)
+        rejected_record = next(entry for entry in self.scheduler_status()["requests"] if entry["pid"] not in by_pid)
+        self.assertEqual(rejected_record["exit_code"], 2)
+        self.assertIsNone(rejected_record["admitted_at"])
+        self.assertIsNotNone(rejected_record["exited_at"])
+        self.release(holder)
+        self.event(waiter, b"entered\n")
+        waiter.terminate()
+        self.finish(waiter, -signal.SIGTERM)
+        terminal = next(entry for entry in self.scheduler_status()["requests"] if entry["pid"] == waiter.pid)
+        self.assertEqual(terminal["state"], "exited")
+        self.assertEqual(terminal["exit_code"], -signal.SIGTERM)
+        self.assertLessEqual(datetime.fromisoformat(terminal["admitted_at"]), datetime.fromisoformat(terminal["exited_at"]))
+        self.assertTrue(record.read_bytes().startswith(initial))
+        self.assertEqual([json.loads(line)["event"] for line in record.read_text().splitlines()], ["queued", "admitted", "exited"])
+        result = self.invoke("run", "--", sys.executable, "-c", "raise SystemExit(23)")
+        self.assertEqual(result.returncode, 23, result.stderr)
+        self.assertEqual(self.scheduler_status()["requests"][-1]["exit_code"], 23)
+
+    def test_torn_admission_journal_does_not_poison_status_or_later_admission(self):
+        injected = '''
+import errno
+import importlib.util
+from pathlib import Path
+import sys
+spec = importlib.util.spec_from_file_location("heavy_lease", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+append = module.append_request
+
+def fail_admitted(path, event):
+    if event["event"] == "admitted":
+        with path.open("a") as stream:
+            stream.write('{"event":"admit')
+        raise OSError(errno.ENOSPC, "injected short write")
+    append(path, event)
+
+module.append_request = fail_admitted
+sys.argv = [sys.argv[1], "run", "--weight", "4", "--", "touch", sys.argv[2]]
+try:
+    sys.exit(module.main())
+except (OSError, ValueError) as error:
+    print(error, file=sys.stderr)
+    sys.exit(1)
+'''
+        target = self.home / "must-not-start"
+        result = subprocess.run(
+            [sys.executable, "-c", injected, str(CLI), str(target)],
+            env=self.env, cwd=self.home, capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertFalse(target.exists())
+        snapshot = self.scheduler_status()
+        self.assertEqual(snapshot["slots"], [])
+        self.assertEqual(snapshot["requests"][0]["state"], "interrupted")
+        self.assertIsNone(snapshot["requests"][0]["exited_at"])
+        self.assertIsNone(snapshot["requests"][0]["exit_code"])
+        journal = next((self.state / "requests").glob("*.jsonl"))
+        self.assertTrue(journal.read_bytes().endswith(b'{"event":"admit'))
+        result = self.invoke("run", "--", "true")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.scheduler_status()["requests"]), 2)
+        with journal.open("a") as stream:
+            stream.write('{"event":"exited"}\n')
+        self.assertEqual(self.scheduler_status()["requests"][0]["state"], "interrupted")
+        self.assertEqual(self.invoke("run", "--", "true").returncode, 0)
+
+    def test_completion_journal_and_retention_errors_preserve_payload_status(self):
+        for failure in ("append", "append-signal", "retention"):
+            with self.subTest(failure=failure):
+                payload = '''
+import json
+import os
+from pathlib import Path
+import signal
+import sys
+folder = Path.home() / ".local/state/heavy-lease/requests"
+path = max(folder.glob("*.jsonl"), key=lambda entry: entry.stat().st_mtime_ns)
+if sys.argv[1].startswith("append"):
+    path.chmod(0o400)
+else:
+    queued = json.loads(path.read_text().splitlines()[0])
+    queued.update(request_id="old", pid=2147483647, queued_at="2000-01-01T00:00:00+00:00")
+    (folder / "old.jsonl").write_text(json.dumps(queued) + "\\n")
+    folder.chmod(0o500)
+if sys.argv[1] == "append-signal":
+    os.kill(os.getpid(), signal.SIGTERM)
+sys.exit(23)
+'''
+                result = self.invoke("run", "--", sys.executable, "-c", payload, failure)
+                folder = self.state / "requests"
+                folder.chmod(0o700)
+                self.assertEqual(result.returncode, -signal.SIGTERM if failure == "append-signal" else 23, result.stderr)
+                self.assertIn("heavy-lease:", result.stderr)
+                record = self.scheduler_status()["requests"][-1]
+                if failure.startswith("append"):
+                    self.assertEqual(record["state"], "interrupted")
+                    self.assertIsNone(record["exit_code"])
+                else:
+                    self.assertEqual(record["state"], "exited")
+                    self.assertEqual(record["exit_code"], 23)
+
+    def test_request_history_survives_sigkill_and_bounds_inactive_retention(self):
+        holder = self.start([sys.executable, "-c", CONTROLLED, str(self.home / "critical")])
+        self.event(holder, b"entered\n")
+        active = self.scheduler_status()["requests"][0]
+        folder = self.state / "requests"
+        fixture = {**active, "pid": 2147483647, "event": "queued", "queued_at": "2000-01-01T00:00:00+00:00", "start_time": "2000-01-01T00:00:00+00:00"}
+        fixture.pop("state")
+        (folder / "old.jsonl").write_text(json.dumps({**fixture, "request_id": "old"}) + "\n")
+        for index in range(1025):
+            request_id = f"fixture-{index:04}"
+            (folder / f"{request_id}.jsonl").write_text(json.dumps({**fixture, "request_id": request_id, "queued_at": active["queued_at"]}) + "\n")
+        rejected = self.invoke("run", "--try", "--", "true")
+        self.assertEqual(rejected.returncode, 2, rejected.stderr)
+        retained = self.scheduler_status()["requests"]
+        self.assertEqual(len(retained), 1025)
+        self.assertIn(active["request_id"], {entry["request_id"] for entry in retained})
+        self.assertFalse((folder / "old.jsonl").exists())
+        holder.kill()
+        self.finish(holder, -signal.SIGKILL)
+        lost = next(entry for entry in self.scheduler_status()["requests"] if entry["request_id"] == active["request_id"])
+        self.assertEqual(lost["state"], "interrupted")
+        self.assertIsNone(lost["exited_at"])
+        self.assertIsNone(lost["exit_code"])
+        with (folder / f"{active['request_id']}.jsonl").open("a") as stream:
+            stream.write('{"event":')
+        partial = next(entry for entry in self.scheduler_status()["requests"] if entry["request_id"] == active["request_id"])
+        self.assertEqual(partial["state"], "interrupted")
 
     def test_class_priority_fifo_default_interactive_and_no_preemption(self):
         command = [sys.executable, "-c", CONTROLLED, str(self.home / "critical")]
@@ -593,8 +751,9 @@ class HeavyLeaseTests(unittest.TestCase):
         output, error = process.communicate(timeout=10)
         self.assertEqual(process.returncode, 37, error.decode())
         observed = json.loads(output)
-        self.assertEqual(observed["pid"], process.pid)
         original = observed["holder"]
+        self.assertEqual(observed["pid"], original["command_pid"])
+        self.assertNotEqual(observed["pid"], process.pid)
         self.assertEqual(original["pid"], process.pid)
         self.assertEqual(original["command"], command)
         self.assertEqual(original["repo"], str(repo))
@@ -670,7 +829,7 @@ class HeavyLeaseTests(unittest.TestCase):
         self.assertIs(observed["status"]["busy"], True)
         self.assertEqual(observed["status"]["holder"], observed["holder"])
         self.assertEqual(observed["wrong_token_exit"], 2)
-        self.assertEqual(observed["holder"]["pid"], observed["pid"])
+        self.assertEqual(observed["holder"]["command_pid"], observed["pid"])
         self.assertNotEqual(observed["holder"]["token"], token)
         self.assertIsNotNone(observed["inherited_fd"])
         self.assertEqual(self.status(), {"busy": False, "holder": None})

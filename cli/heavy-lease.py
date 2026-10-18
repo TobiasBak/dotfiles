@@ -56,6 +56,8 @@ POOL_SIZE = 4
 PER_SLOT_PEAK = 17 * 1024**3 // POOL_SIZE
 ADMISSION_CLASSES = ("gate", "interactive", "efficiency")
 DEFAULT_WEIGHTS = (("orderready", 2), ("stepkit-geometry", 2))
+REQUEST_RETENTION = 1024
+REQUEST_MAX_AGE = 7 * 24 * 60 * 60
 
 
 class Parser(argparse.ArgumentParser):
@@ -107,6 +109,99 @@ def write_holder(path, holder):
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+def append_request(path, event):
+    temporary = None
+    try:
+        if event["event"] == "queued":
+            descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=".request-")
+            temporary = Path(name)
+        else:
+            descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CLOEXEC)
+        with os.fdopen(descriptor, "w") as stream:
+            stream.write(json.dumps(event, separators=(",", ":"), sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        if temporary is not None:
+            os.replace(temporary, path)
+        descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+class RequestJournal:
+    def __init__(self, path):
+        self.path = path
+        self.failed = False
+
+    def append(self, event):
+        if self.failed:
+            return False
+        try:
+            append_request(self.path, event)
+            return True
+        except (OSError, ValueError) as error:
+            self.failed = True
+            print(f"heavy-lease: request journal {self.path}: {error}", file=sys.stderr)
+            return False
+
+
+def request_alive(request):
+    if request.get("boot_id") != Path("/proc/sys/kernel/random/boot_id").read_text().strip():
+        return False
+    try:
+        state, started = process_identity(Path(f"/proc/{request['pid']}"))
+        return state not in ("Z", "X", "x") and started == request["process_start_ticks"]
+    except FileNotFoundError:
+        return False
+
+
+def read_requests(directory):
+    requests = []
+    for path in (directory / "requests").glob("*.jsonl"):
+        try:
+            lines = path.read_text().splitlines(keepends=True)
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            print(f"heavy-lease: cannot read request journal {path}: {error}", file=sys.stderr)
+            continue
+        request = {}
+        damaged = False
+        for line in lines:
+            try:
+                if not line.endswith("\n"):
+                    raise ValueError("partial event")
+                event = json.loads(line)
+                if not isinstance(event, dict):
+                    raise ValueError("invalid event")
+            except ValueError:
+                damaged = True
+                break
+            request.update(event)
+        if request:
+            request["state"] = request.pop("event")
+            if damaged or request["exited_at"] is None and not request_alive(request):
+                request["state"] = "interrupted"
+            requests.append(request)
+    return sorted(requests, key=lambda entry: (entry["queued_at"], entry["request_id"]))
+
+
+def prune_requests(directory):
+    try:
+        inactive = [entry for entry in read_requests(directory) if entry["state"] in ("exited", "interrupted")]
+        cutoff = time.time() - REQUEST_MAX_AGE
+        for index, entry in enumerate(inactive):
+            if index < len(inactive) - REQUEST_RETENTION or datetime.fromisoformat(entry["queued_at"]).timestamp() < cutoff:
+                (directory / "requests" / f"{entry['request_id']}.jsonl").unlink(missing_ok=True)
+    except (OSError, ValueError) as error:
+        print(f"heavy-lease: request retention failed: {error}", file=sys.stderr)
 
 
 def resource_paths(directory, name):
@@ -498,39 +593,133 @@ def run(directory, command, try_only, weight, exclusive, admission_class):
         os.execvp(command[0], command)
     if weight is None:
         weight = 0 if exclusive else default_weight(command)
+    started = datetime.now(timezone.utc).isoformat()
+    request_id = secrets.token_hex(16)
+    folder = directory / "requests"
+    folder.mkdir(mode=0o700, exist_ok=True)
+    journal = RequestJournal(folder / f"{request_id}.jsonl")
+    if not journal.append({
+        "event": "queued", "request_id": request_id, "pid": os.getpid(),
+        "process_start_ticks": process_identity(Path("/proc/self"))[1],
+        "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+        "start_time": started, "class": admission_class, "weight": weight,
+        "exclusive": exclusive, "cwd": os.getcwd(),
+        "command_head": [part[:256] for part in command[:4]],
+        "queued_at": started, "admitted_at": None, "exited_at": None, "exit_code": None,
+    }):
+        return 1
+    prune_requests(directory)
     context = git_context()
     held = {}
     metadata = {
         "pid": os.getpid(), "command": command, "weight": weight, "exclusive": exclusive,
         "class": admission_class, "expected_peak": weight * PER_SLOT_PEAK,
-        "start_time": datetime.now(timezone.utc).isoformat(), **context,
+        "start_time": started, "queued_at": started, "request_id": request_id, **context,
         **({"T3_THREAD_ID": os.environ["T3_THREAD_ID"]} if "T3_THREAD_ID" in os.environ else {}),
     }
     waiter = []
+    code = 1
     try:
         allocation = acquire_admission(directory, metadata, try_only, waiter)
         if allocation is None:
-            return 2
+            code = 2
+            return code
         held.update(allocation)
         token = secrets.token_hex(16)
         holder = {
             "token": token, "pid": os.getpid(), "pgid": os.getpgrp(),
-            "start_time": datetime.now(timezone.utc).isoformat(), **context,
+            "start_time": started, "queued_at": started, "request_id": request_id, **context,
             "command": command, "resources": list(held), "weight": weight,
             "class": admission_class, "expected_peak": weight * PER_SLOT_PEAK,
         }
         if "T3_THREAD_ID" in os.environ:
             holder["T3_THREAD_ID"] = os.environ["T3_THREAD_ID"]
-        for name in held:
-            write_holder(resource_paths(directory, name)[1], holder)
-        clear_waiter(waiter)
         export_descriptors(held)
         os.environ["HEAVY_LEASE_TOKEN"] = token
-        os.execvp(command[0], command)
+        code = supervise_command(directory, command, held, holder, journal)
+        return code
+    except KeyboardInterrupt:
+        code = 130
+        raise
     finally:
         clear_waiter(waiter)
         for fd in held.values():
             os.close(fd)
+        journal.append({
+            "event": "exited", "exited_at": datetime.now(timezone.utc).isoformat(), "exit_code": code,
+        })
+        prune_requests(directory)
+
+
+def supervise_command(directory, command, held, holder, journal):
+    forwarded = (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM, signal.SIGUSR1, signal.SIGUSR2, signal.SIGALRM)
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, forwarded)
+    reader, writer = os.pipe2(os.O_CLOEXEC)
+    parent = os.getpid()
+    try:
+        child = os.fork()
+    except BaseException:
+        os.close(reader)
+        os.close(writer)
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        raise
+    if child == 0:
+        try:
+            os.close(writer)
+            libc = ctypes.CDLL(None, use_errno=True)
+            if libc.prctl(1, signal.SIGKILL, 0, 0, 0) < 0:
+                raise OSError(ctypes.get_errno(), "PR_SET_PDEATHSIG")
+            if os.getppid() != parent:
+                os._exit(1)
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+            if os.read(reader, 1) != b"x":
+                os._exit(1)
+            os.close(reader)
+            os.execvp(command[0], command)
+        except (OSError, ValueError) as error:
+            print(f"heavy-lease: {error}", file=sys.stderr, flush=True)
+            os._exit(1)
+    os.close(reader)
+    previous_handlers = {}
+
+    def forward(signum, frame):
+        try:
+            os.kill(child, signum)
+        except ProcessLookupError:
+            pass
+
+    try:
+        try:
+            for signum in forwarded:
+                previous_handlers[signum] = signal.signal(signum, forward)
+            holder["command_pid"] = child
+            holder["admitted_at"] = datetime.now(timezone.utc).isoformat()
+            for name in held:
+                write_holder(resource_paths(directory, name)[1], holder)
+            if not journal.append({
+                "event": "admitted", "admitted_at": holder["admitted_at"], "command_pid": child,
+            }):
+                raise ValueError("cannot record admission; command not started")
+            os.write(writer, b"x")
+        finally:
+            os.close(writer)
+            for entry in list(Path("/proc/self/fd").iterdir()):
+                fd = int(entry.name)
+                if fd > 2:
+                    try:
+                        os.close(fd)
+                    except OSError as error:
+                        if error.errno != errno.EBADF:
+                            raise
+            held.clear()
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+            result = os.waitid(os.P_PID, child, os.WEXITED | os.WNOWAIT)
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
+        os.waitpid(child, 0)
+    return result.si_status if result.si_code == os.CLD_EXITED else -result.si_status
 
 
 def isolate(command):
@@ -717,7 +906,7 @@ def status(directory, as_json):
     for waiter in waiters:
         waiter["expected_peak"] = waiter["weight"] * PER_SLOT_PEAK
         waiter["admission_reason"] = admission_reason(waiter, waiters, headrooms[waiter["pid"]], occupied)
-    result = {"pool_size": POOL_SIZE, "slots": slots, "exclusive": exclusive, "waiters": waiters}
+    result = {"pool_size": POOL_SIZE, "slots": slots, "exclusive": exclusive, "waiters": waiters, "requests": read_requests(directory)}
     if as_json:
         print(json.dumps(result, sort_keys=True))
     else:
@@ -957,7 +1146,7 @@ def handoff(directory, command):
 def main():
     parser = Parser(description="Admit heavy commands to a measured, process-inherited Linux slot pool.")
     commands = parser.add_subparsers(dest="action", required=True)
-    run_parser = commands.add_parser("run", help="Exec a command while holding weighted pool slots or a named exclusive lock.")
+    run_parser = commands.add_parser("run", help="Run and record a command holding weighted slots or a named exclusive lock.")
     mode = run_parser.add_mutually_exclusive_group()
     mode.add_argument("--wait", action="store_true", help="Wait in the kernel for the lease (default).")
     mode.add_argument("--try", dest="try_only", action="store_true", help="Exit 2 if the lease is busy.")
@@ -974,7 +1163,7 @@ def main():
         "reports unreadable evidence. The metadata stores only a numeric PID, so a reused live PID "
         "cannot be distinguished from the original owner and suppresses orphan diagnostics.",
     )
-    status_parser.add_argument("--json", action="store_true", help="Print pool_size, occupied slots, exclusive locks and live waiters. Each resource has a name and holder; orphan pins add diagnostics.")
+    status_parser.add_argument("--json", action="store_true", help="Print pool_size, occupied slots, exclusive locks, live waiters and retained request lifecycles. Interrupted records have unknown exit time/code; orphan pins add diagnostics.")
     handoff_parser = commands.add_parser("handoff", help="Broker a held lease to a manager-launched command.")
     handoff_parser.add_argument("command", nargs=argparse.REMAINDER, help="-- launcher [args ...]")
     adopt_parser = commands.add_parser("adopt", help="Receive a held lease descriptor and exec a command.")
@@ -1019,7 +1208,12 @@ if __name__ == "__main__":
             if len(sys.argv) != 3:
                 raise ValueError("isolate worker requires a request path")
             sys.exit(isolate_worker(sys.argv[2]))
-        sys.exit(main())
+        code = main()
+        if code < 0:
+            if -code != signal.SIGKILL:
+                signal.signal(-code, signal.SIG_DFL)
+            os.kill(os.getpid(), -code)
+        sys.exit(code)
     except (OSError, ValueError) as error:
         print(f"heavy-lease: {error}", file=sys.stderr)
         sys.exit(1)
