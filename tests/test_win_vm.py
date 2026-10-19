@@ -39,7 +39,7 @@ class WinVmTests(unittest.TestCase):
             docker.write_text("#!/bin/sh\nprintf 'running|2026-10-11T20:00:00Z|172.18.0.2|/persistent/storage\\n'\n")
             docker.chmod(0o755)
             ssh = bin_dir / "ssh"
-            ssh.write_text("#!/bin/sh\nprintf ' console tb 1 Active\\n'\n")
+            ssh.write_text("#!/bin/sh\nprintf ' SESSIONNAME USERNAME ID STATE TYPE DEVICE\\n console tb 1 Active\\n'\n")
             ssh.chmod(0o755)
             keys = home / ".keys"
             keys.mkdir()

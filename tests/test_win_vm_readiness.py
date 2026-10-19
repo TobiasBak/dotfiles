@@ -8,6 +8,7 @@ import unittest
 
 
 CLI = Path(__file__).resolve().parents[1] / "agents/windows-vm/win-vm"
+HEADER = " SESSIONNAME USERNAME ID STATE TYPE DEVICE\n"
 
 
 class WinVmReadinessTests(unittest.TestCase):
@@ -48,7 +49,7 @@ sys.exit(reply['code'])
         self.env.pop("WIN_VM_LEASE", None)
         self.reply()
 
-    def reply(self, code=0, out=" console tb 1 Active\n", err=""):
+    def reply(self, code=0, out=HEADER + " console tb 1 Active\n", err=""):
         (self.home / "reply.json").write_text(json.dumps({"code": code, "out": out, "err": err}))
         (self.home / "calls.jsonl").unlink(missing_ok=True)
 
@@ -104,7 +105,32 @@ sys.exit(reply['code'])
         self.reply(code=1, out="", err="synthetic query failure\n")
         result = self.cli("status")
         self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertIn("guest session query failed (1): synthetic query failure", result.stderr)
+        self.assertIn("guest session query invalid (1):", result.stderr)
+        self.assertIn("synthetic query failure", result.stderr)
+
+    def test_native_exit_one_with_a_valid_active_table_is_ready(self):
+        self.reply(code=1)
+        result = self.cli("up", "--timeout", "900")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["session"]["state"], "console")
+        self.assertEqual(len(self.calls("ssh")), 1)
+
+    def test_empty_and_garbled_tables_fail_loudly(self):
+        for code in (0, 1):
+            for output in ("", "garbled native output", HEADER, HEADER + "not a session row\n"):
+                with self.subTest(code=code, output=output):
+                    self.reply(code=code, out=output)
+                    result = self.cli("status")
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn("guest session query invalid", result.stderr)
+
+    def test_valid_table_without_the_user_never_authorizes_gui(self):
+        self.reply(code=1, out=HEADER + " services 0 Disc\n rdp-tcp 65536 Listen\n")
+        result = self.cli("gui", "synthetic.exe")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("tb not logged on", result.stderr)
+        self.assertEqual(len(self.calls("ssh")), 1)
+        self.assertEqual(self.calls("scp"), [])
 
     def test_only_explicit_active_console_or_rdp_rows_are_active(self):
         for row, state in [(" console tb 1 Active", "console"),
@@ -114,11 +140,11 @@ sys.exit(reply['code'])
                            (" services tb 1 Active", "inactive"),
                            (" services tb 0 Active", "none")]:
             with self.subTest(row=row):
-                self.reply(out=row + "\n")
+                self.reply(out=HEADER + row + "\n")
                 result = self.cli("status")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(json.loads(result.stdout)["session"]["state"], state)
-        self.reply(out=" rdp-tcp#0 tb 2 Listen\n")
+        self.reply(out=HEADER + " rdp-tcp#0 tb 2 Listen\n")
         result = self.cli("gui", "synthetic.exe")
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("guest session is not Active: inactive", result.stderr)

@@ -31,7 +31,7 @@ script = base64.b64decode(sys.argv[-1]).decode('utf-16le')
 calls = pathlib.Path({str(calls)!r})
 prior = calls.read_text().splitlines() if calls.exists() else []
 if 'query.exe session' in script:
-    kind = 'session'; result = ' console tb 1 Active'
+    kind = 'session'; result = ' SESSIONNAME USERNAME ID STATE TYPE DEVICE\\n console tb 1 Active'
 elif 'Register-ScheduledTask' in script:
     kind = 'submit'; result = '123'
 elif 'Get-ScheduledTaskInfo' in script:

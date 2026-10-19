@@ -34,8 +34,10 @@ existing operation failure. It never kills a process by an unvalidated PID.
 
 Readiness requires an explicitly Active console or RDP session for the configured
 user. Unknown or inactive session states never count as RDP; session zero is not
-an interactive session. Native session-query failures are errors, not evidence
-that the user is logged out. Local SSH configuration, identity-permission and
+an interactive session. `query session` can exit 1 with a valid table, so its
+exit status is not a readiness verdict. The complete table must have the known
+header and valid rows; empty or malformed output fails loudly. A valid table
+without the configured user is not ready. Local SSH configuration, identity-permission and
 host-key failures surface immediately with stderr instead of consuming the boot
 deadline. Transient network unavailability remains subject to the existing
 readiness timeout.

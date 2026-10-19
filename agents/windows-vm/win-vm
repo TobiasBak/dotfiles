@@ -216,31 +216,48 @@ def session(ip):
     code, out, err = powershell(ip, "$ErrorActionPreference='Stop'; & query.exe session 2>&1; exit $LASTEXITCODE")
     if code == 255:
         return False, None
-    if code:
-        raise Failure(f"guest session query failed ({code}): {err.strip() or out.strip()}")
+    try:
+        return True, parse_session(out, user)
+    except Failure as error:
+        detail = (err.strip() or out.strip())[:2000]
+        raise Failure(f"guest session query invalid ({code}): {error}; {detail}") from error
+
+
+def parse_session(output, user):
+    lines = [line for line in output.splitlines() if line.strip()]
+    if not lines or lines[0].split() != ["SESSIONNAME", "USERNAME", "ID", "STATE", "TYPE", "DEVICE"]:
+        raise Failure("missing or invalid session table header")
+    if len(lines) == 1:
+        raise Failure("session table has no rows")
+    states = {"active", "conn", "connected", "connq", "connectquery", "shadow", "disc",
+              "disconnected", "idle", "listen", "reset", "down", "init"}
     matches = []
-    for line in out.splitlines():
+    for line in lines[1:]:
         fields = line.lstrip(" >").split()
-        for i, field in enumerate(fields):
-            if field.lower() == user.lower() and len(fields) > i + 2 and fields[i + 1].isdigit():
-                session_id = int(fields[i + 1])
-                if session_id == 0:
-                    continue
-                name = fields[i - 1].casefold() if i else ""
-                state = fields[i + 2].casefold()
-                if state in ("disc", "disconnected"):
-                    kind = "disconnected"
-                elif state == "active" and name == "console":
-                    kind = "console"
-                elif state == "active" and name.startswith("rdp-"):
-                    kind = "rdp"
-                else:
-                    kind = "inactive"
-                matches.append({"state": kind, "id": session_id, "name": name})
+        positions = [i for i, field in enumerate(fields[:-1])
+                     if i <= 2 and field.isdigit() and fields[i + 1].casefold() in states]
+        if len(positions) != 1:
+            raise Failure("unrecognized session table row")
+        index = positions[0]
+        prefix = fields[:index]
+        row_user = prefix[-1] if prefix else ""
+        if row_user.casefold() != user.casefold() or int(fields[index]) == 0:
+            continue
+        name = prefix[0].casefold() if len(prefix) == 2 else ""
+        state = fields[index + 1].casefold()
+        if state in ("disc", "disconnected"):
+            kind = "disconnected"
+        elif state == "active" and name == "console":
+            kind = "console"
+        elif state == "active" and name.startswith("rdp-"):
+            kind = "rdp"
+        else:
+            kind = "inactive"
+        matches.append({"state": kind, "id": int(fields[index]), "name": name})
     if not matches:
-        return True, {"state": "none", "id": None, "name": None}
+        return {"state": "none", "id": None, "name": None}
     matches.sort(key=lambda s: {"console": 0, "rdp": 1, "disconnected": 2, "inactive": 3}[s["state"]])
-    return True, matches[0]
+    return matches[0]
 
 
 def active_session(sess):
