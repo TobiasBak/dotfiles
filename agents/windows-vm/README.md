@@ -4,6 +4,14 @@
 workstation's live command follows `~/.dotfiles/agents/windows-vm/win-vm`.
 It reads existing VM credentials by path; they never belong in evidence.
 
+## Transport
+
+SSH and SFTP ignore ambient user and system SSH configuration (`-F none`).
+They retain the dedicated identity, `IdentitiesOnly`, batch mode, the five-second
+connection timeout, host-key alias, dedicated known-hosts file and
+`StrictHostKeyChecking=accept-new`. The transport does not depend on the caller's
+namespace ownership view or personal SSH settings.
+
 ## Guest jobs
 
 A waiting interactive job joins a Windows job object before launching any
@@ -23,6 +31,14 @@ task and directory and reports the cleanup error without replacing an
 existing operation failure. It never kills a process by an unvalidated PID.
 
 ## Guest health
+
+Readiness requires an explicitly Active console or RDP session for the configured
+user. Unknown or inactive session states never count as RDP; session zero is not
+an interactive session. Native session-query failures are errors, not evidence
+that the user is logged out. Local SSH configuration, identity-permission and
+host-key failures surface immediately with stderr instead of consuming the boot
+deadline. Transient network unavailability remains subject to the existing
+readiness timeout.
 
 Only read-only scheduled-job observations recover from SSH transport failure.
 An SSH exit of 255 or a timed-out control connection starts a health window

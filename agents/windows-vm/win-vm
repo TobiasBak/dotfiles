@@ -105,11 +105,20 @@ def ps_string(value):
 
 
 def ssh_options():
-    return ["-i", str(KEYS / "windows-vm-agent"), "-o", "IdentitiesOnly=yes",
+    return ["-F", "none", "-i", str(KEYS / "windows-vm-agent"), "-o", "IdentitiesOnly=yes",
             "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
             "-o", "HostKeyAlias=omarchy-windows-vm",
             "-o", f"UserKnownHostsFile={KEYS / 'windows-vm-known_hosts'}",
             "-o", "StrictHostKeyChecking=accept-new"]
+
+
+def permanent_ssh_error(error):
+    text = error.casefold()
+    return any(marker in text for marker in (
+        "bad owner or permissions", "bad configuration option", "unsupported option",
+        "unprotected private key file", "are too open", "load key ", "identity file ",
+        "host key verification failed", "remote host identification has changed",
+    )) or ("permission denied" in text and ("could not open" in text or "ssh: connect to host" in text))
 
 
 def decode_clixml(raw):
@@ -164,7 +173,10 @@ def powershell(ip, script, stream=False, timeout=30):
         result = run(argv, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise TransportFailure(f"guest SSH control command timed out after {timeout:g}s") from None
-    return result.returncode, result.stdout.decode("utf-8-sig", errors="replace"), decode_clixml(result.stderr)
+    error = decode_clixml(result.stderr)
+    if result.returncode == 255 and permanent_ssh_error(error):
+        raise Failure(f"SSH client failed: {error.strip()}")
+    return result.returncode, result.stdout.decode("utf-8-sig", errors="replace"), error
 
 
 def remote(ip, script, timeout=30):
@@ -201,23 +213,38 @@ def job_query(ip, script, deadline):
 
 def session(ip):
     user, _ = credentials()
-    code, out, err = powershell(ip, "& query.exe session 2>&1; exit 0")
-    if code:
+    code, out, err = powershell(ip, "$ErrorActionPreference='Stop'; & query.exe session 2>&1; exit $LASTEXITCODE")
+    if code == 255:
         return False, None
+    if code:
+        raise Failure(f"guest session query failed ({code}): {err.strip() or out.strip()}")
     matches = []
     for line in out.splitlines():
         fields = line.lstrip(" >").split()
         for i, field in enumerate(fields):
             if field.lower() == user.lower() and len(fields) > i + 2 and fields[i + 1].isdigit():
-                name = fields[i - 1] if i else ""
-                state = fields[i + 2].lower()
-                kind = "disconnected" if state in ("disc", "disconnected") else (
-                    "console" if name == "console" and state == "active" else "rdp")
-                matches.append({"state": kind, "id": int(fields[i + 1]), "name": name})
+                session_id = int(fields[i + 1])
+                if session_id == 0:
+                    continue
+                name = fields[i - 1].casefold() if i else ""
+                state = fields[i + 2].casefold()
+                if state in ("disc", "disconnected"):
+                    kind = "disconnected"
+                elif state == "active" and name == "console":
+                    kind = "console"
+                elif state == "active" and name.startswith("rdp-"):
+                    kind = "rdp"
+                else:
+                    kind = "inactive"
+                matches.append({"state": kind, "id": session_id, "name": name})
     if not matches:
         return True, {"state": "none", "id": None, "name": None}
-    matches.sort(key=lambda s: {"console": 0, "rdp": 1, "disconnected": 2}[s["state"]])
+    matches.sort(key=lambda s: {"console": 0, "rdp": 1, "disconnected": 2, "inactive": 3}[s["state"]])
     return True, matches[0]
+
+
+def active_session(sess):
+    return sess is not None and sess["state"] in ("console", "rdp")
 
 
 def status(state=None):
@@ -630,7 +657,7 @@ def wait_ready(timeout, already=False, check=lambda: None):
         if info["ssh"] and info["session"]["state"] == "disconnected":
             require_session(state["ip"], min(120, max(1, deadline - time.monotonic())))
             info = status(state)
-        if info["ssh"] and info["session"]["state"] in ("console", "rdp"):
+        if info["ssh"] and active_session(info["session"]):
             check()
             print(json.dumps({"already_running": already, "ip": info["ip"], "ssh": True, "session": info["session"]}), flush=True)
             return 0
@@ -783,8 +810,10 @@ def require_session(ip, timeout):
             raise Failure("guest SSH unavailable; run win-vm bootstrap once")
         if sess["state"] == "none":
             raise Failure("tb not logged on (autologon?)")
-        if sess["state"] != "disconnected":
+        if active_session(sess):
             return
+        if sess["state"] != "disconnected":
+            raise Failure(f"guest session is not Active: {sess['state']}")
         remote(ip, f"""
 $n='win-vm-console-handoff-{uuid.uuid4().hex}'
 $a=New-ScheduledTaskAction -Execute 'tscon.exe' -Argument '{sess["id"]} /dest:console'
