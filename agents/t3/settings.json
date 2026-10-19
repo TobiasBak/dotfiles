@@ -15,6 +15,14 @@
       "config": {
         "binaryPath": "~/.local/bin/gah-claude"
       }
+    },
+    "piGah": {
+      "driver": "pi",
+      "displayName": "Pi (gah)",
+      "enabled": true,
+      "config": {
+        "binaryPath": "~/.local/bin/gah-pi"
+      }
     }
   }
 }
