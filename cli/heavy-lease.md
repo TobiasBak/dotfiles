@@ -65,8 +65,16 @@ before raising concurrency or reducing these weights.
 
 `--class gate|interactive|efficiency` orders waiting work in that priority order.
 The default is `interactive`, including callers that pass no new flags. FIFO
-applies within a class. Running work is never preempted. Among pool contenders,
-a memory-blocked head is never skipped for smaller or lower-priority work.
+applies within a class except for bounded slot backfill. Running work is never
+preempted. When the eligible pool head needs more slots than are free, the first
+named-resource-eligible waiter that fits may backfill, in class/FIFO order.
+Each head permits at most four total slot-weights of backfill over its entire
+wait. Admissions charge its durable `backfill_used` counter under the admission
+mutex; releases never replenish that credit. Once spent, free slots remain
+reserved until the head admits or exits. Thus fitting work uses otherwise idle
+capacity without an unbounded stream delaying the wide head. This bounds bypass
+work, not runtime: a backfilled command may still run arbitrarily long.
+A memory-blocked head with enough free slots is never skipped.
 A waiter blocked on an unavailable named resource does not block unrelated
 resources. Named-only VM work remains independent of the slot pool. Combined
 requests acquire all resources together; queued work holds no partial allocation.

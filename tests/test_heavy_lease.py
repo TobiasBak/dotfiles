@@ -471,6 +471,48 @@ sys.exit(23)
             self.release(expected)
         self.assertEqual(self.scheduler_status()["waiters"], [])
 
+    def test_slot_backfill_uses_idle_capacity_then_reserves_for_wide_head(self):
+        def command(name):
+            return [sys.executable, "-c", CONTROLLED, str(self.home / name)]
+
+        holder = self.start(command("holder"), weight=1)
+        self.event(holder, b"entered\n")
+        notifications = self.watch_waiters()
+        wide = self.start(command("wide"), mode=("--class", "gate"), weight=4)
+        self.waiter_event(notifications, wide)
+        first = self.start(command("first"), weight=2)
+        self.event(first, b"entered\n")
+        too_wide = self.start(command("too-wide"), mode=("--class", "gate"), weight=3)
+        self.waiter_event(notifications, too_wide)
+        second = self.start(command("second"), weight=1)
+        self.event(second, b"entered\n")
+        self.assertEqual(len(self.scheduler_status()["slots"]), 4)
+        self.release(second)
+        third = self.start(command("third"), weight=1)
+        self.event(third, b"entered\n")
+        last = self.start(command("last"), weight=1)
+        self.waiter_event(notifications, last)
+        self.release(first)
+        self.release(third)
+        reserved = self.scheduler_status()
+        self.assertEqual(len(reserved["slots"]), 1)
+        self.assertEqual({entry["holder"]["pid"] for entry in reserved["slots"]}, {holder.pid})
+        by_pid = {entry["pid"]: entry for entry in reserved["waiters"]}
+        self.assertEqual(by_pid[wide.pid]["backfill_used"], 4)
+        self.assertEqual(by_pid[last.pid]["admission_reason"], "queue")
+        rejected = self.invoke("run", "--try", "--", "true", weight=1)
+        self.assertEqual(rejected.returncode, 2, rejected.stderr)
+        self.release(holder)
+        self.event(wide, b"entered\n")
+        admitted = self.scheduler_status()
+        self.assertEqual({entry["holder"]["pid"] for entry in admitted["slots"]}, {wide.pid})
+        self.release(wide)
+        self.event(too_wide, b"entered\n")
+        self.event(last, b"entered\n")
+        self.release(too_wide)
+        self.release(last)
+        self.assertEqual(self.scheduler_status()["waiters"], [])
+
     def test_empty_pool_admits_full_weight_without_memory_headroom(self):
         Path(self.env["HEAVY_LEASE_MEMINFO"]).write_text("MemAvailable: 0 kB\n")
         parent = Path(self.env["HEAVY_LEASE_CGROUP_ROOT"]) / "parent"

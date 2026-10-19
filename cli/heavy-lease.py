@@ -324,7 +324,7 @@ def named_resource_head(request, waiters):
     return next((entry for entry in waiters if entry["exclusive"] == request["exclusive"]), None)
 
 
-def named_lock_eligible_pool_head(waiters, occupied):
+def named_lock_eligible_pool_waiters(waiters, occupied):
     for entry in waiters:
         if not entry["weight"]:
             continue
@@ -333,8 +333,23 @@ def named_lock_eligible_pool_head(waiters, occupied):
                 continue
             if named_resource_head(entry, waiters)["pid"] != entry["pid"]:
                 continue
-        return entry
-    return None
+        yield entry
+
+
+def named_lock_eligible_pool_head(waiters, occupied):
+    return next(named_lock_eligible_pool_waiters(waiters, occupied), None)
+
+
+def pool_candidate(waiters, occupied):
+    eligible = list(named_lock_eligible_pool_waiters(waiters, occupied))
+    if not eligible:
+        return None
+    head = eligible[0]
+    free = POOL_SIZE - sum(name.startswith("slot-") for name in occupied)
+    if head["weight"] <= free:
+        return head
+    credit = POOL_SIZE - head.get("backfill_used", 0)
+    return next((entry for entry in eligible[1:] if entry["weight"] <= min(free, credit)), head)
 
 
 def queue_blocker(request, waiters, occupied):
@@ -342,9 +357,9 @@ def queue_blocker(request, waiters, occupied):
     if named_head is not None and named_head["pid"] != request["pid"]:
         return named_head
     if request["weight"]:
-        head = named_lock_eligible_pool_head(waiters, occupied)
-        if head is not None and head["pid"] != request["pid"]:
-            return head
+        candidate = pool_candidate(waiters, occupied)
+        if candidate is not None and candidate["pid"] != request["pid"]:
+            return candidate
     return None
 
 
@@ -454,7 +469,7 @@ class AdmissionObserver:
             self.descriptors.append(descriptor)
             os.timerfd_settime(descriptor, initial=1.0)
             self.selector.register(descriptor, selectors.EVENT_READ)
-        if reason in ("slots", "exclusive", "memory"):
+        if reason in ("slots", "exclusive", "memory", "queue"):
             blocked = [name for name in occupied if name.startswith("slot-")] if reason != "exclusive" else [f"exclusive-{request['exclusive']}"]
             for name in blocked:
                 worker = subprocess.Popen([
@@ -504,7 +519,16 @@ def acquire_admission(directory, metadata, try_only, waiter):
                     if reason == "ready":
                         held = acquire_resources(directory, metadata)
                         if held is not None:
-                            clear_waiter(waiter)
+                            try:
+                                head = named_lock_eligible_pool_head(waiters, occupied)
+                                if metadata["weight"] and head is not None and head["pid"] != metadata["pid"]:
+                                    head["backfill_used"] = head.get("backfill_used", 0) + metadata["weight"]
+                                    write_holder(folder / f"{head['pid']}.json", head)
+                                clear_waiter(waiter)
+                            except BaseException:
+                                for descriptor in held.values():
+                                    os.close(descriptor)
+                                raise
                             return held
                         reason, occupied = admission_snapshot(directory, metadata, waiters)
                     if try_only:
