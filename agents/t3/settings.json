@@ -7,6 +7,14 @@
     "opencode": {
       "driver": "opencode",
       "enabled": true
+    },
+    "claudeGah": {
+      "driver": "claudeAgent",
+      "displayName": "Claude (gah)",
+      "enabled": true,
+      "config": {
+        "binaryPath": "~/.local/bin/gah-claude"
+      }
     }
   }
 }
