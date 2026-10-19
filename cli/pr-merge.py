@@ -108,6 +108,14 @@ class Parser(argparse.ArgumentParser):
 
 
 def arguments(argv):
+    if argv and argv[0] == "carry":
+        parser = Parser(
+            prog="pr-merge carry", allow_abbrev=False,
+            description="Reproduce clean-rebase equivalence and carry successful gate/review statuses.",
+        )
+        parser.add_argument("pr_url", metavar="PR_URL", type=pr_url)
+        parser.add_argument("--from", dest="source", required=True, type=full_sha)
+        return "carry", parser.parse_args(argv[1:])
     if argv and argv[0] == "post":
         parser = Parser(
             prog="pr-merge post", allow_abbrev=False,
@@ -226,7 +234,10 @@ def snapshot(repo, number):
         valid = False
     if not valid:
         raise Refusal("current base tip: malformed branch reference")
-    # The combined-status endpoint returns the latest status for each context.
+    return Snapshot(head, base_ref, base, body or "", state, merged, commit_statuses(repo, head))
+
+
+def commit_statuses(repo, head):
     pages = api(f"repos/{repo}/commits/{head}/status?per_page=100", "commit statuses", paginate=True)
     statuses = dict.fromkeys(CONTEXTS)
     if not isinstance(pages, list) or not pages:
@@ -249,7 +260,7 @@ def snapshot(repo, number):
             if statuses[context] is not None:
                 raise Refusal(f"{context}: duplicate latest commit status in API response")
             statuses[context] = {key: status[key] for key in ("id", "state", "target_url", "description")}
-    return Snapshot(head, base_ref, base, body or "", state, merged, statuses)
+    return statuses
 
 
 def fetch_snapshot(directory, repo, number, observed):
@@ -391,6 +402,139 @@ def review_attestation(flagged_paths, review_url, head, repo, number):
     return failures
 
 
+CARRY_MARKER = "pr-merge clean-rebase proof v1\n```json\n"
+CARRY_DESCRIPTION = "Carried {context} from {head} status {status}"
+
+
+def success_statuses(statuses):
+    if any(statuses[context] is None or statuses[context]["state"] != "success" for context in CONTEXTS):
+        raise Refusal("carry: source gate and review must both be latest successful statuses")
+    if any(str(statuses[context]["description"]).startswith("Carried ") for context in CONTEXTS):
+        raise Refusal("carry: source must be original qualification, not another carry")
+
+
+def fetch_source(directory, repo, source):
+    git(
+        ["-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential",
+         "fetch", "--no-tags", "--no-recurse-submodules", "--",
+         f"https://github.com/{repo}.git", source],
+        "fetch original head", directory,
+    )
+
+
+def changed_paths(directory, base, head):
+    return set(filter(None, git(
+        ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", base, head, "--"],
+        "carry changed paths", directory,
+    ).split(b"\0")))
+
+
+def rebase_proof(directory, source, head, base):
+    old_base = git(["merge-base", source, base], "carry original base", directory).decode().strip()
+    git(["merge-base", "--is-ancestor", base, head], "carry new base ancestry", directory)
+    if source == head or old_base == base:
+        raise Refusal("carry: requires a new head rebased onto an advanced base")
+    old_paths = changed_paths(directory, old_base, source)
+    new_paths = changed_paths(directory, base, head)
+    overlap = (old_paths | new_paths) & changed_paths(directory, old_base, base)
+    if overlap:
+        raise Refusal("carry: advanced base touches PR paths: " + ", ".join(path_name(os.fsdecode(path)) for path in sorted(overlap)))
+    if old_paths != new_paths or not old_paths:
+        raise Refusal("carry: original and rebased PR path sets must be identical and nonempty")
+    summary = git(
+        ["range-diff", "--no-color", "--no-dual-color", "--no-notes", "--no-patch", "--abbrev=40",
+         f"{old_base}..{source}", f"{base}..{head}"],
+        "carry range-diff", directory,
+    ).decode("utf-8", errors="replace")
+    entries = summary.splitlines()
+    pattern = re.compile(r"\s*[1-9][0-9]*: +[0-9a-f]{40} = +[1-9][0-9]*: +[0-9a-f]{40}(?: .*|)$")
+    if not entries or any(pattern.fullmatch(line) is None for line in entries):
+        raise Refusal("carry: range-diff is not entirely '='")
+    for path in sorted(old_paths):
+        entries = [git(["ls-tree", "-z", revision, "--", os.fsdecode(path)], "carry path identity", directory) for revision in (source, head)]
+        if entries[0] != entries[1]:
+            raise Refusal(f"carry: rebased path content or mode differs: {path_name(os.fsdecode(path))}")
+    return {"oldBase": old_base, "newBase": base, "rangeDiff": summary}
+
+
+def carry_description(context, proof):
+    return CARRY_DESCRIPTION.format(context=context, head=proof["oldHead"], status=proof["statuses"][context]["id"])
+
+
+def read_carry(repo, number, observed):
+    carried = [context for context in CONTEXTS if observed.statuses[context] is not None and str(observed.statuses[context]["description"]).startswith("Carried ")]
+    if not carried:
+        return None
+    if len(carried) != len(CONTEXTS):
+        raise Refusal("carry: gate and review must refer to the same complete carry proof")
+    urls = {observed.statuses[context]["target_url"] for context in CONTEXTS}
+    if len(urls) != 1:
+        raise Refusal("carry: gate and review proof URLs differ")
+    url = next(iter(urls))
+    match = re.fullmatch(r"https://github\.com/([^/]+/[^/]+)/pull/([1-9][0-9]*)#issuecomment-([1-9][0-9]*)", url) if isinstance(url, str) else None
+    if match is None or match[1].lower() != repo.lower() or int(match[2]) != number:
+        raise Refusal("carry: malformed proof comment URL")
+    comment = api(f"repos/{repo}/issues/comments/{match[3]}", "carry proof comment")
+    try:
+        body = comment["body"]
+        if comment["html_url"] != url or comment["issue_url"] != f"https://api.github.com/repos/{repo}/issues/{number}" or not body.startswith(CARRY_MARKER) or not body.endswith("\n```"):
+            raise ValueError
+        proof = json.loads(body[len(CARRY_MARKER):-4])
+        if not isinstance(proof, dict) or proof.get("newHead") != observed.head or proof.get("newBase") != observed.base or proof.get("repo") != repo or proof.get("pr") != number or not isinstance(proof.get("oldHead"), str) or SHA.fullmatch(proof["oldHead"]) is None:
+            raise ValueError
+        for context in CONTEXTS:
+            if observed.statuses[context]["description"] != carry_description(context, proof):
+                raise ValueError
+    except (KeyError, TypeError, ValueError):
+        raise Refusal("carry: malformed or mismatched proof comment") from None
+    original = commit_statuses(repo, proof["oldHead"])
+    success_statuses(original)
+    if original != proof["statuses"]:
+        raise Refusal("carry: original qualification statuses changed")
+    return proof
+
+
+def reproduce_carry(directory, repo, observed, proof):
+    fetch_source(directory, repo, proof["oldHead"])
+    computed = rebase_proof(directory, proof["oldHead"], observed.head, observed.base)
+    if any(proof.get(key) != value for key, value in computed.items()):
+        raise Refusal("carry: published equivalence proof does not reproduce")
+
+
+def carry(url, repo, number, source):
+    observed = snapshot(repo, number)
+    if observed.state != "open" or observed.merged or observed.base_ref != "main":
+        raise Refusal("carry: requires an open unmerged PR targeting main")
+    originals = commit_statuses(repo, source)
+    success_statuses(originals)
+    cache = Path.home() / ".cache" / "agent-tmp"
+    cache.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="pr-merge-carry-", dir=cache) as temporary:
+        directory = Path(temporary) / "repo.git"
+        fetch_snapshot(directory, repo, number, observed)
+        fetch_source(directory, repo, source)
+        proof = {"repo": repo, "pr": number, "oldHead": source, "newHead": observed.head, "statuses": originals, **rebase_proof(directory, source, observed.head, observed.base)}
+        failures = []
+        flagged = inspect_git(directory, observed, failures)
+        failures.extend(review_attestation(flagged, originals["review"]["target_url"], source, repo, number))
+        if failures:
+            raise Refusal(*failures)
+    if snapshot(repo, number) != observed or commit_statuses(repo, source) != originals:
+        raise Refusal("carry: PR snapshot or source qualification changed before publication")
+    comment = api(f"repos/{repo}/issues/{number}/comments", "publish carry proof", fields=(("body", CARRY_MARKER + json.dumps(proof, indent=2, sort_keys=True) + "\n```"),))
+    target = comment.get("html_url") if isinstance(comment, dict) else None
+    if not isinstance(target, str) or re.fullmatch(re.escape(url) + r"#issuecomment-[1-9][0-9]*", target) is None:
+        raise Refusal("carry: publication returned a malformed proof URL")
+    if snapshot(repo, number) != observed or commit_statuses(repo, source) != originals:
+        raise Refusal("carry: PR snapshot or source qualification changed during publication")
+    for context in CONTEXTS:
+        api(f"repos/{repo}/statuses/{observed.head}", f"carry {context}", fields=(("context", context), ("state", "success"), ("target_url", target), ("description", carry_description(context, proof))))
+    published = snapshot(repo, number)
+    if any(getattr(published, field) != getattr(observed, field) for field in ("head", "base_ref", "base", "body", "state", "merged")) or read_carry(repo, number, published) != proof:
+        raise Refusal("carry: published statuses did not read back against the same PR snapshot")
+    print(target)
+
+
 def merge(url, repo, number):
     observed = snapshot(repo, number)
     failures = []
@@ -410,9 +554,12 @@ def merge(url, repo, number):
             directory = Path(temporary) / "repo.git"
             fetch_snapshot(directory, repo, number, observed)
             flagged = inspect_git(directory, observed, failures)
-            review = observed.statuses["review"]
+            proof = read_carry(repo, number, observed)
+            if proof is not None:
+                reproduce_carry(directory, repo, observed, proof)
+            review = proof["statuses"]["review"] if proof else observed.statuses["review"]
             failures.extend(review_attestation(
-                flagged, review["target_url"] if review else None, observed.head, repo, number,
+                flagged, review["target_url"] if review else None, proof["oldHead"] if proof else observed.head, repo, number,
             ))
     except Refusal as error:
         failures.extend(error.reasons)
@@ -427,6 +574,8 @@ def merge(url, repo, number):
             failures.append(f"{context}: latest commit status changed before merge; rerun checks")
     if failures:
         raise Refusal(*failures)
+    if proof is not None and commit_statuses(repo, proof["oldHead"]) != proof["statuses"]:
+        raise Refusal("carry: original qualification changed before merge")
     run(["gh", "pr", "merge", url, "--merge", "--match-head-commit", observed.head], "merge")
     merged = api(f"repos/{repo}/pulls/{number}", "merged PR")
     try:
@@ -447,6 +596,8 @@ def main():
     try:
         if mode == "post":
             post(args)
+        elif mode == "carry":
+            carry(*args.pr_url, args.source)
         else:
             merge(*args.pr_url)
     except Refusal as error:

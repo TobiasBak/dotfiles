@@ -61,6 +61,39 @@ refuses. With no flagged paths, no review fetch is needed.
 Review authorship is not verified. A review body is evidence, not identity;
 neither it nor the metrics line proves who approved or performed work.
 
+## Clean-rebase carry
+
+```sh
+pr-merge carry https://github.com/owner/name/pull/123 --from ORIGINAL_FULL_SHA
+```
+
+For an open PR targeting `main`, this fetches the original head, current PR head
+and current main. The old base is their original head/main merge base. The
+current base must be an ancestor of the new head and must have advanced.
+Every entry of `git range-diff old_base..old_head new_base..new_head` must be
+`=`. Both PR ranges must change the same nonempty path set, and those paths'
+final Git entries, including modes, must match. No path changed by the advanced
+base may intersect either PR path set. Renames and deletions count both paths.
+Anything else refuses without carrying proof.
+
+The original head must still have successful latest `gate` and `review`
+statuses. Recursive carry is refused; always name the original qualification.
+Protected/test paths retain their original formal review attestation on that
+same PR and original head. The current base policy still governs flagged paths.
+
+The command publishes a proof comment naming both heads, both bases, the full
+range-diff, and original status IDs and target URLs. It then posts new-head
+success statuses linking that comment; each description names the original
+SHA and status ID. It rechecks the remote snapshot before publication and reads
+both statuses back. Partial publication cannot qualify a merge.
+
+At merge, `pr-merge` fetches and reproduces the proof, requires the original
+statuses to remain unchanged and successful, and checks the formal review
+against the original reviewed head. An edited proof, changed base/head,
+changed source qualification or incomplete carry refuses. Carry performs no
+build or review and never merges. GitHub writes are not atomic; if publication
+fails, inspect the statuses before retrying.
+
 ## Merge recheck
 
 The command fetches complete base/head histories into a temporary bare repo
