@@ -74,15 +74,35 @@ print(result)
                     self.assertIn("synthetic guest script error", result.stderr)
                     self.assertNotIn("guest control recovered", result.stderr)
 
+    def test_full_control_timeout_starts_recovery_before_reobserving_same_job(self):
+        module = runpy.run_path(str(CLI))
+        query = module["job_query"]
+        transport_failure = module["TransportFailure"]
+        clock = [0]
+        def observe(ip, script, timeout):
+            if clock[0] == 0:
+                clock[0] += timeout
+                raise transport_failure("synthetic control timeout")
+            return "same-job-result"
+        remote = Mock(side_effect=observe)
+        with patch.dict(query.__globals__, remote=remote), patch.object(module["time"], "monotonic", side_effect=lambda: clock[0]), patch.object(module["time"], "sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)):
+            self.assertEqual(query("synthetic", "read-only", 100), "same-job-result")
+        self.assertEqual([call.args for call in remote.call_args_list], [("synthetic", "read-only"), ("synthetic", "read-only")])
+        self.assertEqual([call.kwargs["timeout"] for call in remote.call_args_list], [30, 29])
+
     def test_transport_health_window_is_bounded_by_original_job_deadline(self):
         module = runpy.run_path(str(CLI))
         query = module["job_query"]
         transport_failure = module["TransportFailure"]
         for deadline in (10, 100):
             with self.subTest(deadline=deadline):
-                remote = Mock(side_effect=transport_failure("synthetic outage"))
-                end = min(30, deadline)
-                with patch.dict(query.__globals__, remote=remote), patch.object(module["time"], "monotonic", side_effect=[0, 0, end]):
+                clock = [0]
+                def observe(ip, script, timeout):
+                    clock[0] += timeout
+                    raise transport_failure("synthetic outage")
+                remote = Mock(side_effect=observe)
+                with patch.dict(query.__globals__, remote=remote), patch.object(module["time"], "monotonic", side_effect=lambda: clock[0]), patch.object(module["time"], "sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)):
                     with self.assertRaisesRegex(transport_failure, "job was not resubmitted"):
                         query("synthetic", "read-only", deadline)
-                remote.assert_called_once_with("synthetic", "read-only", timeout=end)
+                self.assertEqual(clock[0], min(60, deadline))
+                self.assertEqual([call.kwargs["timeout"] for call in remote.call_args_list], [10] if deadline == 10 else [30, 29])

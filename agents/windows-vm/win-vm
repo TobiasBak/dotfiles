@@ -176,10 +176,10 @@ def remote(ip, script, timeout=30):
 
 
 def job_query(ip, script, deadline):
-    health_deadline = min(deadline, time.monotonic() + 30)
+    health_deadline = None
     interrupted = False
     while True:
-        remaining = health_deadline - time.monotonic()
+        remaining = (deadline if health_deadline is None else health_deadline) - time.monotonic()
         if remaining <= 0:
             raise TransportFailure("guest control unavailable within the 30s health window or job deadline; job was not resubmitted")
         try:
@@ -188,6 +188,8 @@ def job_query(ip, script, deadline):
                 print("win-vm: guest control recovered; observing the same scheduled job", file=sys.stderr)
             return result
         except TransportFailure as error:
+            if health_deadline is None:
+                health_deadline = min(deadline, time.monotonic() + 30)
             if not interrupted:
                 print(f"win-vm: guest control interrupted; checking the same scheduled job: {error}", file=sys.stderr)
                 interrupted = True
