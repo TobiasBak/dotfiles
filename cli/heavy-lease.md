@@ -6,7 +6,7 @@ Light work never leases: formatting, launcher self-builds, status, individual
 cases and static checks run directly. Repo entry points own admission.
 
 ```sh
-heavy-lease run --wait --class gate -- tools/or test --full
+heavy-lease run --wait --class gate -- command
 heavy-lease run --wait --weight 2 -- command
 heavy-lease run --try --class efficiency --weight 1 -- command
 heavy-lease run --wait --exclusive win-vm -- vm-command
