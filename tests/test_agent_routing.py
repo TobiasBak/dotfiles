@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 
 
@@ -12,13 +13,28 @@ RETIRED_WORKER = {"providerInstanceId": "opencode", "model": "opencode/space-bun
 
 
 class AgentRoutingTests(unittest.TestCase):
+    def setUp(self):
+        self.home = tempfile.TemporaryDirectory()
+        self.addCleanup(self.home.cleanup)
+
     def invoke(self, tool, payload):
         result = subprocess.run(
             ["bash", str(HOOK)], input=json.dumps({"tool_name": tool, "tool_input": payload}),
             text=True, capture_output=True, check=True,
-            env={**os.environ, "T3CODE_HOME": "/unused/t3"},
+            env={**os.environ, "HOME": self.home.name, "T3CODE_HOME": "/unused/t3"},
         )
         return json.loads(result.stdout)["hookSpecificOutput"]
+
+    def test_delegation_keeps_the_gah_subagent_stamp(self):
+        gah = Path(self.home.name) / ".local/bin/gah"
+        gah.parent.mkdir(parents=True)
+        gah.write_text("#!/bin/sh\n"
+                       "jq '{hookSpecificOutput: {hookEventName: \"PreToolUse\","
+                       " updatedInput: (.tool_input + {task: (.tool_input.task + \" [gah]\")})}}'\n")
+        gah.chmod(0o755)
+        actual = self.invoke("mcp__t3-code__delegate_task", {"task": "Execute"})
+        self.assertEqual(actual["updatedInput"],
+                         {"task": "Execute [gah]", "runtimeMode": "full-access", "target": SOL})
 
     def test_default_delegation_does_not_inherit_leader(self):
         for fields in [{}, {"target": None}, {"target": {}},

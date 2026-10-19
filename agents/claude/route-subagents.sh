@@ -26,6 +26,12 @@ case "$(jq -r '.tool_name' <<<"$input")" in
       }'
       exit 0
     fi
+    # Claude Code keeps one hook's updatedInput, so gah's subagent stamp composes here.
+    gah=$HOME/.local/bin/gah
+    if [[ -x $gah ]] && stamped=$("$gah" hook claude <<<"$input" 2>/dev/null) &&
+       jq -e '.hookSpecificOutput.updatedInput' <<<"$stamped" >/dev/null 2>&1; then
+      input=$(jq --argjson s "$stamped" '.tool_input = $s.hookSpecificOutput.updatedInput' <<<"$input")
+    fi
     # Tobias's agents never wait on approvals; limits like read-only belong in the task text.
     jq '
       def with_sol_thinking:
