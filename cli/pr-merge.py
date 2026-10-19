@@ -126,6 +126,7 @@ def arguments(argv):
         parser.add_argument("--state", required=True, choices=("success", "failure"))
         parser.add_argument("--target", required=True, type=target_url)
         parser.add_argument("--repo", type=repo_name, help="owner/name; default: gh repo view")
+        parser.add_argument("--base", type=full_sha, help="Gate qualification base; required for later clean-rebase carry.")
         parser.epilog = (
             "gate requires a clean local Git tree, including untracked files, and HEAD == SHA. "
             "review does not check the local tree. Status contexts are exactly gate and review."
@@ -177,8 +178,12 @@ def local_gate(sha):
 
 
 def post(args):
+    if args.base is not None and args.context != "gate":
+        raise Refusal("qualification base is only valid for gate statuses")
     if args.context == "gate":
         local_gate(args.sha)
+        if args.base is not None and args.state == "success":
+            git(["merge-base", "--is-ancestor", args.base, args.sha], "gate qualification base ancestry")
     repo = args.repo
     if repo is None:
         metadata = gh_json(["repo", "view", "--json", "nameWithOwner"], "repository")
@@ -186,11 +191,10 @@ def post(args):
             repo = repo_name(metadata["nameWithOwner"])
         except (KeyError, TypeError, argparse.ArgumentTypeError):
             raise Refusal("repository: gh repo view did not return owner/name") from None
-    api(
-        f"repos/{repo}/statuses/{args.sha}",
-        f"post {args.context}",
-        fields=(("context", args.context), ("state", args.state), ("target_url", args.target)),
-    )
+    fields = [("context", args.context), ("state", args.state), ("target_url", args.target)]
+    if args.base is not None and args.state == "success":
+        fields.append(("description", f"Qualified base {args.base}"))
+    api(f"repos/{repo}/statuses/{args.sha}", f"post {args.context}", fields=fields)
 
 
 @dataclass(frozen=True)
@@ -436,8 +440,17 @@ def advanced_base_paths(directory, base, head):
     ).split(b"\0")))
 
 
-def rebase_proof(directory, source, head, base):
-    old_base = git(["merge-base", source, base], "carry original base", directory).decode().strip()
+def qualified_base(statuses):
+    description = statuses["gate"].get("description")
+    match = re.fullmatch(r"Qualified base ([0-9a-f]{40})", description) if isinstance(description, str) else None
+    if match is None:
+        raise Refusal("carry: original gate lacks qualified base provenance")
+    return match[1]
+
+
+def rebase_proof(directory, source, head, base, old_base):
+    git(["merge-base", "--is-ancestor", old_base, source], "carry original base ancestry", directory)
+    git(["merge-base", "--is-ancestor", old_base, base], "carry base advancement ancestry", directory)
     git(["merge-base", "--is-ancestor", base, head], "carry new base ancestry", directory)
     if source == head or old_base == base:
         raise Refusal("carry: requires a new head rebased onto an advanced base")
@@ -503,7 +516,7 @@ def read_carry(repo, number, observed):
 
 def reproduce_carry(directory, repo, observed, proof):
     fetch_source(directory, repo, proof["oldHead"])
-    computed = rebase_proof(directory, proof["oldHead"], observed.head, observed.base)
+    computed = rebase_proof(directory, proof["oldHead"], observed.head, observed.base, qualified_base(proof["statuses"]))
     if any(proof.get(key) != value for key, value in computed.items()):
         raise Refusal("carry: published equivalence proof does not reproduce")
 
@@ -514,13 +527,14 @@ def carry(url, repo, number, source):
         raise Refusal("carry: requires an open unmerged PR targeting main")
     originals = commit_statuses(repo, source)
     success_statuses(originals)
+    old_base = qualified_base(originals)
     cache = Path.home() / ".cache" / "agent-tmp"
     cache.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="pr-merge-carry-", dir=cache) as temporary:
         directory = Path(temporary) / "repo.git"
         fetch_snapshot(directory, repo, number, observed)
         fetch_source(directory, repo, source)
-        proof = {"repo": repo, "pr": number, "oldHead": source, "newHead": observed.head, "statuses": originals, **rebase_proof(directory, source, observed.head, observed.base)}
+        proof = {"repo": repo, "pr": number, "oldHead": source, "newHead": observed.head, "statuses": originals, **rebase_proof(directory, source, observed.head, observed.base, old_base)}
         failures = []
         flagged = inspect_git(directory, observed, failures)
         failures.extend(review_attestation(flagged, originals["review"]["target_url"], source, repo, number))

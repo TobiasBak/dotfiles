@@ -3,7 +3,7 @@
 Requires Python 3.11+, Git, and an authenticated `gh` with repository access.
 
 ```sh
-pr-merge post gate --sha FULL_SHA --state success --target https://example.com/gate
+pr-merge post gate --sha FULL_SHA --base QUALIFIED_BASE_SHA --state success --target https://example.com/gate
 pr-merge post review --sha FULL_SHA --state failure --target https://example.com/review --repo owner/name
 pr-merge https://github.com/owner/name/pull/123
 ```
@@ -14,6 +14,12 @@ and a clean Git tree, including untracked files. Git-ignored files do not count.
 `review` has no local-tree requirement. Without `--repo`, `gh repo view` supplies
 the repository. Posting is silent on success. The caller owns the evidence:
 this command neither runs a gate nor performs a review.
+
+For successful gates, `--base SHA` validates that the captured qualification
+base is an ancestor of the exact head and records `Qualified base SHA` in the
+status description. Carry requires this original-base provenance. Plain gate
+posting remains available to deployed producers, but those statuses cannot be
+carried. `--base` is invalid for review and claims no qualification on failure.
 
 ## Merge contract
 
@@ -68,8 +74,11 @@ pr-merge carry https://github.com/owner/name/pull/123 --from ORIGINAL_FULL_SHA
 ```
 
 For an open PR targeting `main`, this fetches the original head, current PR head
-and current main. The old base is their original head/main merge base. The
-current base must be an ancestor of the new head and must have advanced.
+and current main. The old base comes from the original successful gate status,
+not a fork point recomputed after main advances. This prevents partial PR
+integration from shrinking the original qualified path/range set. The current
+base must descend from that original base, must be an ancestor of the new head,
+and must have advanced.
 Every entry of `git range-diff old_base..old_head new_base..new_head` must be
 `=`. Both PR ranges must change the same nonempty path set, and those paths'
 final Git entries, including modes, must match. No path touched by any commit

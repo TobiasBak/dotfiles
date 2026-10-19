@@ -178,7 +178,7 @@ class CleanRebaseCarryTests(unittest.TestCase):
             self.git("cherry-pick", self.source)
         head = self.git("rev-parse", "HEAD")
         self.git("update-ref", "refs/pull/12/head", head)
-        statuses = {context: {"id": index, "context": context, "state": "success", "description": None, "target_url": REVIEW_URL if context == "review" else "https://github.com/example/project/pull/12#issuecomment-20"} for index, context in enumerate(PR_MERGE.CONTEXTS, 1)}
+        statuses = {context: {"id": index, "context": context, "state": "success", "description": f"Qualified base {self.base}" if context == "gate" else None, "target_url": REVIEW_URL if context == "review" else "https://github.com/example/project/pull/12#issuecomment-20"} for index, context in enumerate(PR_MERGE.CONTEXTS, 1)}
         self.save({"base": new_base, "pr": {"head": {"sha": head}, "base": {"ref": "main", "repo": {"full_name": REPO}}, "body": "subagents: tasks=1 accepted=1 reworked=0 rejected=0 throttled=0", "state": "open", "merged": False}, "statuses": {self.source: statuses}, "review": {"commit_id": self.source, "body": "Protected surfaces\nsrc/value.py: authorized"}, "next_id": 10})
 
     def load(self):
@@ -213,6 +213,34 @@ class CleanRebaseCarryTests(unittest.TestCase):
 
     def test_base_path_overlap_refuses_even_when_final_pr_content_matches(self):
         self.advance("src/value.py", "VALUE = 3\n")
+        result = self.carry()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("advanced base touches PR paths", result.stderr)
+        self.assertNotIn("comment", self.load())
+
+    def test_partially_integrated_pr_cannot_redefine_its_original_base(self):
+        first = self.source
+        self.git("switch", "original")
+        self.put("src/extra.py", "EXTRA = 2\n")
+        self.commit("add second feature change")
+        self.source = self.git("rev-parse", "HEAD")
+        self.git("switch", "main")
+        self.git("reset", "--hard", first)
+        self.put("src/value.py", "VALUE = 3\n")
+        self.commit("change an integrated PR file")
+        new_base = self.git("rev-parse", "HEAD")
+        self.git("switch", "-C", "rebased")
+        self.git("cherry-pick", self.source)
+        head = self.git("rev-parse", "HEAD")
+        self.git("update-ref", "refs/pull/12/head", head)
+        state = self.load()
+        state["statuses"][self.source] = state["statuses"].pop(first)
+        state["statuses"][self.source]["gate"]["description"] = f"Qualified base {self.base}"
+        state["review"]["commit_id"] = self.source
+        state["review"]["body"] += "\nsrc/extra.py: authorized"
+        state["base"] = new_base
+        state["pr"]["head"]["sha"] = head
+        self.save(state)
         result = self.carry()
         self.assertEqual(result.returncode, 1)
         self.assertIn("advanced base touches PR paths", result.stderr)
@@ -258,8 +286,30 @@ class CleanRebaseCarryTests(unittest.TestCase):
             result = self.carry()
             self.assertEqual(result.returncode, 1)
             self.assertNotIn("comment", self.load())
-            state["statuses"][self.source]["gate"][field] = "success" if field == "state" else None
+            state["statuses"][self.source]["gate"][field] = "success" if field == "state" else f"Qualified base {self.base}"
             self.save(state)
+
+    def test_unbound_original_base_refuses_carry(self):
+        state = self.load()
+        state["statuses"][self.source]["gate"]["description"] = None
+        self.save(state)
+        result = self.carry()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("original gate lacks qualified base provenance", result.stderr)
+        self.assertNotIn("comment", self.load())
+
+    def test_post_qualified_base_and_plain_post_compatibility(self):
+        state = self.load()
+        head = state["pr"]["head"]["sha"]
+        arguments = ("post", "gate", "--sha", head, "--state", "success", "--target", "https://github.com/example/project/pull/12#issuecomment-20", "--repo", REPO)
+        result = self.invoke(*arguments, "--base", state["base"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.load()["statuses"][head]["gate"]["description"], f"Qualified base {state['base']}")
+        result = self.invoke(*arguments, "--base", "0" * 40)
+        self.assertEqual(result.returncode, 1)
+        result = self.invoke(*arguments)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.load()["statuses"][head]["gate"]["description"])
 
     def test_merge_rejects_tampered_proof_and_changed_source_status(self):
         self.assertEqual(self.carry().returncode, 0)
