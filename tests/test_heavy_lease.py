@@ -1079,6 +1079,66 @@ sys.exit(23)
                     self.assertEqual(manager_events.read_bytes(), events_before)
         self.env = base_environment
 
+    def test_isolate_reenters_gah_workspace_and_fails_closed_without_its_cli(self):
+        manager_bin = self.home / "manager-bin"
+        manager_bin.mkdir()
+        manager = manager_bin / "systemd-run"
+        manager.write_text(f"#!{sys.executable}\n" + ISOLATE_MANAGER)
+        manager.chmod(0o700)
+        root = self.home / "repos"
+        main = root / "r/main/subdir"
+        private = root / "r/ws/abc123/subdir"
+        for directory, content in ((main, "main"), (private, "private")):
+            directory.mkdir(parents=True)
+            (directory / "tree").write_text(content)
+        entry = '''
+import json
+import os
+from pathlib import Path
+import sys
+args = sys.argv[1:]
+assert args[:3] == ["enter", "r/abc123", "--"], args
+root = Path(os.environ["GAH_ROOT"]) / "r"
+relative = Path.cwd().relative_to(root / "main")
+os.chdir(root / "ws/abc123" / relative)
+import subprocess
+code = subprocess.run(args[3:], check=False).returncode
+raise SystemExit(code if code >= 0 else 128 - code)
+'''
+        for name in ("gah", "selected-gah"):
+            binary = manager_bin / name
+            binary.write_text(f"#!{sys.executable}\n" + entry)
+            binary.chmod(0o700)
+        payload = '''
+import json
+import os
+from pathlib import Path
+import sys
+print(json.dumps({"tree": Path("tree").read_text(), "cwd": str(Path.cwd()), "workspace": os.environ["GAH_WORKSPACE"], "root": os.environ["GAH_ROOT"], "args": sys.argv[1:]}))
+raise SystemExit(23)
+'''
+        environment = {**self.env, "PATH": f"{manager_bin}:{self.env['PATH']}", "GAH_WORKSPACE": "r/abc123", "GAH_ROOT": str(root)}
+        for binary in (None, str(manager_bin / "selected-gah")):
+            with self.subTest(GAH_BIN=binary):
+                current = {**environment, **({"GAH_BIN": binary} if binary else {})}
+                result = self.invoke("isolate", "--", sys.executable, "-c", payload, "--try", "a b", "*", env=current, cwd=main)
+                self.assertEqual(result.returncode, 23, result.stderr)
+                self.assertEqual(json.loads(result.stdout), {"tree": "private", "cwd": str(private), "workspace": "r/abc123", "root": str(root), "args": ["--try", "a b", "*"]})
+        for program, code in (("raise SystemExit(143)", 143), ("import os, signal; os.kill(os.getpid(), signal.SIGTERM)", -signal.SIGTERM)):
+            result = self.invoke("isolate", "--", sys.executable, "-c", program, env=environment, cwd=main)
+            self.assertEqual(result.returncode, code, result.stderr)
+        unavailable = {**environment, "GAH_BIN": str(self.home / "missing-gah")}
+        result = self.invoke("isolate", "--", sys.executable, "-c", "raise SystemExit(99)", env=unavailable, cwd=main)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("gah executable is unavailable", result.stderr)
+        result = self.invoke("isolate", "--", sys.executable, "-c", "raise SystemExit(99)", env={**environment, "GAH_WORKSPACE": ""}, cwd=main)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("GAH_WORKSPACE is empty", result.stderr)
+        result = self.invoke("isolate", "--", sys.executable, "-c", payload, env={**unavailable, "CI": "1"}, cwd=main)
+        self.assertEqual(result.returncode, 23, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["tree"], "main")
+        self.assertFalse(list(self.home.glob("hl-isolate-*")))
+
     def test_handoff_and_adopt_reject_bad_context_and_bound_missing_receiver(self):
         result = self.invoke("handoff", "--", "true")
         self.assertNotIn(result.returncode, (0, 2), result)

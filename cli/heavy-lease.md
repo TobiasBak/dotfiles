@@ -136,6 +136,18 @@ Token-only nested subprocesses rely on the parent retaining
 the locks. Start independent work with `heavy-lease isolate -- <command>`;
 this discards every inherited lease descriptor and environment field.
 
+A user service starts outside its caller's mount namespace. When the caller
+has `GAH_WORKSPACE`, isolation automatically wraps the payload in
+`gah enter <workspace> -- ...`, retaining `GAH_ROOT`, environment, arguments
+and the relative working directory. It resolves the explicit `GAH_BIN`, or
+`gah` on the caller's PATH, before starting the service; an unavailable CLI
+fails loudly instead of running against main. The re-entered command holds
+gah's lifetime lease. The result observer runs inside that namespace too, so
+a payload killed by a signal remains distinguishable from an ordinary exit
+with code `128 + signal`, despite bubblewrap's exit-code encoding. CI and
+non-Linux direct execution do not cross a manager boundary and do not add
+another workspace entry.
+
 ## Request records
 
 `requests/<request_id>.jsonl` under the state directory is an append-only,

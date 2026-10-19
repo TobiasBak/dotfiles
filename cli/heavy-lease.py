@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import secrets
 import selectors
+import shutil
 import signal
 import socket
 import struct
@@ -770,6 +771,15 @@ def isolate(command):
                     raise
     if "CI" in os.environ or not sys.platform.startswith("linux"):
         os.execvp(command[0], command)
+    gah_binary = None
+    if "GAH_WORKSPACE" in os.environ:
+        reference = os.environ["GAH_WORKSPACE"]
+        if not reference:
+            raise ValueError("GAH_WORKSPACE is empty; cannot preserve the caller's workspace")
+        gah = shutil.which(os.environ.get("GAH_BIN", "gah"))
+        if gah is None:
+            raise ValueError("cannot preserve GAH_WORKSPACE: gah executable is unavailable; set GAH_BIN to the gah CLI")
+        gah_binary = str(Path(gah).resolve())
     runtime = Path(os.environ.get("XDG_RUNTIME_DIR", str(Path.home() / ".cache/agent-tmp/heavy-lease")))
     runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
     folder = Path(tempfile.mkdtemp(prefix="hl-isolate-", dir=runtime))
@@ -777,7 +787,7 @@ def isolate(command):
     cwd = os.getcwd()
     try:
         with os.fdopen(os.open(request, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stream:
-            json.dump({"env": dict(os.environ), "cwd": cwd, "argv": command}, stream)
+            json.dump({"env": dict(os.environ), "cwd": cwd, "argv": command, "gah": gah_binary}, stream)
         basename = re.sub(r"[^a-zA-Z0-9_-]", "-", Path(command[0]).name)[:80] or "command"
         unit = f"heavy-lease-{basename}-{secrets.token_hex(8)}.service"
         print(f"heavy-lease isolate unit: {unit}", file=sys.stderr, flush=True)
@@ -810,13 +820,18 @@ def isolate(command):
     return code
 
 
-def isolate_worker(request):
+def isolate_worker(request, *, entered=False):
     request = Path(request)
-    try:
-        payload = json.loads(request.read_text())
-    finally:
-        request.unlink(missing_ok=True)
-    code = subprocess.run(payload["argv"], env=payload["env"], cwd=payload["cwd"], check=False).returncode
+    payload = json.loads(request.read_text())
+    if "GAH_WORKSPACE" in payload["env"] and not entered:
+        if not payload.get("gah"):
+            raise ValueError("incomplete gah isolation context; restart through heavy-lease isolate")
+        return subprocess.run([
+            payload["gah"], "enter", payload["env"]["GAH_WORKSPACE"], "--",
+            sys.executable, str(Path(__file__).resolve()), "--internal-isolate-entered", str(request),
+        ], env=payload["env"], cwd=payload["cwd"], check=False).returncode
+    request.unlink(missing_ok=True)
+    code = subprocess.run(payload["argv"], env=payload["env"], cwd=os.getcwd() if entered else payload["cwd"], check=False).returncode
     with tempfile.NamedTemporaryFile(mode="w", dir=request.parent, prefix=".result-", delete=False) as stream:
         temporary = Path(stream.name)
         json.dump(code, stream)
@@ -1198,6 +1213,7 @@ def main():
         description="Run independently of the caller's service or scope, preserving foreground I/O and exit status. "
         "The service inherits only stdin, stdout and stderr, not other file descriptors. "
         "Acquire locks inside the isolated process, not before calling isolate. "
+        "A gah workspace is re-entered before the service payload runs. "
         "The unit name is printed on stderr. Interrupted callers may leave a private hl-isolate-* runtime directory; "
         "the worker removes the environment request before starting the command.",
     )
@@ -1228,10 +1244,10 @@ if __name__ == "__main__":
             if len(sys.argv) != 5:
                 raise ValueError("slot waiter requires directory, resource and parent PID")
             sys.exit(wait_slot_worker(sys.argv[2], sys.argv[3], int(sys.argv[4])))
-        if sys.argv[1:2] == ["--internal-isolate-worker"]:
+        if sys.argv[1:2] in (["--internal-isolate-worker"], ["--internal-isolate-entered"]):
             if len(sys.argv) != 3:
                 raise ValueError("isolate worker requires a request path")
-            sys.exit(isolate_worker(sys.argv[2]))
+            sys.exit(isolate_worker(sys.argv[2], entered=sys.argv[1] == "--internal-isolate-entered"))
         code = main()
         if code < 0:
             if -code != signal.SIGKILL:
