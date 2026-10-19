@@ -21,7 +21,7 @@
       "displayName": "Pi (gah)",
       "enabled": true,
       "config": {
-        "binaryPath": "~/.local/bin/gah-pi"
+        "binaryPath": "/home/tb/.local/bin/gah-pi"
       }
     }
   }
