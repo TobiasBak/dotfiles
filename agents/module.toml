@@ -23,6 +23,9 @@
 "~/.config/systemd/user/t3-backup.timer" = "agents/systemd/t3-backup.timer"
 "~/.config/systemd/user/opencode-free.service" = "agents/systemd/opencode-free.service"
 "~/.config/systemd/user/opencode-free.timer" = "agents/systemd/opencode-free.timer"
+# gah owns its units; link them from its gah main checkout.
+"~/.config/systemd/user/gah-gc.service" = "../../git-at-home/git-at-home/main/systemd/gah-gc.service"
+"~/.config/systemd/user/gah-gc.timer" = "../../git-at-home/git-at-home/main/systemd/gah-gc.timer"
 "~/.config/user-tmpfiles.d/agent-tmp.conf" = "agents/systemd/agent-tmp.conf"
 
 # The apps rewrite these files; the repo owns only the keys it lists.
@@ -33,7 +36,7 @@
 "~/.t3/userdata/settings.json" = "agents/t3/settings.json"
 
 [systemd]
-enable = ["t3code-update.timer", "t3-backup.timer", "opencode-free.timer", "systemd-tmpfiles-clean.timer"]
+enable = ["t3code-update.timer", "t3-backup.timer", "opencode-free.timer", "gah-gc.timer", "systemd-tmpfiles-clean.timer"]
 
 [[assert]]
 name = "Artificial Analysis API key stored"
