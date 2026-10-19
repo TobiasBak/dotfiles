@@ -218,6 +218,26 @@ class CleanRebaseCarryTests(unittest.TestCase):
         self.assertIn("advanced base touches PR paths", result.stderr)
         self.assertNotIn("comment", self.load())
 
+    def test_reverted_base_path_touch_still_refuses(self):
+        self.git("switch", "main")
+        self.put("src/value.py", "VALUE = 3\n")
+        self.commit("touch PR file on main")
+        self.put("src/value.py", "VALUE = 1\n")
+        self.commit("restore PR file on main")
+        new_base = self.git("rev-parse", "HEAD")
+        self.git("switch", "-C", "rebased")
+        self.git("cherry-pick", self.source)
+        head = self.git("rev-parse", "HEAD")
+        self.git("update-ref", "refs/pull/12/head", head)
+        state = self.load()
+        state["base"] = new_base
+        state["pr"]["head"]["sha"] = head
+        self.save(state)
+        result = self.carry()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("advanced base touches PR paths", result.stderr)
+        self.assertNotIn("comment", self.load())
+
     def test_changed_patch_refuses(self):
         self.put("src/value.py", "VALUE = 4\n")
         self.git("commit", "-am", "different patch")

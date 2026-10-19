@@ -72,8 +72,10 @@ and current main. The old base is their original head/main merge base. The
 current base must be an ancestor of the new head and must have advanced.
 Every entry of `git range-diff old_base..old_head new_base..new_head` must be
 `=`. Both PR ranges must change the same nonempty path set, and those paths'
-final Git entries, including modes, must match. No path changed by the advanced
-base may intersect either PR path set. Renames and deletions count both paths.
+final Git entries, including modes, must match. No path touched by any commit
+in the advanced-base range may intersect either PR path set, even if a later
+commit restores it. Merge commits use first-parent diffs. Renames and deletions
+count both paths.
 Anything else refuses without carrying proof.
 
 The original head must still have successful latest `gate` and `review`

@@ -429,6 +429,13 @@ def changed_paths(directory, base, head):
     ).split(b"\0")))
 
 
+def advanced_base_paths(directory, base, head):
+    return set(filter(None, git(
+        ["log", "--format=", "--name-only", "--no-renames", "--diff-merges=first-parent", "-z", f"{base}..{head}", "--"],
+        "carry advanced-base history paths", directory,
+    ).split(b"\0")))
+
+
 def rebase_proof(directory, source, head, base):
     old_base = git(["merge-base", source, base], "carry original base", directory).decode().strip()
     git(["merge-base", "--is-ancestor", base, head], "carry new base ancestry", directory)
@@ -436,7 +443,7 @@ def rebase_proof(directory, source, head, base):
         raise Refusal("carry: requires a new head rebased onto an advanced base")
     old_paths = changed_paths(directory, old_base, source)
     new_paths = changed_paths(directory, base, head)
-    overlap = (old_paths | new_paths) & changed_paths(directory, old_base, base)
+    overlap = (old_paths | new_paths) & advanced_base_paths(directory, old_base, base)
     if overlap:
         raise Refusal("carry: advanced base touches PR paths: " + ", ".join(path_name(os.fsdecode(path)) for path in sorted(overlap)))
     if old_paths != new_paths or not old_paths:
