@@ -60,6 +60,10 @@ class Leased(Failure):
     pass
 
 
+class TransportFailure(Failure):
+    pass
+
+
 def run(argv, **kwargs):
     return subprocess.run(argv, **kwargs)
 
@@ -139,7 +143,7 @@ def stderr_stream(stream):
         sys.stderr.flush()
 
 
-def powershell(ip, script, stream=False):
+def powershell(ip, script, stream=False, timeout=30):
     if os.environ.get("WIN_VM_LEASE"):
         ip = leased_state()["ip"]
     user, _ = credentials()
@@ -157,17 +161,40 @@ def powershell(ip, script, stream=False):
         reader.join()
         return code
     try:
-        result = run(argv, capture_output=True, timeout=30)
+        result = run(argv, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        raise Failure("guest SSH control command timed out after 30s") from None
+        raise TransportFailure(f"guest SSH control command timed out after {timeout:g}s") from None
     return result.returncode, result.stdout.decode("utf-8-sig", errors="replace"), decode_clixml(result.stderr)
 
 
-def remote(ip, script):
-    code, out, err = powershell(ip, "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; " + script)
+def remote(ip, script, timeout=30):
+    code, out, err = powershell(ip, "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; " + script, timeout=timeout)
     if code:
-        raise Failure(err.strip() or out.strip() or f"SSH PowerShell exited {code}")
+        failure = TransportFailure if code == 255 else Failure
+        raise failure(err.strip() or out.strip() or f"SSH PowerShell exited {code}")
     return out.strip()
+
+
+def job_query(ip, script, deadline):
+    health_deadline = min(deadline, time.monotonic() + 30)
+    interrupted = False
+    while True:
+        remaining = health_deadline - time.monotonic()
+        if remaining <= 0:
+            raise TransportFailure("guest control unavailable within the 30s health window or job deadline; job was not resubmitted")
+        try:
+            result = remote(ip, script, timeout=min(30, remaining))
+            if interrupted:
+                print("win-vm: guest control recovered; observing the same scheduled job", file=sys.stderr)
+            return result
+        except TransportFailure as error:
+            if not interrupted:
+                print(f"win-vm: guest control interrupted; checking the same scheduled job: {error}", file=sys.stderr)
+                interrupted = True
+            remaining = health_deadline - time.monotonic()
+            if remaining <= 0:
+                raise TransportFailure(f"guest control unavailable; job was not resubmitted: {error}") from error
+            time.sleep(min(1, remaining))
 
 
 def session(ip):
@@ -640,14 +667,19 @@ def scp(ip, src, dst, upload):
     return run(argv).returncode
 
 
-def job(ip, script, timeout, download=None, capture=False):
+def job(ip, script, timeout, download=None, capture=False, detached=False):
     ident = uuid.uuid4().hex
     folder = ROOT + "\\jobs\\" + ident
     task = "win-vm-" + ident
     user, _ = credentials()
     script = "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding;\n" + script
-    runner = (SOURCE / "run-job.ps1").read_bytes()
-    digest = hashlib.sha256(runner).hexdigest()
+    runners = {name: hashlib.sha256((SOURCE / name).read_bytes()).hexdigest()
+               for name in ("run-job.ps1", "cleanup-job.ps1")}
+    missing = "; ".join(
+        f"if (!(Test-Path {ps_string(ROOT + chr(92) + name)}) -or "
+        f"(Get-FileHash {ps_string(ROOT + chr(92) + name)} -Algorithm SHA256).Hash -ne '{digest}') {{ {ps_string(name)} }}"
+        for name, digest in runners.items()
+    )
     prepare = f"""
 $r={ps_string(ROOT)}; $d={ps_string(folder)}
 New-Item -ItemType Directory -Force -Path $r | Out-Null
@@ -660,12 +692,11 @@ foreach($sid in @('S-1-5-32-544','S-1-5-18')) {{
 }}
 Set-Acl -LiteralPath $r -AclObject $acl
 New-Item -ItemType Directory -Force -Path $d | Out-Null
-$needed=!(Test-Path "$r\\run-job.ps1") -or (Get-FileHash "$r\\run-job.ps1" -Algorithm SHA256).Hash -ne '{digest}'
-$needed | ConvertTo-Json -Compress
+ConvertTo-Json -InputObject @({missing}) -Compress
 """
     setup = f"""
 $n={ps_string(task)}
-$a=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\\ProgramData\\win-vm\\run-job.ps1 -Id {ident}'
+$a=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\\ProgramData\\win-vm\\run-job.ps1 -Id {ident}{' -Detached' if detached else ''}'
 $p=New-ScheduledTaskPrincipal -UserId {ps_string(user)} -LogonType Interactive -RunLevel Highest
 $s=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds {int(timeout) + 30}) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName $n -Action $a -Principal $p -Settings $s | Out-Null
@@ -674,8 +705,11 @@ Start-ScheduledTask -TaskName $n
 [Console]::Write($before)
 """
     try:
-        if json.loads(remote(ip, prepare)):
-            code = scp(ip, str(SOURCE / "run-job.ps1"), ROOT + "\\run-job.ps1", True)
+        needed = json.loads(remote(ip, prepare))
+        if not isinstance(needed, list) or any(name not in runners for name in needed):
+            raise Failure("invalid guest job helper inventory")
+        for name in needed:
+            code = scp(ip, str(SOURCE / name), ROOT + "\\" + name, True)
             if code:
                 raise Failure(f"scp to guest failed with exit code {code}")
         scratch = HOME / ".cache/agent-tmp"
@@ -703,7 +737,7 @@ if ($started -and !$active) {{
  @{{done=$true;code=[int](Get-Content $e);stdout=$o;stderr=$err}} | ConvertTo-Json -Compress
 }} else {{ @{{done=$false}} | ConvertTo-Json -Compress }}
 """
-            result = json.loads(remote(ip, poll))
+            result = json.loads(job_query(ip, poll, deadline))
             if result["done"]:
                 if download and result["code"] == 0:
                     code = scp(ip, folder + "\\capture.png", download, False)
@@ -718,7 +752,6 @@ if ($started -and !$active) {{
                     sys.stdout.buffer.flush()
                 sys.stderr.write(decode_clixml(base64.b64decode(result["stderr"])))
                 return (result["code"], stdout) if capture else result["code"]
-            # Polls once more after the deadline, so a job finishing during the last sleep counts.
             if time.monotonic() >= deadline:
                 raise Failure(f"in-session job timed out after {timeout:g}s")
             # Each poll is a short SSH call; back off so long jobs stay cheap.
@@ -726,22 +759,11 @@ if ($started -and !$active) {{
             time.sleep(min(interval, max(0, deadline - time.monotonic())))
     finally:
         failed = sys.exc_info()[0] is not None
-        # Always stop/wait before removal; Start-ScheduledTask is asynchronous.
         cleanup = f"""
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 $n={ps_string(task)}; $d={ps_string(folder)}
-$t=Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue
-if ($t) {{
- if ($t.State -in @('Queued','Running')) {{ Stop-ScheduledTask -TaskName $n }}
- $until=(Get-Date).AddSeconds(15)
- do {{
-  $t=Get-ScheduledTask -TaskName $n
-  if ($t.State -notin @('Queued','Running')) {{ break }}
-  Start-Sleep -Milliseconds 200
- }} while ((Get-Date) -lt $until)
- if ($t.State -in @('Queued','Running')) {{ throw 'Task still active; retained task and job directory' }}
- Unregister-ScheduledTask -TaskName $n -Confirm:$false
-}}
-if (Test-Path $d) {{ Remove-Item -LiteralPath $d -Recurse -Force }}
+& {ps_string(ROOT + chr(92) + 'cleanup-job.ps1')} -TaskName $n -Directory $d
+if (-not $?) {{ throw 'Owned job cleanup failed; retained job directory' }}
 """
         try:
             remote(ip, cleanup)
@@ -941,7 +963,7 @@ if ($arguments) {{ $params.ArgumentList=$arguments }}
 $p=Start-Process @params
 """
         if not args.wait:
-            return job(ip, script + "@{pid=$p.Id} | ConvertTo-Json -Compress\n", args.timeout)
+            return job(ip, script + "@{pid=$p.Id} | ConvertTo-Json -Compress\n", args.timeout, detached=True)
         # The handle keeps ExitCode readable; on timeout, kill the whole tree before failing.
         script += f"""$null=$p.Handle
 if (!$p.WaitForExit({int(args.timeout * 1000)})) {{
