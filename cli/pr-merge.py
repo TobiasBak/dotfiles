@@ -108,6 +108,13 @@ class Parser(argparse.ArgumentParser):
 
 
 def arguments(argv):
+    if argv and argv[0] == "base-proof":
+        parser = Parser(prog="pr-merge base-proof", allow_abbrev=False,
+                        description="Prove advanced-base history is disjoint from the original PR paths.")
+        parser.add_argument("--base", required=True, type=full_sha)
+        parser.add_argument("--head", required=True, type=full_sha)
+        parser.add_argument("--advanced", required=True, type=full_sha)
+        return "base-proof", parser.parse_args(argv[1:])
     if argv and argv[0] == "carry":
         parser = Parser(
             prog="pr-merge carry", allow_abbrev=False,
@@ -440,6 +447,25 @@ def advanced_base_paths(directory, base, head):
     ).split(b"\0")))
 
 
+def disjoint_base_proof(directory, base, advanced, paths):
+    if git(["rev-parse", "--is-shallow-repository"], "base proof history", directory).strip() != b"false":
+        raise Refusal("base proof: complete history is required")
+    git(["merge-base", "--is-ancestor", base, advanced], "base advancement ancestry", directory)
+    overlap = paths & advanced_base_paths(directory, base, advanced)
+    if overlap:
+        raise Refusal("advanced base touches PR paths: " + ", ".join(path_name(os.fsdecode(path)) for path in sorted(overlap)))
+    commits = git(["rev-list", "--reverse", f"{base}..{advanced}"], "base advancement commits", directory).decode().splitlines()
+    return {"oldBase": base, "newBase": advanced, "paths": [os.fsdecode(path) for path in sorted(paths)], "commits": commits}
+
+
+def gate_base_proof(directory, base, head, advanced):
+    git(["merge-base", "--is-ancestor", base, head], "qualification base ancestry", directory)
+    paths = changed_paths(directory, base, head)
+    if not paths:
+        raise Refusal("base proof: original PR paths must be nonempty")
+    return {"head": head, **disjoint_base_proof(directory, base, advanced, paths)}
+
+
 def qualified_base(statuses):
     description = statuses["gate"].get("description")
     match = re.fullmatch(r"Qualified base ([0-9a-f]{40})", description) if isinstance(description, str) else None
@@ -450,15 +476,12 @@ def qualified_base(statuses):
 
 def rebase_proof(directory, source, head, base, old_base):
     git(["merge-base", "--is-ancestor", old_base, source], "carry original base ancestry", directory)
-    git(["merge-base", "--is-ancestor", old_base, base], "carry base advancement ancestry", directory)
     git(["merge-base", "--is-ancestor", base, head], "carry new base ancestry", directory)
     if source == head or old_base == base:
         raise Refusal("carry: requires a new head rebased onto an advanced base")
     old_paths = changed_paths(directory, old_base, source)
     new_paths = changed_paths(directory, base, head)
-    overlap = (old_paths | new_paths) & advanced_base_paths(directory, old_base, base)
-    if overlap:
-        raise Refusal("carry: advanced base touches PR paths: " + ", ".join(path_name(os.fsdecode(path)) for path in sorted(overlap)))
+    disjoint_base_proof(directory, old_base, base, old_paths | new_paths)
     if old_paths != new_paths or not old_paths:
         raise Refusal("carry: original and rebased PR path sets must be identical and nonempty")
     summary = git(
@@ -615,7 +638,9 @@ def merge(url, repo, number):
 def main():
     mode, args = arguments(sys.argv[1:])
     try:
-        if mode == "post":
+        if mode == "base-proof":
+            print(json.dumps(gate_base_proof(Path.cwd(), args.base, args.head, args.advanced), sort_keys=True))
+        elif mode == "post":
             post(args)
         elif mode == "carry":
             carry(*args.pr_url, args.source)

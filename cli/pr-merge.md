@@ -67,6 +67,22 @@ refuses. With no flagged paths, no review fetch is needed.
 Review authorship is not verified. A review body is evidence, not identity;
 neither it nor the metrics line proves who approved or performed work.
 
+## In-flight base proof
+
+`pr-merge base-proof --base ORIGINAL_SHA --head QUALIFIED_HEAD --advanced MAIN_SHA`
+prints a read-only local Git proof. Shallow repositories refuse: ancestry alone
+cannot prove that a hidden side branch never touched a PR path. The original base must precede both the head
+and advanced main. The PR path set is the original base-to-head diff; every
+commit in advanced main history must be disjoint from those paths, including
+paths touched and restored. The JSON binds both bases, head, PR paths and
+advanced commit IDs. This is the same checker used by clean-rebase carry.
+It does not fetch, qualify, post a status or excuse a failing obligation.
+
+A gate may qualify against its original comparison baseline and record this
+proof when main advances during that run. It must still check an unchanged
+head/tree and a stable publication snapshot. Qualification remains bound to the
+original base; normal clean-rebase carry reproduces the rule before merge.
+
 ## Clean-rebase carry
 
 ```sh

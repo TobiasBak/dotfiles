@@ -193,6 +193,41 @@ class CleanRebaseCarryTests(unittest.TestCase):
     def carry(self):
         return self.invoke("carry", f"https://github.com/{REPO}/pull/12", "--from", self.source)
 
+    def test_base_proof_preserves_original_comparison_without_rebasing(self):
+        state = self.load()
+        result = self.invoke("base-proof", "--base", self.base, "--head", self.source, "--advanced", state["base"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        proof = json.loads(result.stdout)
+        self.assertEqual(proof["head"], self.source)
+        self.assertEqual(proof["oldBase"], self.base)
+        self.assertEqual(proof["newBase"], state["base"])
+        self.assertEqual(proof["paths"], ["src/value.py"])
+        self.assertEqual(proof["commits"], [state["base"]])
+        self.assertEqual(self.load(), state)
+
+    def test_base_proof_refuses_shallow_history(self):
+        shallow = self.root / "shallow"
+        result = subprocess.run(["git", "clone", "--depth=2", "--branch=main", self.repository.as_uri(), str(shallow)], env=self.env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = subprocess.run(["git", "-C", str(shallow), "fetch", "--depth=2", "origin", "original"], env=self.env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = subprocess.run([sys.executable, str(CLI), "base-proof", "--base", self.base, "--head", self.source, "--advanced", self.load()["base"]], cwd=shallow, env=self.env, capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("complete history", result.stderr)
+
+    def test_base_proof_refuses_touched_then_restored_paths(self):
+        self.git("switch", "main")
+        self.put("src/value.py", "VALUE = 3\n")
+        self.commit("touch PR path")
+        self.put("src/value.py", "VALUE = 1\n")
+        self.commit("restore PR path")
+        advanced = self.git("rev-parse", "HEAD")
+        result = self.invoke("base-proof", "--base", self.base, "--head", self.source, "--advanced", advanced)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("advanced base touches PR paths", result.stderr)
+        result = self.invoke("base-proof", "--base", advanced, "--head", self.source, "--advanced", self.base)
+        self.assertEqual(result.returncode, 1)
+
     def test_real_cli_carries_and_merge_reproduces_original_review(self):
         result = self.carry()
         self.assertEqual(result.returncode, 0, result.stderr)
