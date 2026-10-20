@@ -67,6 +67,12 @@ def start():
     storage = str(home / ".local/state/win-vm/ephemeral/storage") if "--force-recreate" in args else "/persistent/storage"
     (home / "container").write_text("running|new|172.18.0.2|" + storage)
 if name == "heavy-lease":
+    if args[:1] == ["isolate"]:
+        assert args == ["isolate", "--", "/usr/bin/omarchy-windows-vm", "prepare"], args
+        with (home / "calls.jsonl").open("a") as stream:
+            stream.write(json.dumps(["prepare-boundary", {"argv": args, "cwd": os.getcwd(),
+                "gah": {key: os.environ[key] for key in ("GAH_WORKSPACE", "GAH_ROOT", "GAH_BIN", "GAH_LAUNCH_CONTEXT") if key in os.environ}}]) + "\\n")
+        os.execv(str(home / "bin/omarchy-windows-vm"), ["omarchy-windows-vm", "prepare"])
     os.execv(os.environ["REAL_HEAVY_LEASE"], [os.environ["REAL_HEAVY_LEASE"], *args])
 elif name == "docker":
     if args[0] == "inspect":
@@ -82,6 +88,9 @@ elif name == "docker-compose":
         with (home / "calls.jsonl").open("a") as stream:
             stream.write(json.dumps(["compose-config-replied", ram]) + "\\n")
     elif "up" in args:
+        with (home / "calls.jsonl").open("a") as stream:
+            stream.write(json.dumps(["allocation-boundary", {"cwd": os.getcwd(),
+                "gah": {key: os.environ[key] for key in ("GAH_WORKSPACE", "GAH_ROOT", "GAH_BIN", "GAH_LAUNCH_CONTEXT") if key in os.environ}}]) + "\\n")
         start()
     else:
         sys.exit(98)
@@ -249,7 +258,7 @@ elif name != "chattr":
         self.processes.append(process)
         self.wait_for_call(calls, lambda call: call == ["omarchy-windows-vm", "prepare"])
         self.assertFalse((self.home / "container").exists())
-        self.assertFalse(any(call[0] == "heavy-lease" and call[call.index("--memory") + 1] != "0"
+        self.assertFalse(any(call[0] == "heavy-lease" and "--memory" in call and call[call.index("--memory") + 1] != "0"
                              for call in self.history()))
         (self.home / "ram.json").write_text(json.dumps("16G"))
         with release.open("w") as stream:
@@ -262,6 +271,20 @@ elif name != "chattr":
         self.assertEqual(process.returncode, 0, error.decode())
         self.assertIs(json.loads(output)["already_running"], False)
         self.assertEqual(sum(call[0] == "docker-compose" and "up" in call for call in self.history()), 1)
+
+    def test_only_host_global_prepare_leaves_the_workspace_context(self):
+        (self.home / "mounts-ready").unlink()
+        gah = {"GAH_WORKSPACE": "fixture-workspace", "GAH_ROOT": "/fixture/repo",
+               "GAH_BIN": "/fixture/gah", "GAH_LAUNCH_CONTEXT": "fixture-context"}
+        self.env.update(gah)
+        result = self.invoke("up")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        boundary = next(call[1] for call in self.history() if call[0] == "prepare-boundary")
+        self.assertEqual(boundary, {"argv": ["isolate", "--", "/usr/bin/omarchy-windows-vm", "prepare"],
+                                    "cwd": "/", "gah": {}})
+        allocation = next(call[1] for call in self.history() if call[0] == "allocation-boundary")
+        self.assertEqual(allocation, {"cwd": str(self.home), "gah": gah})
+        self.assertEqual(sum(call == ["omarchy-windows-vm", "prepare"] for call in self.history()), 1)
 
     def test_missing_failed_or_incomplete_prepare_never_falls_back_to_startup(self):
         (self.home / "mounts-ready").unlink()

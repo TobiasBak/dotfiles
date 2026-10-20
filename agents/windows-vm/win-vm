@@ -749,7 +749,10 @@ def up(timeout, admission_class):
         if needs_prepare:
             print("Omarchy bind mounts need restoring; preparing without starting the VM.", file=sys.stderr, flush=True)
             harden_mount_sources()
-            checked(["omarchy-windows-vm", "prepare"], stdout=sys.stderr)
+            environment = {key: value for key, value in os.environ.items()
+                           if key not in ("GAH_WORKSPACE", "GAH_ROOT", "GAH_BIN", "GAH_LAUNCH_CONTEXT")}
+            checked(["heavy-lease", "isolate", "--", "/usr/bin/omarchy-windows-vm", "prepare"],
+                    env=environment, cwd="/", stdout=sys.stderr)
         with admitted_lifecycle(admission_class) as locked:
             already = docker_state()["container"] == "running"
             if not already:

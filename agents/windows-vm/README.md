@@ -34,8 +34,15 @@ named ownership, without silently inheriting the outer zero estimate.
 
 When persistent bind mounts need restoration, `up` first calls the supported
 `omarchy-windows-vm prepare` operation. It may authorize privileged mount/config
-preparation, but must never start or recreate Windows. After it returns, the
-owner rereads config, checks additional memory, then validates mounts and
+preparation, but must never start or recreate Windows. Only this fixed
+host-global operation runs through `heavy-lease isolate` in the user-manager
+context, with `/` as cwd and `GAH_WORKSPACE`, `GAH_ROOT`, `GAH_BIN` and
+`GAH_LAUNCH_CONTEXT` absent. It invokes absolute
+`/usr/bin/omarchy-windows-vm prepare`, so trusted root-owned helper validation
+uses host ownership rather than unmapped owners in a workspace namespace.
+The parent retains its VM named lease. Source, payload and actual Docker
+allocation remain in the original caller context. After preparation returns,
+the owner rereads config, checks additional memory, then validates mounts and
 starts Docker under the final lifecycle lock. Config changes across admission
 or lifecycle-lock waits trigger fresh admission. Missing, failed or incomplete
 prepare support prevents startup; there is no fallback to privileged `up`.
