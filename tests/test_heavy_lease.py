@@ -18,6 +18,7 @@ import unittest
 CLI = Path(__file__).resolve().parents[1] / "cli/heavy-lease.py"
 POOL_SIZE = 4
 MEMORY_PER_SLOT = 17 * 1024**3 // POOL_SIZE
+DESKTOP_MARGIN = 4 * 1024**3
 FREE_TEXT = f"pool: 0/{POOL_SIZE} slots in use; 0 exclusive locks; 0 waiters\n"
 
 
@@ -513,15 +514,87 @@ sys.exit(23)
         self.release(last)
         self.assertEqual(self.scheduler_status()["waiters"], [])
 
-    def test_empty_pool_admits_full_weight_without_memory_headroom(self):
-        Path(self.env["HEAVY_LEASE_MEMINFO"]).write_text("MemAvailable: 0 kB\n")
+    def test_lone_job_needs_desktop_margin_and_caller_headroom(self):
+        meminfo = Path(self.env["HEAVY_LEASE_MEMINFO"])
         parent = Path(self.env["HEAVY_LEASE_CGROUP_ROOT"]) / "parent"
-        (parent / "memory.max").write_text("1024\n")
-        (parent / "memory.current").write_text("1024\n")
-        self.assertEqual(self.scheduler_status()["slots"], [])
-        result = self.invoke("run", "--wait", "--", "true", weight=4)
+        for available, limit, usage, expected in (
+            (0, "max", 0, 2),
+            (DESKTOP_MARGIN + MEMORY_PER_SLOT - 1024, "max", 0, 2),
+            (DESKTOP_MARGIN + MEMORY_PER_SLOT, "max", 0, 0),
+            (64 * 1024**3, str(MEMORY_PER_SLOT), 1024, 2),
+            (64 * 1024**3, str(MEMORY_PER_SLOT), 0, 0),
+        ):
+            with self.subTest(available=available, limit=limit, usage=usage):
+                meminfo.write_text(f"MemAvailable: {available // 1024} kB\n")
+                (parent / "memory.max").write_text(limit + "\n")
+                (parent / "memory.current").write_text(str(usage) + "\n")
+                result = self.invoke("run", "--try", "--", "true", weight=1)
+                self.assertEqual(result.returncode, expected, result.stderr)
+                if expected == 2:
+                    self.assertIn("busy: memory", result.stderr)
+                self.assertEqual(self.scheduler_status()["slots"], [])
+                self.assertEqual(self.scheduler_status()["waiters"], [])
+
+    def test_external_vm_usage_counts_once_through_host_availability(self):
+        # A live VM in system.slice is outside the caller's unlimited ancestors.
+        # Its resident 8 GiB is already absent from MemAvailable.
+        meminfo = Path(self.env["HEAVY_LEASE_MEMINFO"])
+        meminfo.write_text(f"MemAvailable: {(DESKTOP_MARGIN + MEMORY_PER_SLOT) // 1024} kB\n")
+        holder = self.start(
+            [sys.executable, "-c", CONTROLLED, str(self.home / "resident-holder")], weight=1,
+        )
+        self.event(holder, b"entered\n")
+        # Neither a second VM reservation nor the holder's full peak is deducted.
+        result = self.invoke("run", "--try", "--", "true", weight=1)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.scheduler_status()["waiters"], [])
+        meminfo.write_text(f"MemAvailable: {(DESKTOP_MARGIN + MEMORY_PER_SLOT - 1024) // 1024} kB\n")
+        result = self.invoke("run", "--try", "--", "true", weight=1)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("busy: memory", result.stderr)
+        self.release(holder)
+
+    def test_memory_inputs_fail_closed_even_for_a_lone_job(self):
+        root = Path(self.env["HEAVY_LEASE_CGROUP_ROOT"])
+        for path, contents in (
+            (Path(self.env["HEAVY_LEASE_MEMINFO"]), "SwapFree: 999999999 kB\n"),
+            (Path(self.env["HEAVY_LEASE_MEMINFO"]), "MemAvailable: -1 kB\n"),
+            (Path(self.env["HEAVY_LEASE_MEMINFO"]), "MemAvailable: 999 GB\n"),
+            (Path(self.env["HEAVY_LEASE_MEMINFO"]), "MemAvailable: 1 kB\nMemAvailable: 2 kB\n"),
+            (Path(self.env["HEAVY_LEASE_CGROUP_FILE"]), "0::/../escape\n"),
+            (root / "parent/memory.max", "invalid\n"),
+            (root / "parent/memory.current", "-1\n"),
+            (root / "parent/memory.stat", "inactive_file invalid\n"),
+        ):
+            with self.subTest(path=path.name, contents=contents):
+                self.env.update(fake_memory_environment(self.home))
+                (root / "parent/memory.max").write_text(str(64 * 1024**3) + "\n")
+                path.write_text(contents)
+                target = self.home / "must-not-start"
+                result = self.invoke("run", "--try", "--", "touch", str(target), weight=1)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertFalse(target.exists())
+                self.assertIn("heavy-lease:", result.stderr)
+        self.env.update(fake_memory_environment(self.home))
+        result = self.invoke("run", "--try", "--", "true", weight=1)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_low_memory_nested_run_reuses_only_its_live_parent_allocation(self):
+        holder = self.start(
+            [sys.executable, "-c", CONTROLLED, str(self.home / "nested-holder")], weight=1,
+        )
+        self.event(holder, b"entered\n")
+        token = self.scheduler_status()["slots"][0]["holder"]["token"]
+        Path(self.env["HEAVY_LEASE_MEMINFO"]).write_text("MemAvailable: 0 kB\n")
+        nested_env = {**self.env, "HEAVY_LEASE_TOKEN": token}
+        result = self.invoke("run", "--try", "--", "true", weight=None, env=nested_env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.invoke("run", "--try", "--", "true", weight=2, env=nested_env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("not held by its parent", result.stderr)
+        self.release(holder)
+        result = self.invoke("run", "--try", "--", "true", weight=1, env=nested_env)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("busy: memory", result.stderr)
 
     def test_memory_head_cannot_be_skipped_and_rereads_host_and_ancestor_headroom(self):
         unit = MEMORY_PER_SLOT
@@ -592,7 +665,7 @@ sys.exit(23)
                 elif restore == "limit":
                     restored, contents = parent / "memory.max", f"{3 * unit}\n"
                 else:
-                    restored, contents = meminfo, f"MemAvailable: {3 * unit // 1024} kB\n"
+                    restored, contents = meminfo, f"MemAvailable: {(3 * unit + DESKTOP_MARGIN) // 1024} kB\n"
                 replacement = restored.with_suffix(".next")
                 replacement.write_text(contents)
                 os.replace(replacement, restored)
@@ -619,7 +692,7 @@ sys.exit(23)
             self.assertEqual(rejected.stdout, "")
         self.release(holder)
 
-    def test_zero_weight_exclusive_lane_has_zero_expected_peak_without_memory_headroom(self):
+    def test_legacy_zero_weight_exclusive_lane_preserves_no_memory_request(self):
         Path(self.env["HEAVY_LEASE_MEMINFO"]).write_text("MemAvailable: 0 kB\n")
         holder = self.start(
             [sys.executable, "-c", CONTROLLED, str(self.home / "exclusive-critical")],
@@ -633,6 +706,88 @@ sys.exit(23)
         self.assertEqual(metadata["class"], "gate")
         self.assertEqual(metadata["expected_peak"], 0)
         self.assertEqual(metadata["pid"], holder.pid)
+        self.release(holder)
+
+    def test_zero_slot_vm_startup_checks_memory_and_wakes_after_recovery(self):
+        meminfo = Path(self.env["HEAVY_LEASE_MEMINFO"])
+        startup = 9 * 1024**3
+        meminfo.write_text(f"MemAvailable: {(DESKTOP_MARGIN + startup - 1024) // 1024} kB\n")
+        result = self.invoke("run", "--try", "--exclusive", "win-vm", "--memory", str(startup), "--", "true", weight=0)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("busy: memory", result.stderr)
+        notifications = self.watch_waiters()
+        holder = self.start(
+            [sys.executable, "-c", CONTROLLED, str(self.home / "vm-startup")],
+            mode=("--exclusive", "win-vm", "--memory", str(startup)), weight=0,
+        )
+        self.waiter_event(notifications, holder)
+        queued = self.scheduler_status()
+        self.assertEqual(queued["slots"], [])
+        self.assertEqual(queued["exclusive"], [])
+        self.assertEqual(queued["waiters"][0]["expected_peak"], startup)
+        self.assertEqual(queued["waiters"][0]["admission_reason"], "memory")
+        meminfo.write_text(f"MemAvailable: {(DESKTOP_MARGIN + startup) // 1024} kB\n")
+        self.event(holder, b"entered\n")
+        metadata = self.scheduler_status()["exclusive"][0]["holder"]
+        self.assertEqual(metadata["expected_peak"], startup)
+        nested_env = {**self.env, "HEAVY_LEASE_TOKEN": metadata["token"]}
+        meminfo.write_text("MemAvailable: 0 kB\n")
+        for memory, code in ((startup, 2), (0, 0), (startup + 1, 2)):
+            result = self.invoke("run", "--try", "--exclusive", "win-vm", "--memory", str(memory), "--", "true", weight=0, env=nested_env)
+            self.assertEqual(result.returncode, code, result.stderr)
+        self.release(holder)
+        # No-growth work can use a resident VM without reserving its RAM twice.
+        result = self.invoke("run", "--try", "--exclusive", "win-vm", "--memory", "0", "--", "true", weight=0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for memory in ("-1", "8G", "invalid"):
+            result = self.invoke("run", "--try", "--exclusive", "win-vm", "--memory", memory, "--", "true", weight=0)
+            self.assertEqual(result.returncode, 1, result.stderr)
+
+    def test_old_holder_without_memory_field_rechecks_explicit_allocation(self):
+        holder = self.start([sys.executable, "-c", CONTROLLED, str(self.home / "old-holder")], weight=1)
+        self.event(holder, b"entered\n")
+        path = self.state / "slot-0.json"
+        metadata = json.loads(path.read_text())
+        metadata.pop("expected_peak")
+        path.write_text(json.dumps(metadata))
+        nested_env = {**self.env, "HEAVY_LEASE_TOKEN": metadata["token"]}
+        meminfo = Path(self.env["HEAVY_LEASE_MEMINFO"])
+        for available, memory, code in ((64 * 1024**3, 2 * MEMORY_PER_SLOT, 0),
+                                        (DESKTOP_MARGIN, MEMORY_PER_SLOT, 2)):
+            meminfo.write_text(f"MemAvailable: {available // 1024} kB\n")
+            result = self.invoke("run", "--try", "--memory", str(memory), "--", "true", weight=1, env=nested_env)
+            self.assertEqual(result.returncode, code, result.stderr)
+        self.release(holder)
+
+    def test_old_zero_slot_vm_holder_waits_for_explicit_nested_memory(self):
+        holder = self.start(
+            [sys.executable, "-c", CONTROLLED, str(self.home / "old-vm-holder")],
+            mode=("--exclusive", "win-vm"), weight=0,
+        )
+        self.event(holder, b"entered\n")
+        metadata = self.scheduler_status()["exclusive"][0]["holder"]
+        self.assertEqual(metadata["expected_peak"], 0)
+        meminfo = Path(self.env["HEAVY_LEASE_MEMINFO"])
+        meminfo.write_text(f"MemAvailable: {(DESKTOP_MARGIN + MEMORY_PER_SLOT) // 1024} kB\n")
+        nested_env = {**self.env, "HEAVY_LEASE_TOKEN": metadata["token"]}
+        process = subprocess.Popen(
+            [str(CLI), "run", "--wait", "--weight", "0", "--exclusive", "win-vm",
+             "--memory", str(2 * MEMORY_PER_SLOT), "--", sys.executable, "-c", CONTROLLED,
+             str(self.home / "nested-vm")],
+            env=nested_env, cwd=self.home, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, start_new_session=True, bufsize=0,
+        )
+        self.processes.append(process)
+        # A synchronous --try observes the same denial without waiting or new locks.
+        result = self.invoke("run", "--try", "--exclusive", "win-vm", "--memory", str(2 * MEMORY_PER_SLOT), "--", "true", weight=0, env=nested_env)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        result = self.invoke("run", "--try", "--", "true", weight=1)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.scheduler_status()["waiters"], [])
+        self.assertEqual(self.scheduler_status()["exclusive"][0]["holder"], metadata)
+        meminfo.write_text(f"MemAvailable: {(DESKTOP_MARGIN + 2 * MEMORY_PER_SLOT) // 1024} kB\n")
+        self.event(process, b"entered\n")
+        self.release(process)
         self.release(holder)
 
     def test_weighted_sleep_pool_and_exclusive_lanes(self):

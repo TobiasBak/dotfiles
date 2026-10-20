@@ -4,6 +4,53 @@
 workstation's live command follows `~/.dotfiles/agents/windows-vm/win-vm`.
 It reads existing VM credentials by path; they never belong in evidence.
 
+## Host admission
+
+```sh
+win-vm up --class interactive
+win-vm run --class gate --ephemeral -- ./lane.sh
+```
+
+`up` and `run --ephemeral` own `heavy-lease` admission. `--class` accepts
+`gate`, `interactive` (default), or `efficiency`. Call them directly; do not
+add an outer host lease. Missing `heavy-lease` fails before startup.
+
+The owner first takes the zero-slot `win-vm` named lock with a zero-memory
+request. Before allocating a guest, it explicitly admits additional memory:
+the resolved Compose `windows.environment.RAM_SIZE` plus 1 GiB for QEMU,
+container services and host overhead. RAM_SIZE accepts positive integer M/G
+units, optionally suffixed B or iB. The overhead is a conservative admission
+estimate, not a measured upper bound or cgroup hard limit. Existing-running
+`up` needs no additional guest allocation and does not reserve its RAM twice.
+Ephemeral runs still refuse a running persistent VM.
+
+Startup checks use host `MemAvailable` minus the fixed 4 GiB desktop margin
+and the caller's finite ancestor hard limits. Resident Windows memory is
+already reflected in host availability. Swap does not add build capacity.
+Named/CPU locks remain descriptor-owned; memory is a phase admission check,
+not a held quota. Historical outer zero-slot wrappers remain supported:
+explicit nested startup admission waits for headroom while retaining that
+named ownership, without silently inheriting the outer zero estimate.
+
+When persistent bind mounts need restoration, `up` first calls the supported
+`omarchy-windows-vm prepare` operation. It may authorize privileged mount/config
+preparation, but must never start or recreate Windows. After it returns, the
+owner rereads config, checks additional memory, then validates mounts and
+starts Docker under the final lifecycle lock. Config changes across admission
+or lifecycle-lock waits trigger fresh admission. Missing, failed or incomplete
+prepare support prevents startup; there is no fallback to privileged `up`.
+Install the Omarchy prepare-capable provider before enabling this restoration
+path. Already-running readiness and already-prepared direct startup do not
+invoke prepare.
+
+Memory waits do not hold Omarchy's lifecycle lock. `down`, `status` and
+recovery do not request memory; ephemeral guest exclusivity still applies.
+The guardian inherits available host lock descriptors through teardown;
+token-only borrowers continue relying on their parent to retain ownership.
+No T3/VM restart, stock Omarchy desktop launcher, manual Docker start, or
+container restart policy is changed. Those other startup paths are not
+covered by this wrapper's admission policy.
+
 ## Transport
 
 SSH and SFTP ignore ambient user and system SSH configuration (`-F none`).

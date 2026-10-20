@@ -55,6 +55,7 @@ POOL_MEASUREMENTS = {
 }
 POOL_SIZE = 4
 PER_SLOT_PEAK = 17 * 1024**3 // POOL_SIZE
+DESKTOP_MARGIN = 4 * 1024**3
 ADMISSION_CLASSES = ("gate", "interactive", "efficiency")
 DEFAULT_WEIGHTS = (("orderready", 2), ("stepkit-geometry", 2))
 REQUEST_RETENTION = 1024
@@ -287,7 +288,9 @@ def memory_headroom(pid=None):
     available = [line.split() for line in meminfo.read_text().splitlines() if line.startswith("MemAvailable:")]
     if len(available) != 1 or len(available[0]) != 3 or available[0][2] != "kB":
         raise ValueError(f"missing or invalid MemAvailable in {meminfo}")
-    headroom = nonnegative_integer(available[0][1], meminfo) * 1024
+    # Host availability already includes usage outside this caller's cgroup,
+    # including Windows. Reserve only the desktop margin, not live job peaks.
+    headroom = max(0, nonnegative_integer(available[0][1], meminfo) * 1024 - DESKTOP_MARGIN)
     membership = Path(os.environ.get("HEAVY_LEASE_CGROUP_FILE", f"/proc/{pid}/cgroup" if pid is not None else "/proc/self/cgroup"))
     paths = [line[3:] for line in membership.read_text().splitlines() if line.startswith("0::")]
     if len(paths) != 1 or not paths[0].startswith("/") or ".." in Path(paths[0]).parts:
@@ -364,6 +367,11 @@ def queue_blocker(request, waiters, occupied):
     return None
 
 
+def expected_peak(request):
+    # Running old-version holders/waiters persist without an explicit estimate.
+    return request.get("expected_peak", request["weight"] * PER_SLOT_PEAK)
+
+
 def admission_reason(request, waiters, headroom, occupied):
     if request["exclusive"] and f"exclusive-{request['exclusive']}" in occupied:
         return "exclusive"
@@ -372,7 +380,7 @@ def admission_reason(request, waiters, headroom, occupied):
     held_slots = sum(name.startswith("slot-") for name in occupied)
     if request["weight"] > POOL_SIZE - held_slots:
         return "slots"
-    if held_slots and request["weight"] * PER_SLOT_PEAK > headroom:
+    if expected_peak(request) > headroom:
         return "memory"
     return "ready"
 
@@ -596,6 +604,8 @@ def read_waiters(directory):
                     and (holder["exclusive"] is None or isinstance(holder["exclusive"], str)
                          and re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", holder["exclusive"]))
                     and (holder["weight"] > 0 or holder["exclusive"])
+                    and ("expected_peak" not in holder or type(holder["expected_peak"]) is int
+                         and holder["expected_peak"] >= 0)
                 ):
                     waiters.append(holder)
         finally:
@@ -603,7 +613,26 @@ def read_waiters(directory):
     return sorted(waiters, key=lambda entry: (ADMISSION_CLASSES.index(entry["class"]), entry["sequence"]))
 
 
-def run(directory, command, try_only, weight, exclusive, admission_class):
+def nested_memory_admission(directory, token, memory, try_only):
+    # A nested allocation keeps its parent's locks. It cannot queue for resources
+    # it already owns, nor treat an old zero-slot holder as a memory reservation.
+    while True:
+        with_memory = AdmissionObserver(directory)
+        try:
+            if nested_holder(directory, token) is None:
+                raise ValueError("nested memory admission lost its parent's live lease")
+            if memory <= memory_headroom():
+                return True
+            if try_only:
+                report_busy("memory", {}, {"exclusive": None})
+                return False
+            with_memory.observe_blockers({}, [], "memory", {})
+            with_memory.wait()
+        finally:
+            with_memory.close()
+
+
+def run(directory, command, try_only, weight, exclusive, admission_class, memory):
     token = os.environ.get("HEAVY_LEASE_TOKEN")
     inherited = nested_holder(directory, token)
     if inherited:
@@ -615,9 +644,12 @@ def run(directory, command, try_only, weight, exclusive, admission_class):
             exclusive and f"exclusive-{exclusive}" not in resources
         ):
             raise ValueError("nested run requests resources not held by its parent; use isolate for independent work")
+        if memory is not None and not nested_memory_admission(directory, token, memory, try_only):
+            return 2
         os.execvp(command[0], command)
     if weight is None:
         weight = 0 if exclusive else default_weight(command)
+    peak = weight * PER_SLOT_PEAK if memory is None else memory
     started = datetime.now(timezone.utc).isoformat()
     request_id = secrets.token_hex(16)
     folder = directory / "requests"
@@ -627,7 +659,7 @@ def run(directory, command, try_only, weight, exclusive, admission_class):
         "event": "queued", "request_id": request_id, "pid": os.getpid(),
         "process_start_ticks": process_identity(Path("/proc/self"))[1],
         "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
-        "start_time": started, "class": admission_class, "weight": weight,
+        "start_time": started, "class": admission_class, "weight": weight, "expected_peak": peak,
         "exclusive": exclusive, "cwd": os.getcwd(),
         "command_head": [part[:256] for part in command[:4]],
         "queued_at": started, "admitted_at": None, "exited_at": None, "exit_code": None,
@@ -638,7 +670,7 @@ def run(directory, command, try_only, weight, exclusive, admission_class):
     held = {}
     metadata = {
         "pid": os.getpid(), "command": command, "weight": weight, "exclusive": exclusive,
-        "class": admission_class, "expected_peak": weight * PER_SLOT_PEAK,
+        "class": admission_class, "expected_peak": peak,
         "start_time": started, "queued_at": started, "request_id": request_id, **context,
         **({"T3_THREAD_ID": os.environ["T3_THREAD_ID"]} if "T3_THREAD_ID" in os.environ else {}),
     }
@@ -655,7 +687,7 @@ def run(directory, command, try_only, weight, exclusive, admission_class):
             "token": token, "pid": os.getpid(), "pgid": os.getpgrp(),
             "start_time": started, "queued_at": started, "request_id": request_id, **context,
             "command": command, "resources": list(held), "weight": weight,
-            "class": admission_class, "expected_peak": weight * PER_SLOT_PEAK,
+            "class": admission_class, "expected_peak": peak,
         }
         if "T3_THREAD_ID" in os.environ:
             holder["T3_THREAD_ID"] = os.environ["T3_THREAD_ID"]
@@ -943,7 +975,7 @@ def status(directory, as_json):
     waiters = [waiter for waiter in waiters if waiter["pid"] in headrooms]
     occupied = {entry["name"]: entry["holder"] for entry in [*slots, *exclusive]}
     for waiter in waiters:
-        waiter["expected_peak"] = waiter["weight"] * PER_SLOT_PEAK
+        waiter["expected_peak"] = expected_peak(waiter)
         waiter["admission_reason"] = admission_reason(waiter, waiters, headrooms[waiter["pid"]], occupied)
     result = {"pool_size": POOL_SIZE, "slots": slots, "exclusive": exclusive, "waiters": waiters, "requests": read_requests(directory)}
     if as_json:
@@ -1191,6 +1223,7 @@ def main():
     mode.add_argument("--try", dest="try_only", action="store_true", help="Exit 2 if the lease is busy.")
     run_parser.add_argument("--weight", type=int, help=f"Pool slots, 1..{POOL_SIZE}; nested default is the parent allocation, otherwise command table or 1. Top-level --exclusive defaults to 0.")
     run_parser.add_argument("--exclusive", help="Separate named lock, e.g. win-vm; takes no slots unless --weight is given.")
+    run_parser.add_argument("--memory", type=int, metavar="BYTES", help="Estimated additional physical allocation, not a quota; top-level default weight x 4.25 GiB (named-only 0). Explicit nested requests recheck/wait for live headroom within held slots/names. Explicit 0 is for no-growth work, not VM startup. Host retains 4 GiB for OS/desktop; swap is not capacity.")
     run_parser.add_argument("--class", dest="admission_class", choices=ADMISSION_CLASSES, default="interactive", help="Admission priority, then FIFO within each class (default: interactive).")
     run_parser.add_argument("command", nargs=argparse.REMAINDER, help="-- command [args ...]")
     status_parser = commands.add_parser(
@@ -1235,7 +1268,9 @@ def main():
         parser.error("exclusive name must contain 1..80 letters, digits, underscores or hyphens")
     if args.weight is not None and (not 0 <= args.weight <= POOL_SIZE or (args.weight == 0 and not args.exclusive)):
         parser.error(f"weight must be 1..{POOL_SIZE}, or 0 with --exclusive")
-    return run(directory, args.command[1:], args.try_only, args.weight, args.exclusive, args.admission_class)
+    if args.memory is not None and args.memory < 0:
+        parser.error("memory must be a nonnegative byte count")
+    return run(directory, args.command[1:], args.try_only, args.weight, args.exclusive, args.admission_class, args.memory)
 
 
 if __name__ == "__main__":

@@ -142,7 +142,11 @@ Policy edits reach the stable links once they land on `main`;
 already-loaded instructions need a new session to adopt them. Do not restart running jobs for this.
 
 T3's official service owns its unit and runtime. The repo owns its drop-in,
-55%/70% memory slice, update timer and Pi provider enablement. The server
+parent memory slice, update timer and Pi provider enablement. The parent has
+explicit unlimited high/max/swap settings so it does not conflict with T3's
+runtime agent-child safety backstops. Host-wide admission and the fixed 4 GiB
+OS/desktop margin belong to [heavy-lease](../cli/heavy-lease.md), including
+development outside T3. Unlimited parent swap is not admission capacity. The server
 listens on loopback port 3773 and Tailscale Serve exposes it over Tailnet HTTPS.
 Dotfiles does not install or configure the desktop app.
 

@@ -6,6 +6,8 @@ import sys
 import tempfile
 import unittest
 
+from test_heavy_lease import CLI as HEAVY_LEASE, fake_memory_environment
+
 
 CLI = Path(__file__).resolve().parents[1] / "agents/windows-vm/win-vm"
 
@@ -91,11 +93,14 @@ exit 99
             (bin_dir / "docker-compose").write_text(f"#!/bin/sh\necho \"docker-compose $*\" >> {fake}/calls\nexit 99\n")
             for tool in bin_dir.iterdir():
                 tool.chmod(0o755)
+            (bin_dir / "heavy-lease").symlink_to(HEAVY_LEASE)
             keys = home / ".keys"
             keys.mkdir()
             (keys / "windows-vm.env").write_text("WINDOWS_VM_USERNAME=tb\n")
             env = {**os.environ, "HOME": str(home), "PATH": str(bin_dir)}
             env.pop("WIN_VM_LEASE", None)
+            env = {key: value for key, value in env.items() if not key.startswith("HEAVY_LEASE_")}
+            env.update(fake_memory_environment(home))
             state = home / ".local/state/win-vm"
             clone = state / "ephemeral"
             dead = subprocess.Popen(["/usr/bin/true"])

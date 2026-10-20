@@ -2,6 +2,8 @@
 Description=T3 Code server and agents
 
 [Slice]
-MemoryHigh=55%
-MemoryMax=70%
-MemorySwapMax=1G
+# T3 owns the agent child's physical-memory safety backstop. Host-wide
+# admission (including development outside T3) belongs to heavy-lease.
+MemoryHigh=infinity
+MemoryMax=infinity
+MemorySwapMax=infinity
