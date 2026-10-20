@@ -13,25 +13,42 @@ Deduplication is scoped per target, so the same report can reach a replacement C
 
 `report_to_cos` takes:
 
-- `kind`: `go_request`, `merge_ready`, `done`, `blocked`, or `tobias_decision`.
+- `kind`: `go_request`, `merge_ready`, `done`, `blocked`, `finding`, or
+  `tobias_decision`.
 - `text`: nonempty report text.
+- `outcome`: `green` or `red`, required for every `done` report. Use `red`
+  for a failed/RED outcome even if the assignment itself is complete.
+- `failure`: required for `blocked`, `finding`, and red outcomes. Nonempty
+  `step` identifies the failing phase; `cause` gives an evidence-backed
+  explanation or the literal `unknown`; `evidence` names paths/commands
+  actually inspected and the observations supporting the cause. Unknown cause
+  also requires nonempty `next_probe` and `diagnosis_owner` naming who keeps
+  diagnosing. Missing fields produce field-specific errors before sending.
+  Any supplied failure object is validated, regardless of kind.
 - `pr_url`, `head_sha`: required for `merge_ready`. The URL must be HTTP(S)
   without credentials; the SHA must contain exactly 40 hexadecimal digits.
 - Use `go_request` for design, scope and protected-surface approvals.
   It requires no SHA or review. Heavy work needs no CoS grant; repository
   entry points use kernel `heavy-lease` admission.
 
-These are quiet, outcome-only kinds, not routine progress updates. Messages
-start with `[kind]` and include any supplied PR URL and SHA. Direct T3 sends
+These are quiet, outcome-only kinds, not routine progress updates. `finding`
+is the only non-terminal report: send it as soon as evidence changes a
+previously reported failure's known cause. It does not replace a final report.
+The tool checks structure, not whether an explanation is true or a finding
+actually changes an earlier cause; the agent must establish that from evidence.
+Messages start with `[kind]` and include outcome, failure fields verbatim,
+and any supplied PR URL and SHA. Direct T3 sends
 to the CoS target are blocked; only sends nested under the reporting tool are
 authorized. Reporting uses Pi's normal tool pipeline and T3's canonical tool
 name. It tries `steer`, then `auto` only for the exact `thread_not_sendable`
 error code, retaining a request ID scoped to the lead session and target.
-Merge reports deduplicate by kind and head SHA; other reports by kind and text.
+Merge reports still deduplicate by kind and head SHA; other reports use the
+complete rendered message, so changed evidence or cause reaches the CoS even
+when the summary text is unchanged. `merge_ready` retains its PR contract.
 
 A successful report means T3 returned an acceptance receipt, including a
 message ID and delivery mode. It does not mean the CoS has read or acted on it.
-Failures do not satisfy the report guard.
+Failed sends, rejected reports and findings do not satisfy the final-report guard.
 
 Before settling, an activated session gets at most one hidden reminder and
 continuation per external prompt unless it reported successfully or has a live

@@ -3,10 +3,21 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 
 const SEND = "mcp__t3-code__t3_thread_send";
-const KINDS = ["go_request", "merge_ready", "done", "blocked", "tobias_decision"] as const;
+const KINDS = ["go_request", "merge_ready", "done", "blocked", "finding", "tobias_decision"] as const;
+const FAILURE_FIELDS = ["step", "cause", "evidence", "next_probe", "diagnosis_owner"] as const;
 const PARAMETERS = Type.Object({
   kind: Type.Union(KINDS.map((kind) => Type.Literal(kind))),
   text: Type.String({ minLength: 1, description: "The report for the chief of staff." }),
+  outcome: Type.Optional(Type.Union([Type.Literal("green"), Type.Literal("red")], {
+    description: "Required for done. Use red for any failed/RED outcome, even when the assignment is complete.",
+  })),
+  failure: Type.Optional(Type.Object({
+    step: Type.Optional(Type.String({ description: "Failing phase or step." })),
+    cause: Type.Optional(Type.String({ description: "Evidence-backed explanation, or the literal unknown. Do not claim flaky/unrelated without evidence." })),
+    evidence: Type.Optional(Type.String({ description: "Evidence actually inspected: paths and/or commands, with observations supporting the cause." })),
+    next_probe: Type.Optional(Type.String({ description: "Required when cause is unknown: next observation that distinguishes remaining explanations." })),
+    diagnosis_owner: Type.Optional(Type.String({ description: "Required when cause is unknown: who keeps diagnosing." })),
+  }, { description: "Required for blocked, finding and done with outcome red. step, cause and evidence are mandatory; unknown cause also requires next_probe and diagnosis_owner." })),
   pr_url: Type.Optional(Type.String({ description: "Required for merge_ready." })),
   head_sha: Type.Optional(Type.String({ description: "Required for merge_ready: full 40-hex PR head commit SHA." })),
 });
@@ -111,8 +122,12 @@ export default function reportToCos(pi: ExtensionAPI) {
       name: "report_to_cos",
       label: "Report to CoS",
       exposure,
-      description: "Report to the chief of staff. Use go_request for design, scope and protected-surface approvals. Use merge_ready for a reviewed PR, done for completion, blocked for an obstacle, or tobias_decision for a decision Tobias must make. Do not send routine progress. merge_ready requires pr_url and head_sha.",
-      promptGuidelines: ["Use report_to_cos, not t3_thread_send, to report to the CoS thread. Report before settling unless a delegated child is still live."],
+      description: "Report to the chief of staff. Use go_request for design, scope and protected-surface approvals, merge_ready for a reviewed PR, done for completion, blocked for an obstacle, or tobias_decision for a decision Tobias must make. finding is the only non-terminal report: send it as soon as evidence changes a reported failure's known cause. Do not send routine progress. done requires outcome green or red. blocked, finding and red done require failure.step, failure.cause (evidence-backed explanation or literal unknown), and failure.evidence (paths/commands inspected). Unknown cause also requires failure.next_probe and failure.diagnosis_owner. merge_ready requires pr_url and head_sha.",
+      promptGuidelines: [
+        "Use report_to_cos, not t3_thread_send, to report to the CoS thread. Report before settling unless a delegated child is still live. A finding does not replace a final report.",
+        "Send a finding that changes a reported failure's known cause as soon as you have it; it is the only non-terminal report, not routine progress.",
+        "Explain failures before handing them off: blocked, finding and done outcome red require failure.step, cause and evidence inspected. Use cause unknown if unestablished, with next_probe and diagnosis_owner. done always requires an explicit green/red outcome; completion of an assignment does not make a failed check green.",
+      ],
       parameters: PARAMETERS,
       async execute(toolCallId, params, signal, _onUpdate, ctx) {
         const destination = target;
@@ -120,18 +135,43 @@ export default function reportToCos(pi: ExtensionAPI) {
         const reportRun = run;
         if (!destination || leadSession !== sessionId) throw new Error("No CoS marker in the first user message");
         if (!params.text.trim()) throw new Error("Report text must not be empty");
+        if (params.kind === "done" && !params.outcome) {
+          throw new Error("Missing outcome: done requires green or red so a failed/RED outcome cannot omit failure details");
+        }
+        const failureReason = params.kind === "blocked" ? "blocked reports must explain the obstacle" :
+          params.kind === "finding" ? "findings must explain the changed cause of a reported failure" :
+          params.outcome === "red" ? "red outcomes must explain the failure" : undefined;
+        if (failureReason && !params.failure) {
+          throw new Error(`Missing failure: ${failureReason}; provide step, cause and evidence`);
+        }
+        if (params.failure) {
+          const required = params.failure.cause?.trim() === "unknown" ? FAILURE_FIELDS : FAILURE_FIELDS.slice(0, 3);
+          for (const field of required) {
+            if (!params.failure[field]?.trim()) {
+              const why = field === "step" ? "identify the failing phase or step" :
+                field === "cause" ? "provide an evidence-backed explanation or the literal unknown" :
+                field === "evidence" ? "name the paths/commands actually inspected to support the explanation" :
+                field === "next_probe" ? "unknown cause requires the next observation to distinguish remaining explanations" :
+                "unknown cause requires who keeps diagnosing";
+              throw new Error(`Missing failure.${field}: ${why}`);
+            }
+          }
+        }
         if (params.kind === "merge_ready") {
           if (!params.pr_url || !/^https?:\/\//.test(params.pr_url)) throw new Error("merge_ready requires a PR URL");
           const url = new URL(params.pr_url);
           if (!url.hostname || url.username || url.password) throw new Error("merge_ready requires a PR URL without credentials");
           if (!params.head_sha || !/^[0-9a-fA-F]{40}$/.test(params.head_sha)) throw new Error("merge_ready requires a 40-hex head_sha");
         }
-        const identity = params.kind === "merge_ready" ? params.head_sha!.toLowerCase() : params.text;
-        const requestId = "cos-" + createHash("sha256")
-          .update(JSON.stringify([leadSession, destination, params.kind, identity])).digest("hex");
         const message = `[${params.kind}] ${params.text}` +
+          (params.outcome ? `\noutcome: ${params.outcome}` : "") +
+          (params.failure ? FAILURE_FIELDS.filter((field) => params.failure![field] !== undefined)
+            .map((field) => `\nfailure.${field}: ${params.failure![field]}`).join("") : "") +
           (params.pr_url ? `\nPR: ${params.pr_url}` : "") +
           (params.head_sha ? `\nHead: ${params.head_sha}` : "");
+        const identity = params.kind === "merge_ready" ? params.head_sha!.toLowerCase() : message;
+        const requestId = "cos-" + createHash("sha256")
+          .update(JSON.stringify([leadSession, destination, params.kind, identity])).digest("hex");
         authorizedParents.add(toolCallId);
         try {
           const args = { threadId: destination, message, clientRequestId: requestId };
@@ -147,7 +187,7 @@ export default function reportToCos(pi: ExtensionAPI) {
               !["started", "queued", "steered", "restarted"].includes(String(receipt.delivery))) {
             throw new Error("CoS send returned no acceptance receipt");
           }
-          if (sessionId === leadSession && run === reportRun && target === destination) reported = true;
+          if (params.kind !== "finding" && sessionId === leadSession && run === reportRun && target === destination) reported = true;
           return {
             content: [{ type: "text", text: `Reported [${params.kind}] to CoS (${receipt.delivery}).` }],
             details: { kind: params.kind, threadId: destination, requestId, messageId: receipt.messageId },
@@ -261,7 +301,7 @@ export default function reportToCos(pi: ExtensionAPI) {
       return {
         entries: [...event.entries, {
           type: "custom_message", customType: "report-to-cos-reminder", display: false,
-          content: "Before settling, either use report_to_cos to send the chief of staff the outcome, blocker, approval request, or decision, or leave a delegated child running. Do not send routine progress. This reminder is issued only once for this external run.",
+          content: "Before settling, either use report_to_cos to send the chief of staff the outcome, blocker, approval request, or decision, or leave a delegated child running. A finding alone does not replace this final report. done requires outcome green/red; blocked and red outcomes require structured failure details, including next_probe and diagnosis_owner when cause is unknown. Do not send routine progress. This reminder is issued only once for this external run.",
         }],
         continue: true,
       };
