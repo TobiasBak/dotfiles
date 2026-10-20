@@ -40,7 +40,13 @@ header and valid rows; empty or malformed output fails loudly. A valid table
 without the configured user is not ready. Local SSH configuration, identity-permission and
 host-key failures surface immediately with stderr instead of consuming the boot
 deadline. Transient network unavailability remains subject to the existing
-readiness timeout.
+readiness timeout. The default for `up` and `run --ephemeral` is 60 seconds.
+The readiness window bounds blocking local observations, SSH probes and console
+handoff together. Nested handoff uses the remaining window, never a fresh
+allowance, and job preflight handoff is capped at 60 seconds even when its
+product execution budget is longer. Expiry is an infrastructure error with the
+last transport or session observation. Clone construction and teardown are
+outside this readiness window; product and job-execution budgets are unchanged.
 
 Only read-only scheduled-job observations recover from SSH transport failure.
 An SSH exit of 255 or a timed-out control connection starts a health window
@@ -52,7 +58,7 @@ window; ephemeral teardown remains mandatory.
 
 ## Checks
 
-Run `python3 -m unittest discover -s tests -p test_win_vm.py` and `./verify`.
+Run `python3 -m unittest discover -s tests -p 'test_win_vm*.py'` and `./verify`.
 `tests/win_vm_guest_contract.ps1` exercises the real scheduled-job cancellation
 and detached dispatch contracts on an isolated disposable guest. Upload the
 current `run-job.ps1`, `cleanup-job.ps1` and that script into one fresh guest

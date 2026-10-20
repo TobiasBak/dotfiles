@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -24,7 +25,7 @@ class WinVmReadinessTests(unittest.TestCase):
         driver.write_text("""#!/usr/bin/python3
 import json, os
 from pathlib import Path
-import sys
+import sys, time
 home = Path(os.environ['HOME'])
 name = Path(sys.argv[0]).name
 with (home / 'calls.jsonl').open('a') as file:
@@ -35,6 +36,9 @@ if name == 'docker':
 if name == 'scp':
     sys.exit(0)
 reply = json.loads((home / 'reply.json').read_text())
+calls = [json.loads(line) for line in (home / 'calls.jsonl').read_text().splitlines()]
+if sum(call[0] == 'ssh' for call in calls) == reply['delay_call']:
+    time.sleep(reply['delay'])
 sys.stdout.write(reply['out'])
 sys.stderr.write(reply['err'])
 sys.exit(reply['code'])
@@ -49,8 +53,9 @@ sys.exit(reply['code'])
         self.env.pop("WIN_VM_LEASE", None)
         self.reply()
 
-    def reply(self, code=0, out=HEADER + " console tb 1 Active\n", err=""):
-        (self.home / "reply.json").write_text(json.dumps({"code": code, "out": out, "err": err}))
+    def reply(self, code=0, out=HEADER + " console tb 1 Active\n", err="", delay=0, delay_call=1):
+        (self.home / "reply.json").write_text(json.dumps({"code": code, "out": out, "err": err,
+                                                        "delay": delay, "delay_call": delay_call}))
         (self.home / "calls.jsonl").unlink(missing_ok=True)
 
     def cli(self, *arguments):
@@ -100,6 +105,32 @@ sys.exit(reply['code'])
         info = json.loads(result.stdout)
         self.assertFalse(info["ssh"])
         self.assertIsNone(info["session"])
+
+    def test_readiness_deadline_bounds_blocked_queries_and_console_handoff(self):
+        for call, row in [(1, " console tb 1 Active"), (2, " rdp-tcp#0 tb 2 Disc")]:
+            with self.subTest(call=call):
+                self.reply(out=HEADER + row + "\n", delay=2, delay_call=call)
+                started = time.monotonic()
+                result = self.cli("up", "--timeout", "0.15")
+                elapsed = time.monotonic() - started
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("infrastructure readiness failed within 0.15s", result.stderr)
+                self.assertIn("deadline exhausted", result.stderr)
+                self.assertLess(elapsed, 1.5)
+                self.assertEqual(result.stdout, "")
+
+    def test_readiness_retains_the_last_transport_or_session_diagnostic(self):
+        for code, output, error, expected in [
+            (255, "", "Connection refused: synthetic SSH listener unavailable\n", "synthetic SSH listener unavailable"),
+            (1, HEADER + " services 0 Disc\n", "", "session=none"),
+        ]:
+            with self.subTest(expected=expected):
+                self.reply(code=code, out=output, err=error)
+                result = self.cli("up", "--timeout", "0.15")
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("infrastructure readiness failed within 0.15s", result.stderr)
+                self.assertIn(expected, result.stderr)
+                self.assertEqual(result.stdout, "")
 
     def test_session_query_failure_is_not_reported_as_no_session(self):
         self.reply(code=1, out="", err="synthetic query failure\n")

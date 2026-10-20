@@ -52,6 +52,9 @@ ARTIFACTS = {
 }
 
 
+READINESS_SECONDS = 60
+
+
 class Failure(Exception):
     pass
 
@@ -62,6 +65,30 @@ class Leased(Failure):
 
 class TransportFailure(Failure):
     pass
+
+
+class ReadinessExpired(Failure):
+    pass
+
+
+@contextmanager
+def readiness_window(timeout):
+    if timeout <= 0:
+        raise ReadinessExpired("session readiness deadline exhausted")
+    started = time.monotonic()
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    def expired(signum, frame):
+        raise ReadinessExpired(f"session readiness deadline exhausted after {timeout:g}s")
+    previous_handler = signal.signal(signal.SIGALRM, expired)
+    duration = min(timeout, previous_timer[0]) if previous_timer[0] else timeout
+    signal.setitimer(signal.ITIMER_REAL, duration)
+    try:
+        yield started + duration
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0]:
+            signal.setitimer(signal.ITIMER_REAL, max(0, previous_timer[0] - (time.monotonic() - started)), previous_timer[1])
 
 
 def run(argv, **kwargs):
@@ -211,11 +238,13 @@ def job_query(ip, script, deadline):
             time.sleep(min(1, remaining))
 
 
-def session(ip):
+def session(ip, timeout=30):
     user, _ = credentials()
-    code, out, err = powershell(ip, "$ErrorActionPreference='Stop'; & query.exe session 2>&1; exit $LASTEXITCODE")
+    if timeout <= 0:
+        raise TransportFailure("guest session observation exhausted its readiness deadline")
+    code, out, err = powershell(ip, "$ErrorActionPreference='Stop'; & query.exe session 2>&1; exit $LASTEXITCODE", timeout=min(30, timeout))
     if code == 255:
-        return False, None
+        raise TransportFailure(err.strip() or "guest SSH exited 255 without a diagnostic")
     try:
         return True, parse_session(out, user)
     except Failure as error:
@@ -264,12 +293,16 @@ def active_session(sess):
     return sess is not None and sess["state"] in ("console", "rdp")
 
 
-def status(state=None):
+def status(state=None, timeout=30):
     state = state or docker_state()
-    ssh, sess = session(state["ip"]) if state["container"] == "running" and state["ip"] else (False, None)
+    error = None
+    try:
+        ssh, sess = session(state["ip"], timeout) if state["container"] == "running" and state["ip"] else (False, None)
+    except TransportFailure as failure:
+        ssh, sess, error = False, None, str(failure)
     baseline = read_json(BASELINE / "baseline.json")
     holder = live_lease()
-    return {"container": state["container"], "ip": state["ip"], "ssh": ssh,
+    return {**({"ssh_error": error} if error else {}), "container": state["container"], "ip": state["ip"], "ssh": ssh,
             "session": sess, "started_by_win_vm": owned(state), "mode": state["mode"],
             "lease": {key: holder.get(key) for key in ("pid", "command", "started_at")} if holder is not None else None,
             "baseline": {"captured_at": baseline["captured_at"],
@@ -666,20 +699,31 @@ def up(timeout):
 
 
 def wait_ready(timeout, already=False, check=lambda: None):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        check()
-        state = docker_state()
-        info = status(state)
-        if info["ssh"] and info["session"]["state"] == "disconnected":
-            require_session(state["ip"], min(120, max(1, deadline - time.monotonic())))
-            info = status(state)
-        if info["ssh"] and active_session(info["session"]):
-            check()
-            print(json.dumps({"already_running": already, "ip": info["ip"], "ssh": True, "session": info["session"]}), flush=True)
-            return 0
-        time.sleep(min(2, max(0, deadline - time.monotonic())))
-    raise Failure("timed out waiting for SSH and tb's active console or RDP session; run the bootstrap once (autologon?)")
+    last = "no guest observation"
+    try:
+        with readiness_window(timeout) as deadline:
+            while time.monotonic() < deadline:
+                check()
+                state = docker_state()
+                try:
+                    info = status(state, timeout=deadline - time.monotonic())
+                    if info["ssh"] and info["session"]["state"] == "disconnected":
+                        last = "session=disconnected; console handoff pending"
+                        require_session(state["ip"], deadline - time.monotonic())
+                        info = status(state, timeout=deadline - time.monotonic())
+                    if info["ssh"] and active_session(info["session"]) and time.monotonic() < deadline:
+                        check()
+                        print(json.dumps({"already_running": already, "ip": info["ip"], "ssh": True, "session": info["session"]}), flush=True)
+                        return 0
+                    last = f"container={info['container']}; " + (f"session={info['session']['state']}" if info["ssh"] else "SSH unavailable")
+                    if info.get("ssh_error"):
+                        last += f"; {info['ssh_error']}"
+                except TransportFailure as error:
+                    last = str(error)
+                time.sleep(min(2, max(0, deadline - time.monotonic())))
+    except ReadinessExpired as error:
+        last += f"; {error}"
+    raise Failure(f"infrastructure readiness failed within {timeout:g}s: no active console or RDP session; last observation: {last}")
 
 
 def down(force):
@@ -821,8 +865,8 @@ if (-not $?) {{ throw 'Owned job cleanup failed; retained job directory' }}
 
 def require_session(ip, timeout):
     # Serialized so concurrent callers recheck the session instead of racing tscon.
-    with private_lock("handoff.lock"):
-        ssh, sess = session(ip)
+    with readiness_window(min(timeout, READINESS_SECONDS)) as deadline, private_lock("handoff.lock"):
+        ssh, sess = session(ip, deadline - time.monotonic())
         if not ssh:
             raise Failure("guest SSH unavailable; run win-vm bootstrap once")
         if sess["state"] == "none":
@@ -839,7 +883,7 @@ $s=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds 30) -
 Register-ScheduledTask -TaskName $n -Action $a -Principal $p -Settings $s | Out-Null
 try {{
  Start-ScheduledTask -TaskName $n
- $until=(Get-Date).AddSeconds({min(25, timeout):g})
+ $until=(Get-Date).AddSeconds({min(25, max(0, deadline - time.monotonic())):g})
  do {{
   $i=Get-ScheduledTaskInfo -TaskName $n
   $t=Get-ScheduledTask -TaskName $n
@@ -849,8 +893,8 @@ try {{
  }} while ($true)
  if ($i.LastTaskResult -ne 0) {{ throw "tscon failed with exit code $($i.LastTaskResult)" }}
 }} finally {{ Unregister-ScheduledTask -TaskName $n -Confirm:$false }}
-""")
-        _, sess = session(ip)
+""", timeout=max(0, deadline - time.monotonic()))
+        _, sess = session(ip, deadline - time.monotonic())
         if not sess or sess["state"] != "console":
             raise Failure("tscon completed without an Active console session")
 
@@ -918,10 +962,10 @@ def parser():
     sub.add_parser("baseline", help="pin reflinked files from the stopped persistent guest")
     q = sub.add_parser("run", help="lease a disposable baseline clone for a host command")
     q.add_argument("--ephemeral", action="store_true", required=True)
-    q.add_argument("--timeout", type=float, default=900, help="readiness timeout in seconds (default: 900)")
+    q.add_argument("--timeout", type=float, default=READINESS_SECONDS, help=f"readiness timeout in seconds (default: {READINESS_SECONDS})")
     q.add_argument("args", nargs=argparse.REMAINDER)
     q = sub.add_parser("up", help="start headless and wait for guest SSH + active console or RDP")
-    q.add_argument("--timeout", type=float, default=900, help="readiness timeout in seconds (default: 900)")
+    q.add_argument("--timeout", type=float, default=READINESS_SECONDS, help=f"readiness timeout in seconds (default: {READINESS_SECONDS})")
     q = sub.add_parser("down", help="stop only the container started by win-vm")
     q.add_argument("--force", action="store_true")
     sub.add_parser("status", help="JSON state, SSH, session and lifecycle ownership")
