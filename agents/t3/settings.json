@@ -1,28 +1,22 @@
 {
   "providerInstances": {
-    "pi": {
-      "driver": "pi",
-      "enabled": true
-    },
-    "opencode": {
-      "driver": "opencode",
-      "enabled": true
-    },
-    "claudeGah": {
+    "claudeAgent": {
       "driver": "claudeAgent",
-      "displayName": "Claude (gah)",
       "enabled": true,
       "config": {
         "binaryPath": "~/.local/bin/gah-claude"
       }
     },
-    "piGah": {
+    "pi": {
       "driver": "pi",
-      "displayName": "Pi (gah)",
       "enabled": true,
       "config": {
         "binaryPath": "/home/tb/.local/bin/gah-pi"
       }
+    },
+    "opencode": {
+      "driver": "opencode",
+      "enabled": true
     }
   }
 }
