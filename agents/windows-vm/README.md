@@ -77,6 +77,37 @@ remove the job directory and unregister the task. A failure preserves the
 task and directory and reports the cleanup error without replacing an
 existing operation failure. It never kills a process by an unvalidated PID.
 
+## Failure evidence
+
+A nonzero scheduled-job result, GUI child failure/timeout, host timeout or
+transport failure exports the entire job directory to
+`~/.local/state/win-vm/evidence/<job-id>/job/` before guest cleanup. Received
+stdout/stderr are also saved beside `manifest.json`. The private evidence path
+is printed before cleanup, and the manifest records completion, exit status,
+export completeness, errors and any retained guest path. The recursive export
+attempt is bounded to 30 seconds. Partial files survive an interrupted export.
+GUI result classification happens before the job's cleanup, not afterwards.
+
+Only a known-completed job with a complete export may delete its guest outputs.
+Unknown completion or any export failure uses `cleanup-job.ps1 -KeepDirectory`:
+stop the owned task, wait for handles and unregister it, but retain the job
+files. A live snapshot is not a complete history: output written while the
+failed task stops remains in that retained guest directory.
+
+For an ephemeral run, a retention marker protects the clone before any guest
+job work. If protection cannot be written, the job is not submitted. Protection
+is released only after successful completion or known-completed full export.
+Teardown removes the owned container but moves the clone to the private,
+durable `~/.local/state/win-vm/evidence/guests/<lease-token>/` instead of deleting
+it. The host manifest and diagnostics name this location. A later run gets a
+new clone and cannot erase the retained evidence. Known-completed nonzero jobs
+with successful exports and normal successful jobs retain ordinary teardown.
+
+Evidence may contain private job data and scripts. Keep it out of Git and public
+reports. It has no automatic expiry; inspect it, then explicitly remove it when
+it is no longer needed. Export, manifest and retention failures are reported;
+they never silently replace the original known job exit status.
+
 ## Guest health
 
 Readiness requires an explicitly Active console or RDP session for the configured

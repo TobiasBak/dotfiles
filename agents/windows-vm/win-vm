@@ -4,6 +4,7 @@ import argparse
 import base64
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import errno
 import fcntl
 import hashlib
 import json
@@ -479,6 +480,16 @@ def teardown():
         if docker_state()["mode"] == "ephemeral":
             checked(["docker", "rm", "-f", CONTAINER], stdout=sys.stderr)
         if EPHEMERAL.exists():
+            if (EPHEMERAL / "retain-evidence").exists():
+                token = (read_json(HOLDER) or {}).get("token", "")
+                if not re.fullmatch(r"[a-f0-9]{32}", token):
+                    raise Failure("retained guest has no valid lease identity; refusing to delete its evidence")
+                retained = STATE / "evidence/guests" / token
+                (STATE / "evidence").mkdir(mode=0o700, parents=True, exist_ok=True)
+                retained.parent.mkdir(mode=0o700, exist_ok=True)
+                EPHEMERAL.rename(retained)
+                print(f"win-vm: retained guest evidence: {retained}", file=sys.stderr, flush=True)
+                return
             try:
                 shutil.rmtree(EPHEMERAL)
             except PermissionError:
@@ -794,7 +805,7 @@ def down(force):
     return result.returncode
 
 
-def scp(ip, src, dst, upload):
+def scp(ip, src, dst, upload, recursive=False, timeout=None):
     if os.environ.get("WIN_VM_LEASE"):
         ip = leased_state()["ip"]
     user, _ = credentials()
@@ -806,11 +817,92 @@ def scp(ip, src, dst, upload):
         path = "/" + path
     remote_path = f"{user}@{ip}:{path}"
     local_path = str(Path(src if upload else dst).expanduser().absolute())
-    argv = ["scp", *ssh_options(), "--"] + ([local_path, remote_path] if upload else [remote_path, local_path])
-    return run(argv).returncode
+    argv = ["scp", *ssh_options(), *(["-r"] if recursive else []), "--"] + ([local_path, remote_path] if upload else [remote_path, local_path])
+    return run(argv, timeout=timeout).returncode
 
 
-def job(ip, script, timeout, download=None, capture=False, detached=False):
+def retain_job_guest(ident):
+    token = os.environ.get("WIN_VM_LEASE")
+    if not token:
+        return None, None
+    if not re.fullmatch(r"[a-f0-9]{32}", token) or not EPHEMERAL.is_dir():
+        raise Failure("cannot protect failed job's ephemeral guest: missing live clone identity")
+    markers = EPHEMERAL / "retain-evidence"
+    markers.mkdir(mode=0o700, exist_ok=True)
+    marker = markers / ident
+    marker.touch(mode=0o600)
+    return marker, STATE / "evidence/guests" / token
+
+
+def release_job_guest(marker):
+    if marker is None:
+        return
+    marker.unlink(missing_ok=True)
+    try:
+        marker.parent.rmdir()
+    except OSError as error:
+        if error.errno not in (errno.ENOENT, errno.ENOTEMPTY):
+            raise
+
+
+def export_job_evidence(ip, ident, task, folder, completed, code, failure, stdout, stderr, marker, retained_guest):
+    evidence = STATE / "evidence" / ident
+    errors = []
+    complete = False
+    print(f"win-vm: failed job evidence: {evidence}", file=sys.stderr, flush=True)
+    try:
+        evidence.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        evidence.mkdir(mode=0o700)
+        for name, data in (("stdout.txt", stdout), ("stderr.txt", stderr)):
+            if data is not None:
+                path = evidence / name
+                path.touch(mode=0o600)
+                path.write_bytes(data)
+        status = scp(ip, folder, str(evidence / "job"), False, recursive=True, timeout=30)
+        if status:
+            raise Failure(f"recursive job export exited {status}")
+        if not all((evidence / "job" / name).is_file() for name in ("stdout.txt", "stderr.txt")):
+            raise Failure("job export is missing stdout.txt or stderr.txt")
+        complete = True
+    except (OSError, Failure, subprocess.TimeoutExpired) as error:
+        errors.append(f"export failed: {error}")
+    keep = not completed or not complete or bool(errors)
+    if marker is not None and not keep:
+        try:
+            release_job_guest(marker)
+            retained_guest = None
+        except OSError as error:
+            errors.append(f"guest retention release failed: {error}")
+            keep = True
+    record = {
+        "job_id": ident, "task": task, "guest_directory": folder,
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "completed": completed, "exit_code": code, "failure": failure,
+        "snapshot_complete": complete, "export_complete": completed and complete and not errors,
+        "guest_retained": keep,
+        "retained_guest": str(retained_guest) if retained_guest is not None else None,
+        "errors": errors,
+    }
+    try:
+        manifest = evidence / "manifest.json"
+        manifest.touch(mode=0o600)
+        manifest.write_text(json.dumps(record, indent=2) + "\n")
+    except OSError as error:
+        errors.append(f"manifest write failed: {error}")
+        keep = True
+        try:
+            marker, retained_guest = retain_job_guest(ident)
+        except (OSError, Failure) as retention_error:
+            errors.append(f"guest retention marker failed: {retention_error}")
+    for error in errors:
+        print(f"win-vm: evidence {error}; available partial files: {evidence}", file=sys.stderr, flush=True)
+    if keep:
+        location = f"; retained clone: {retained_guest}" if retained_guest is not None else ""
+        print(f"win-vm: guest job outputs retained: {folder}{location}", file=sys.stderr, flush=True)
+    return keep
+
+
+def job(ip, script, timeout, download=None, capture=False, detached=False, result_status=None):
     ident = uuid.uuid4().hex
     folder = ROOT + "\\jobs\\" + ident
     task = "win-vm-" + ident
@@ -847,6 +939,11 @@ $before=(Get-ScheduledTaskInfo -TaskName $n).LastRunTime.Ticks
 Start-ScheduledTask -TaskName $n
 [Console]::Write($before)
 """
+    # Refuse before any guest work if its only-copy protection cannot be saved.
+    marker, retained_guest = retain_job_guest(ident)
+    completed = False
+    code = None
+    stdout = stderr = None
     try:
         needed = json.loads(remote(ip, prepare))
         if not isinstance(needed, list) or any(name not in runners for name in needed):
@@ -882,30 +979,46 @@ if ($started -and !$active) {{
 """
             result = json.loads(job_query(ip, poll, deadline))
             if result["done"]:
-                if download and result["code"] == 0:
+                code = result["code"]
+                stdout = base64.b64decode(result["stdout"])
+                stderr = base64.b64decode(result["stderr"])
+                if code == 0 and result_status is not None:
+                    code = result_status(stdout)
+                completed = True
+                if download and code == 0:
                     code = scp(ip, folder + "\\capture.png", download, False)
                     if code:
                         raise Failure(f"scp from guest failed with exit code {code}")
                     with Path(download).expanduser().open("rb") as image:
                         if image.read(8) != b"\x89PNG\r\n\x1a\n":
                             raise Failure("guest screenshot is not a PNG")
-                stdout = base64.b64decode(result["stdout"])
                 if not capture:
                     sys.stdout.buffer.write(stdout)
                     sys.stdout.buffer.flush()
-                sys.stderr.write(decode_clixml(base64.b64decode(result["stderr"])))
-                return (result["code"], stdout) if capture else result["code"]
+                sys.stderr.write(decode_clixml(stderr))
+                return (code, stdout) if capture else code
             if time.monotonic() >= deadline:
                 raise Failure(f"in-session job timed out after {timeout:g}s")
             # Each poll is a short SSH call; back off so long jobs stay cheap.
             interval = min(5, interval * 1.5)
             time.sleep(min(interval, max(0, deadline - time.monotonic())))
     finally:
-        failed = sys.exc_info()[0] is not None
+        error = sys.exc_info()[1]
+        failed = error is not None or code != 0
+        keep = False
+        if failed:
+            reason = str(error) if error is not None else f"job exited with code {code}"
+            keep = export_job_evidence(ip, ident, task, folder, completed, code, reason, stdout, stderr, marker, retained_guest)
+        else:
+            try:
+                release_job_guest(marker)
+            except OSError as release_error:
+                keep = True
+                print(f"win-vm: retention release failed: {release_error}; retained clone: {retained_guest}", file=sys.stderr, flush=True)
         cleanup = f"""
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 $n={ps_string(task)}; $d={ps_string(folder)}
-& {ps_string(ROOT + chr(92) + 'cleanup-job.ps1')} -TaskName $n -Directory $d
+& {ps_string(ROOT + chr(92) + 'cleanup-job.ps1')} -TaskName $n -Directory $d{' -KeepDirectory' if keep else ''}
 if (-not $?) {{ throw 'Owned job cleanup failed; retained job directory' }}
 """
         try:
@@ -1140,12 +1253,16 @@ if (!$p.WaitForExit({int(args.timeout * 1000)})) {{
 }}
 @{{pid=$p.Id;exit_code=$p.ExitCode}} | ConvertTo-Json -Compress
 """
-        code, stdout = job(ip, script, args.timeout + 60, capture=True)
-        if code:
+        result = None
+        def result_status(stdout):
+            nonlocal result
+            result = json.loads(stdout)
+            if result.get("timed_out"):
+                raise Failure(f"process {result['pid']} still running after {args.timeout:g}s; killed its process tree")
+            return result["exit_code"]
+        code, stdout = job(ip, script, args.timeout + 60, capture=True, result_status=result_status)
+        if result is None:
             return code
-        result = json.loads(stdout)
-        if result.get("timed_out"):
-            raise Failure(f"process {result['pid']} still running after {args.timeout:g}s; killed its process tree")
         print(json.dumps(result))
         # Host exit statuses are 8-bit; the exact Windows code stays in the JSON.
         return result["exit_code"] if 0 <= result["exit_code"] <= 255 else 255

@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory=$true)][ValidatePattern('^win-vm-[a-f0-9]{32}$')][string]$TaskName,
-    [Parameter(Mandatory=$true)][string]$Directory
+    [Parameter(Mandatory=$true)][string]$Directory,
+    [switch]$KeepDirectory
 )
 $ErrorActionPreference = 'Stop'
 $expected = Join-Path $PSScriptRoot ('jobs\' + $TaskName.Substring(7))
@@ -22,7 +23,7 @@ do {
     }
     if (-not $active -and -not $locked) {
         try {
-            if (Test-Path -LiteralPath $Directory) { Remove-Item -LiteralPath $Directory -Recurse -Force }
+            if (-not $KeepDirectory -and (Test-Path -LiteralPath $Directory)) { Remove-Item -LiteralPath $Directory -Recurse -Force }
             break
         } catch [IO.IOException] { $locked = $true }
     }
