@@ -15,6 +15,7 @@ node = "26.8.2"
 "npm:vite-plus" = "latest"
 pi = "latest"
 pnpm = "11"
+rclone = "latest"
 terraform = "latest"
 uv = "latest"
 
