@@ -562,6 +562,149 @@ class SecretGuardTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 71, 'Failed discovery must dispatch to Python')
         self.assertEqual(marker.read_text(), 'called\n')
+        invalid = self.temp / '.git'
+        invalid.mkdir()
+        (invalid / 'objects').mkdir()
+        (invalid / 'refs').mkdir()
+        (invalid / 'HEAD').write_text('not a Git HEAD\n')
+        marker.unlink()
+        result = subprocess.run(
+            [str(hooks / 'post-checkout')], cwd=self.temp, env=self.env,
+            stdin=subprocess.DEVNULL, text=True, capture_output=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 71, 'Invalid metadata must use existing discovery')
+        self.assertEqual(marker.read_text(), 'called\n')
+        marker.unlink()
+        result = subprocess.run(
+            [str(hooks / 'post-checkout')], cwd=self.repo, env=dict(self.env, GIT_DIR=''),
+            stdin=subprocess.DEVNULL, text=True, capture_output=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 71, 'Empty GIT_DIR must retain failed discovery')
+        self.assertEqual(marker.read_text(), 'called\n')
+
+    def test_passthrough_layouts_skip_git_only_when_local_hooks_are_absent(self):
+        control, _ = self.install_fake_scanner()
+        control.write_text('green')
+        base = self.seed()
+        common = self.repo / '.git'
+        linked = self.temp / 'linked worktree'
+        self.git(self.repo, 'worktree', 'add', '--detach', str(linked), base)
+        admin = Path(self.git(linked, 'rev-parse', '--absolute-git-dir').stdout.strip())
+        pointers = []
+        for name, target, ending in (
+                ('absolute pointer', str(common), '\n'),
+                ('relative pointer', '../repo/.git', '\n'),
+                ('unterminated pointer', '../repo/.git', ''),
+                ('ambiguous pointer', '../repo/.git', '\n\n')):
+            pointer = self.temp / name
+            pointer.mkdir()
+            (pointer / '.git').write_text(f'gitdir: {target}{ending}')
+            self.git(pointer, 'rev-parse', '--git-common-dir')
+            pointers.append((name, pointer, {}, common, name != 'ambiguous pointer'))
+        child = self.repo / 'child'
+        child.mkdir()
+        layouts = [
+            ('cwd directory', self.repo, {}, common, True),
+            ('relative GIT_DIR', self.repo, {'GIT_DIR': '.git'}, common, True),
+            ('absolute GIT_DIR', self.temp, {'GIT_DIR': str(common)}, common, True),
+            ('linked gitfile', linked, {}, common, True),
+            ('linked GIT_DIR', self.temp, {'GIT_DIR': str(admin)}, common, True),
+            ('bare discovery', self.remote, {}, self.remote, False),
+            ('parent discovery', child, {}, common, False),
+            ('common override', self.temp,
+             {'GIT_DIR': str(common), 'GIT_COMMON_DIR': str(self.remote)}, self.remote, False),
+            *pointers,
+        ]
+        hook = self.dotfiles / 'cli/git/hooks/post-checkout'
+        payload = 'first line\nsecond line\n'
+        args = ['old', 'new', '1']
+        for name, cwd, bindings, directory, fast in layouts:
+            with self.subTest(layout=name):
+                local = directory / 'hooks/post-checkout'
+                self.assertFalse(local.exists())
+                trace = self.temp / 'dispatch-trace.jsonl'
+                trace.unlink(missing_ok=True)
+                env = dict(self.env, **bindings, GIT_TRACE2_EVENT=str(trace))
+                result = subprocess.run([str(hook), *args], cwd=cwd, env=env,
+                                        input=payload, text=True, capture_output=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                events = [json.loads(line) for line in trace.read_text().splitlines()] if trace.exists() else []
+                starts = [event for event in events if event.get('event') == 'start']
+                self.assertEqual(bool(starts), not fast, 'Unexpected Git discovery subprocess')
+                local.write_text(f'#!/bin/sh\nexec python3 "{self.recorder}" post-checkout "$@"\n')
+                local.chmod(0o755)
+                try:
+                    self.clear_events()
+                    result = subprocess.run([str(hook), *args], cwd=cwd,
+                                            env=dict(env, SECRET_GUARD_LOCAL_EXIT='23'),
+                                            input=payload, text=True, capture_output=True, timeout=30)
+                    self.assertEqual(result.returncode, 23, result.stderr)
+                    self.assertEqual(self.events(), [{
+                        'hook': 'post-checkout', 'args': args, 'stdin': payload, 'cwd': str(cwd),
+                    }])
+                finally:
+                    local.unlink()
+
+    def test_passthrough_absolute_commondir_preserves_local_hook(self):
+        control, _ = self.install_fake_scanner()
+        control.write_text('green')
+        base = self.seed()
+        linked = self.temp / 'linked'
+        self.git(self.repo, 'worktree', 'add', '--relative-paths', '--detach', str(linked), base)
+        admin = Path(self.git(linked, 'rev-parse', '--absolute-git-dir').stdout.strip())
+        (admin / 'commondir').write_text(str(self.repo / '.git') + '\n')
+        trace = self.temp / 'absolute-common-trace.jsonl'
+        hook = self.dotfiles / 'cli/git/hooks/post-checkout'
+        result = subprocess.run([str(hook)], cwd=linked,
+                                env=dict(self.env, GIT_TRACE2_EVENT=str(trace)),
+                                input='', text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(trace.exists(), 'Absolute commondir should not spawn Git')
+        self.install_local_hooks(linked, names=('post-checkout',))
+        result = subprocess.run([str(hook), 'old', 'new', '1'], cwd=linked,
+                                env=dict(self.env, SECRET_GUARD_LOCAL_EXIT='23'),
+                                input='intact\n', text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 23, result.stderr)
+        self.assertEqual(self.events(), [{
+            'hook': 'post-checkout', 'args': ['old', 'new', '1'],
+            'stdin': 'intact\n', 'cwd': str(linked),
+        }])
+
+    def test_passthrough_metadata_bytes_cannot_redirect_lookup_to_a_decoy(self):
+        self.install_local_hooks(self.remote, names=('post-checkout',))
+        actual = os.fsencode(self.remote)
+        for suffix in ('\r', 'suffix'):
+            self.git(self.temp, 'init', '--bare', str(self.remote) + suffix)
+        startup_marker = self.temp / 'unexpected-bash-startup'
+        startup = self.temp / 'bash-env'
+        startup.write_text(f'echo called > "{startup_marker}"\n')
+        hook = self.dotfiles / 'cli/git/hooks/post-checkout'
+        for kind in ('gitfile', 'commondir'):
+            for name, ending in (('crlf', b'\r\n'), ('nul', b'\0suffix\n')):
+                with self.subTest(metadata=kind, encoding=name):
+                    cwd = self.temp / f'{kind}-{name}'
+                    if kind == 'gitfile':
+                        cwd.mkdir()
+                        (cwd / '.git').write_bytes(b'gitdir: ' + actual + ending)
+                    else:
+                        self.git(self.temp, 'init', str(cwd))
+                        (cwd / '.git/commondir').write_bytes(actual + ending)
+                    self.clear_events()
+                    trace = self.temp / 'ambiguous-byte-trace.jsonl'
+                    trace.unlink(missing_ok=True)
+                    result = subprocess.run(
+                        [str(hook), 'old', 'new', '1'], cwd=cwd,
+                        env=dict(self.env, SECRET_GUARD_LOCAL_EXIT='23',
+                                 GIT_TRACE2_EVENT=str(trace), BASH_ENV=str(startup)),
+                        input='intact\n', text=True, capture_output=True, timeout=30,
+                    )
+                    self.assertEqual(result.returncode, 23, result.stderr)
+                    self.assertEqual(self.events(), [{
+                        'hook': 'post-checkout', 'args': ['old', 'new', '1'],
+                        'stdin': 'intact\n', 'cwd': str(cwd),
+                    }])
+                    self.assertTrue(trace.exists(), 'Ambiguous bytes must use native Git discovery')
+                    self.assertFalse(startup_marker.exists(), 'Passthrough must not read BASH_ENV')
 
     def test_standard_hooks_preserve_commit_msg_veto_and_checkout_io(self):
         control, calls = self.install_fake_scanner()
