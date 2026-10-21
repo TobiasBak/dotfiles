@@ -56,6 +56,11 @@ url = "https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_linux_am
 url_api = "https://api.github.com/repos/cli/cli/releases/assets/599854672"
 provenance = "github-attestations"
 
+[[tools."github:TobiasBak/verify-at-home"]]
+version = "path:~/.local/share/verify-at-home/installs/eeca84ad522d5ec287569636ef77d00f4e8a433f"
+backend = "github:TobiasBak/verify-at-home"
+specifiers = ["path:~/.local/share/verify-at-home/installs/eeca84ad522d5ec287569636ef77d00f4e8a433f"]
+
 [[tools.gitleaks]]
 version = "8.30.1"
 backend = "aqua:gitleaks/gitleaks"

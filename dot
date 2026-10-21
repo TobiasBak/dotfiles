@@ -246,11 +246,9 @@ class Engine:
                 require(isinstance(section, dict), "mise.toml: sections must be tables")
             require(isinstance(self.mise.get("tools", {}), dict), "mise.tools: expected a table")
             for tool, value in self.mise.get("tools", {}).items():
-                # A table is mise's form for backend options, e.g. npm allow_builds.
                 if isinstance(value, dict):
-                    string_map(value, f"mise.tools.{tool}")
-                    require("version" in value and len(value) > 1,
-                            f"mise.tools.{tool}: a table needs version and at least one option")
+                    require(isinstance(value.get("version"), str) and len(value) > 1,
+                            f"mise.tools.{tool}: a table needs a version string and at least one backend option")
                 else:
                     require(isinstance(value, str), f"mise.tools.{tool}: expected a version string or table")
         for manifest in sorted(REPO.glob("*/module.toml"), key=lambda p: p.parent.name):

@@ -5,6 +5,7 @@ claude = "latest"
 codex = "latest"
 gcloud = "latest"
 gh = "latest"
+"github:TobiasBak/verify-at-home" = { version = "path:~/.local/share/verify-at-home/installs/eeca84ad522d5ec287569636ef77d00f4e8a433f", lazy = true, lazy_bins = ["vah"] }
 gitleaks = "8.30.1"
 go = "latest"
 # Omarchy Node version, shared by mise-managed npm tools.

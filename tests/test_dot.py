@@ -645,6 +645,7 @@ enable = ["new.service", "inactive.timer", "disabled.timer", "healthy.timer"]
 python = "3.14"
 # Keep backend options and comments in the authoritative file.
 "npm:built" = { version = "latest", allow_builds = "built" }
+"github:example/lazy-cli" = { version = "path:~/tools/lazy-cli", lazy = true, lazy_bins = ["lazy-cli"] }
 node = "26.8.2"
 [settings]
 experimental = true
@@ -672,7 +673,8 @@ FOREIGN = "keep"
         self.put(self.state / 'mise.json', json.dumps({
             name: [{'version': version, 'requested_version': version, 'installed': False,
                     'source': {'type': 'mise.toml', 'path': str(live_path)}}]
-            for name, version in [('python', '3.14'), ('npm:built', 'latest'), ('node', '26.8.2')]
+            for name, version in [('python', '3.14'), ('npm:built', 'latest'),
+                                  ('node', '26.8.2'), ('github:example/lazy-cli', 'path:~/tools/lazy-cli')]
         }))
         items = self.run_dot('check', 'mise', code=1)
         self.assertEqual({item['target'] for item in items if item['kind'] == 'link'},
@@ -692,7 +694,8 @@ FOREIGN = "keep"
                          [old_lock])
         self.assertEqual(local_path.read_text(), local)
         installs = [call for call in self.calls('mise') if call[1] == 'install']
-        self.assertEqual(installs, [['mise', 'install', 'node'], ['mise', 'install', 'npm:built'],
+        self.assertEqual(installs, [['mise', 'install', 'github:example/lazy-cli'],
+                                   ['mise', 'install', 'node'], ['mise', 'install', 'npm:built'],
                                    ['mise', 'install', 'python']])
         self.assertFalse(any(call[1] in ('use', 'settings', 'set') for call in self.calls('mise')))
         self.assertIn(['mise', 'ls', '--global', '--json'], self.calls('mise'))
@@ -706,6 +709,8 @@ FOREIGN = "keep"
         self.assertEqual(tomllib.loads((self.repo / 'mise.toml').read_text())['tools']['python'], '3.15')
         self.assertIn('# Keep backend options and comments', live_path.read_text())
         self.run_dot('check', 'mise', code=0)
+        self.put(self.repo / 'mise.toml', '[tools]\npython = { version = false, lazy = true }\n')
+        self.run_dot('check', 'mise', code=2)
 
 
 if __name__ == '__main__':
