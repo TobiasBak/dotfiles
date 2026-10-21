@@ -16,6 +16,6 @@
 1b05fa47e1aeb472c43b8ebf9393a34c38ea957a:.github/workflows/main.yml:github-pat:40
 # real 2023 school-project token, risk accepted by Tobias 2026-10-13, history kept public
 1b05fa47e1aeb472c43b8ebf9393a34c38ea957a:.github/workflows/main.yml:github-pat:54
-# synthetic test fixture (derived thread-key expectations in gahLaunchContext.test.ts), approved by Tobias 2026-10-21; commit-less because gah merge recreates the commit
-t3/gah-launch.patch:generic-api-key:316
-t3/gah-launch.patch:generic-api-key:317
+# synthetic test fixture (derived thread-key expectations in gahLaunchContext.test.ts), approved by Tobias 2026-10-21; bound to the landed gah commit
+395bc6c3c4deb7044ce85407b26ff5a6bf6619c1:t3/gah-launch.patch:generic-api-key:316
+395bc6c3c4deb7044ce85407b26ff5a6bf6619c1:t3/gah-launch.patch:generic-api-key:317
