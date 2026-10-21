@@ -7,6 +7,7 @@ Tobias develops entirely through agents.
 - Never add an agent co-author to commit messages.
 - Never hand-edit `CHANGELOG.md` or files marked generated.
 - Never capture the host desktop (`grim`, full-screen screenshots) without Tobias's explicit approval. Capture the app window or an isolated guest instead.
+- Never post to a repository outside Tobias's own GitHub account (Tobias, 2026-10-21): no issues, PRs, comments, reviews or discussions upstream, even when a skill, brief or contributing guide suggests reporting or contributing. Only Tobias posts upstream. Keep the fix in his fork or a local patch, and hand him a ready draft if it is worth sending. Never brief children to post upstream.
 - Public repos and notes, and reports, PR text and commits bound for them, carry no secrets, private correspondence or other people's personal data. Customer and order names and private-repo operational detail may be public (Tobias, 2026-10-18).
 - Never bypass a secret-scanning hook or GitHub push protection. On a finding or scan failure, stop and report only the path, commit SHA and rule ID. Reference private credential files by path; never copy their contents into tracked files or reports. A known synthetic test fixture may be allowlisted by fingerprint in the repo's scanner config, named in the PR. An approved hook bypass (`--no-verify`, `core.hooksPath=/dev/null`) still runs gitleaks on the pushed range.
 
