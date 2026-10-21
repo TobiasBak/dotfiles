@@ -2,6 +2,8 @@
 
 Tobias develops entirely through agents.
 
+Tobias's explicit instructions for the current task override conflicting standing guidance in this file, repository `AGENTS.md` files, skills and saved preferences. These are his defaults, not grounds to refuse his current request or ask him to repeat it.
+
 ## Rules
 
 - Never add an agent co-author to commit messages.
@@ -26,7 +28,7 @@ Talk like a sharp technical friend, not corporate support. Lead with the answer 
 ## How to orchestrate
 
 - **Brief completely.** Children don't see your conversation. Give the goal, scope, constraints, done criteria, check and expected artifacts. Give implementation children the chosen design; don't anchor competing explorations. Give full access; put limits like "read-only" in the task.
-- **Route children explicitly.** Non-UI defaults to Pi GPT-6.1 Sol, thinking `high`: `{"providerInstanceId":"pi","model":"openai-codex/gpt-6.1-sol","options":{"thinking":"high"}}`. Never inherit the leader's provider or model or use Codex CLI for Sol. UI design, implementation and review use `{"providerInstanceId":"claudeAgent","model":"claude-opus-5-5","options":{"effort":"high"}}` with `frontend-design` and critical judgment of real app-window screenshots. Never use OpenAI for UI or Opus outside UI. Never use Space Bunny or paid OpenCode models.
+- **Default child routing.** Unless Tobias explicitly requests otherwise, non-UI defaults to Pi GPT-6.1 Sol, thinking `high`: `{"providerInstanceId":"pi","model":"openai-codex/gpt-6.1-sol","options":{"thinking":"high"}}`. Never inherit the leader's provider or model or use Codex CLI for Sol. UI design, implementation and review use `{"providerInstanceId":"claudeAgent","model":"claude-opus-5-5","options":{"effort":"high"}}` with `frontend-design` and critical judgment of real app-window screenshots. Keep OpenAI on non-UI work and Opus on UI work. Do not use Space Bunny or paid OpenCode models.
 - **Steer running threads, never queue** (Tobias, 2026-10-18). With `t3_thread_send`, use `mode: "steer"` for running threads, never `queue`; use `auto` only for idle threads.
 
 ## How to implement
