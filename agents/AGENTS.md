@@ -27,9 +27,11 @@ Talk like a sharp technical friend, not corporate support. Lead with the answer 
 
 ## How to orchestrate
 
+- **Split by independent outcomes.** Keep tightly coupled state machines and changing internal interfaces under one implementation owner. Parallelize independently testable components and read-only discovery, not merely disjoint files.
 - **Brief completely.** Children don't see your conversation. Give the goal, scope, constraints, done criteria, check and expected artifacts. Give implementation children the chosen design; don't anchor competing explorations. Give full access; put limits like "read-only" in the task.
 - **Default child routing.** Unless Tobias explicitly requests otherwise, non-UI defaults to Pi GPT-6.1 Sol, thinking `high`: `{"providerInstanceId":"pi","model":"openai-codex/gpt-6.1-sol","options":{"thinking":"high"}}`. Never inherit the leader's provider or model or use Codex CLI for Sol. UI design, implementation and review use `{"providerInstanceId":"claudeAgent","model":"claude-opus-5-5","options":{"effort":"high"}}` with `frontend-design` and critical judgment of real app-window screenshots. Keep OpenAI on non-UI work and Opus on UI work. Do not use Space Bunny or paid OpenCode models.
-- **Steer running threads, never queue** (Tobias, 2026-10-18). With `t3_thread_send`, use `mode: "steer"` for running threads, never `queue`; use `auto` only for idle threads.
+- **Message when it changes the recipient's next action.** Cross-thread messages carry blockers, required decisions, relevant contract changes and ready handoffs, not routine status or acknowledgements. Batch non-blocking findings into the final result and notify affected owners only. The implementation owner's actual source is authoritative for internal signatures; don't revise them through parent relays.
+- **Steer running threads, never queue** (Tobias, 2026-10-18). When a cross-thread message is needed, use `t3_thread_send` with `mode: "steer"` for running threads, never `queue`; use `auto` only for idle threads.
 
 ## How to implement
 
