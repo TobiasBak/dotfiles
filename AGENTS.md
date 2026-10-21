@@ -38,9 +38,11 @@ Long jobs use `systemd-run --user --slice=app-t3code-agents.slice`; scratch
 files live under `~/.cache/agent-tmp`, not RAM-backed `/tmp`.
 
 T3 owns its service and runtime. This repo owns its drop-in, memory slice
-and update timer. Never restart or update T3 without Tobias: every hosted
-agent is interrupted. The detached nightly updater is
-`systemctl --user start --no-block t3code-update.service`.
+and update service. T3 never updates automatically. Never restart or update
+T3 without Tobias: every hosted agent is interrupted, and an update drops
+gah's launch patch. The detached nightly updater is
+`systemctl --user start --no-block t3code-update.service`; follow the vault's
+T3 update procedure around it.
 
 Vault skills live in the sibling `vault-public/skills`.
 Pi's retired workspace-view v3 snapshot extension stays disabled. The sibling

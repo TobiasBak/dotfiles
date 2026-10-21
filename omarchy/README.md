@@ -142,7 +142,7 @@ Policy edits reach the stable links once they land on `main`;
 already-loaded instructions need a new session to adopt them. Do not restart running jobs for this.
 
 T3's official service owns its unit and runtime. The repo owns its drop-in,
-parent memory slice, update timer and Pi provider enablement. The parent has
+parent memory slice, update service and Pi provider enablement. The parent has
 explicit unlimited high/max/swap settings so it does not conflict with T3's
 runtime agent-child safety backstops. Host-wide admission and the fixed 4 GiB
 OS/desktop margin belong to [heavy-lease](../cli/heavy-lease.md), including
@@ -154,7 +154,6 @@ Dotfiles does not install or configure the desktop app.
 systemctl --user status t3code.service
 curl -sI http://127.0.0.1:3773
 tailscale serve status
-systemctl --user list-timers t3code-update.timer
 loginctl show-user "$USER" -p Linger
 ```
 
@@ -162,8 +161,11 @@ Apply never restarts T3. A changed drop-in needs Tobias's explicit restart
 approval before the running server and its children inherit it.
 `./dot check` verifies the process environment and reports the pending restart.
 
-At 05:00, `t3code-update.timer` updates the CLI through mise and the service
-through T3's official updater. A new runtime interrupts hosted turns.
+T3 updates only on request. `t3code-update.service` updates the CLI through
+mise and the service through T3's official updater. A new runtime interrupts
+hosted turns and replaces the service build that carries gah's local launch
+patch, so follow "Updating T3" in the sibling vault's
+`software/t3-code-operations.md`.
 With approval, start a detached update using:
 
 ```sh

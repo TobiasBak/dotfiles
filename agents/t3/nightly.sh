@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Move T3 Code's CLI and its background service to the newest nightly. The
-# t3code-update timer runs this daily; `./dot apply` runs it with
+# Move T3 Code's CLI and its background service to the newest nightly. It runs
+# only on request, through t3code-update.service: the service build carries
+# gah's local launch patch, which an update replaces. `./dot apply` runs it with
 # --install-service the first time. Safe to rerun: when nothing changed it
 # installs nothing and leaves the service running.
 #

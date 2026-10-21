@@ -18,7 +18,6 @@
 "~/.config/systemd/user/t3code.service.d/local.conf" = "agents/systemd/t3code.service.d/local.conf"
 "~/.config/systemd/user/app-t3code.slice" = "agents/systemd/app-t3code.slice"
 "~/.config/systemd/user/t3code-update.service" = "agents/systemd/t3code-update.service"
-"~/.config/systemd/user/t3code-update.timer" = "agents/systemd/t3code-update.timer"
 "~/.config/systemd/user/t3-backup.service" = "agents/systemd/t3-backup.service"
 "~/.config/systemd/user/t3-backup.timer" = "agents/systemd/t3-backup.timer"
 "~/.config/systemd/user/opencode-free.service" = "agents/systemd/opencode-free.service"
@@ -36,7 +35,7 @@
 "~/.t3/userdata/settings.json" = "agents/t3/settings.json"
 
 [systemd]
-enable = ["t3code-update.timer", "t3-backup.timer", "opencode-free.timer", "gah-gc.timer", "systemd-tmpfiles-clean.timer"]
+enable = ["t3-backup.timer", "opencode-free.timer", "gah-gc.timer", "systemd-tmpfiles-clean.timer"]
 
 [[assert]]
 name = "Artificial Analysis API key stored"
