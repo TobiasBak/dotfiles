@@ -13,7 +13,10 @@
     };
   };
 
-  services.tailscale.enable = true;
+  services.tailscale = {
+    enable = true;
+    package = pkgs.callPackage ../packages/tailscale.nix { };
+  };
 
   networking.firewall = {
     enable = true;
@@ -36,8 +39,5 @@
     AllowSuspendThenHibernate = false;
   };
 
-  environment.systemPackages = with pkgs; [
-    htop
-    tailscale
-  ];
+  environment.systemPackages = with pkgs; [ htop ];
 }

@@ -186,6 +186,11 @@ documentation. The allow list in the host configuration is:
 
 ## Notes
 
+- Tailscale uses the official 1.104.2 binary from
+  [`packages/tailscale.nix`](packages/tailscale.nix), built with Go 1.27.3 to fix
+  [TS-2026-013](https://tailscale.com/security-bulletins#ts-2026-013). The pinned
+  Nixpkgs package predates the fix. Return to the distribution package only after
+  verifying both the Tailscale version and its embedded Go certificate-distrust fix.
 - Tailscale is enabled, but hosts are not automatically joined to a tailnet.
   Run `tailscale up --ssh=false` after boot or add an auth-key flow later.
 - Every `hardware-configuration.nix` is machine-specific. Regenerate it for a
