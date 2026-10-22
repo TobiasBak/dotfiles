@@ -68,6 +68,15 @@ class Parser(argparse.ArgumentParser):
         self.exit(1, f"{self.prog}: error: {message}\n")
 
 
+class AdmissionInterrupted(BaseException):
+    def __init__(self, signum):
+        self.signum = signum
+
+
+def interrupt_admission(signum, frame):
+    raise AdmissionInterrupted(signum)
+
+
 def read_holder(path):
     try:
         holder = json.loads(path.read_text())
@@ -283,14 +292,7 @@ def nonnegative_integer(value, source):
     return int(value)
 
 
-def memory_headroom(pid=None):
-    meminfo = Path(os.environ.get("HEAVY_LEASE_MEMINFO", "/proc/meminfo"))
-    available = [line.split() for line in meminfo.read_text().splitlines() if line.startswith("MemAvailable:")]
-    if len(available) != 1 or len(available[0]) != 3 or available[0][2] != "kB":
-        raise ValueError(f"missing or invalid MemAvailable in {meminfo}")
-    # Host availability already includes usage outside this caller's cgroup,
-    # including Windows. Reserve only the desktop margin, not live job peaks.
-    headroom = max(0, nonnegative_integer(available[0][1], meminfo) * 1024 - DESKTOP_MARGIN)
+def cgroup_memory_limits(pid=None):
     membership = Path(os.environ.get("HEAVY_LEASE_CGROUP_FILE", f"/proc/{pid}/cgroup" if pid is not None else "/proc/self/cgroup"))
     paths = [line[3:] for line in membership.read_text().splitlines() if line.startswith("0::")]
     if len(paths) != 1 or not paths[0].startswith("/") or ".." in Path(paths[0]).parts:
@@ -308,18 +310,36 @@ def memory_headroom(pid=None):
                 raise
             maximum = "max"
         if maximum != "max":
-            limit = nonnegative_integer(maximum, maximum_path)
-            usage_path = current / "memory.current"
-            usage = nonnegative_integer(usage_path.read_text().strip(), usage_path)
-            stat_path = current / "memory.stat"
-            inactive = [line.split() for line in stat_path.read_text().splitlines() if line.split()[:1] == ["inactive_file"]]
-            if len(inactive) != 1 or len(inactive[0]) != 2:
-                raise ValueError(f"missing or invalid inactive_file in {stat_path}")
-            cache = nonnegative_integer(inactive[0][1], stat_path)
-            headroom = min(headroom, max(0, limit - max(0, usage - cache)))
+            yield current, nonnegative_integer(maximum, maximum_path)
         if current == root:
-            return headroom
+            return
         current = current.parent
+
+
+def require_memory_capacity(peak):
+    for group, limit in cgroup_memory_limits():
+        if peak > limit:
+            raise ValueError(f"cgroup {group}: memory.max {limit} bytes is below expected peak {peak} bytes")
+
+
+def memory_headroom(pid=None):
+    meminfo = Path(os.environ.get("HEAVY_LEASE_MEMINFO", "/proc/meminfo"))
+    available = [line.split() for line in meminfo.read_text().splitlines() if line.startswith("MemAvailable:")]
+    if len(available) != 1 or len(available[0]) != 3 or available[0][2] != "kB":
+        raise ValueError(f"missing or invalid MemAvailable in {meminfo}")
+    # Host availability already includes usage outside this caller's cgroup,
+    # including Windows. Reserve only the desktop margin, not live job peaks.
+    headroom = max(0, nonnegative_integer(available[0][1], meminfo) * 1024 - DESKTOP_MARGIN)
+    for current, limit in cgroup_memory_limits(pid):
+        usage_path = current / "memory.current"
+        usage = nonnegative_integer(usage_path.read_text().strip(), usage_path)
+        stat_path = current / "memory.stat"
+        inactive = [line.split() for line in stat_path.read_text().splitlines() if line.split()[:1] == ["inactive_file"]]
+        if len(inactive) != 1 or len(inactive[0]) != 2:
+            raise ValueError(f"missing or invalid inactive_file in {stat_path}")
+        cache = nonnegative_integer(inactive[0][1], stat_path)
+        headroom = min(headroom, max(0, limit - max(0, usage - cache)))
+    return headroom
 
 
 def named_resource_head(request, waiters):
@@ -511,6 +531,7 @@ def acquire_admission(directory, metadata, try_only, waiter):
     admission = high_descriptor(os.open(directory / "admission.lock", os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600))
     folder = directory / "waiters"
     folder.mkdir(mode=0o700, exist_ok=True)
+    require_memory_capacity(expected_peak(metadata))
     try:
         while True:
             observer = AdmissionObserver(directory) if not try_only else None
@@ -616,6 +637,7 @@ def read_waiters(directory):
 def nested_memory_admission(directory, token, memory, try_only):
     # A nested allocation keeps its parent's locks. It cannot queue for resources
     # it already owns, nor treat an old zero-slot holder as a memory reservation.
+    require_memory_capacity(memory)
     while True:
         with_memory = AdmissionObserver(directory)
         try:
@@ -695,6 +717,9 @@ def run(directory, command, try_only, weight, exclusive, admission_class, memory
         os.environ["HEAVY_LEASE_TOKEN"] = token
         code = supervise_command(directory, command, held, holder, journal)
         return code
+    except AdmissionInterrupted as error:
+        code = -error.signum
+        raise
     except KeyboardInterrupt:
         code = 130
         raise
@@ -1270,7 +1295,13 @@ def main():
         parser.error(f"weight must be 1..{POOL_SIZE}, or 0 with --exclusive")
     if args.memory is not None and args.memory < 0:
         parser.error("memory must be a nonnegative byte count")
-    return run(directory, args.command[1:], args.try_only, args.weight, args.exclusive, args.admission_class, args.memory)
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(signum, interrupt_admission)
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT, signal.SIGTERM})
+        return run(directory, args.command[1:], args.try_only, args.weight, args.exclusive, args.admission_class, args.memory)
+    except AdmissionInterrupted as error:
+        return -error.signum
 
 
 if __name__ == "__main__":

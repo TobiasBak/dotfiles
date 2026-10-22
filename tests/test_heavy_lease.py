@@ -535,6 +535,79 @@ sys.exit(23)
                 self.assertEqual(self.scheduler_status()["slots"], [])
                 self.assertEqual(self.scheduler_status()["waiters"], [])
 
+    def test_impossible_cgroup_memory_is_rejected_without_a_waiter(self):
+        root = Path(self.env["HEAVY_LEASE_CGROUP_ROOT"])
+        for relative in ("parent/leaf", "parent", ""):
+            for mode in ("--wait", "--try"):
+                with self.subTest(cgroup=relative, mode=mode):
+                    self.env.update(fake_memory_environment(self.home))
+                    group = root / relative
+                    limit = 4 * 1024**3
+                    (group / "memory.max").write_text(f"{limit}\n")
+                    target = self.home / "must-not-start"
+                    process = self.start(["touch", str(target)], mode=(mode,), weight=2)
+                    output, error = process.communicate(timeout=2)
+                    self.assertEqual(process.returncode, 1, error.decode())
+                    self.assertIn(str(group).encode(), error)
+                    self.assertIn(str(limit).encode(), error)
+                    self.assertIn(str(2 * MEMORY_PER_SLOT).encode(), error)
+                    self.assertFalse(target.exists())
+                    self.assertEqual(self.scheduler_status()["waiters"], [])
+                    self.assertEqual(list((self.state / "waiters").glob("*")), [])
+
+    def test_impossible_head_does_not_block_the_next_waiter(self):
+        holder = self.start([sys.executable, "-c", CONTROLLED, str(self.home / "holder")])
+        self.event(holder, b"entered\n")
+        root = Path(self.env["HEAVY_LEASE_CGROUP_ROOT"])
+        (root / "parent/memory.max").write_text(f"{4 * 1024**3}\n")
+        capped = self.start(["true"], mode=("--wait", "--class", "gate"), weight=2)
+        try:
+            capped.communicate(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+        membership = self.home / "uncapped.cgroup"
+        membership.write_text("0::/\n")
+        self.env["HEAVY_LEASE_CGROUP_FILE"] = str(membership)
+        notifications = self.watch_waiters()
+        next_waiter = self.start(
+            [sys.executable, "-c", CONTROLLED, str(self.home / "next")], weight=2,
+        )
+        self.waiter_event(notifications, next_waiter)
+        self.release(holder)
+        self.event(next_waiter, b"entered\n")
+        self.assertEqual(capped.returncode, 1)
+        self.release(next_waiter)
+        self.assertEqual(self.scheduler_status()["waiters"], [])
+
+    def test_waiting_client_unblocks_signals_and_removes_registration(self):
+        launcher = '''
+import os
+import signal
+import sys
+signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+os.execv(sys.argv[1], sys.argv[1:])
+'''
+        holder = self.start([sys.executable, "-c", CONTROLLED, str(self.home / "holder")])
+        self.event(holder, b"entered\n")
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            with self.subTest(signal=signum):
+                notifications = self.watch_waiters()
+                waiter = subprocess.Popen(
+                    [sys.executable, "-c", launcher, str(CLI), "run", "--wait", "--weight", "2", "--", "true"],
+                    env=self.env, cwd=self.home, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, start_new_session=True,
+                )
+                self.processes.append(waiter)
+                self.waiter_event(notifications, waiter)
+                waiter.send_signal(signum)
+                waiter.communicate(timeout=2)
+                self.assertEqual(waiter.returncode, -signum)
+                self.assertEqual(self.scheduler_status()["waiters"], [])
+                self.assertEqual(list((self.state / "waiters").glob("*")), [])
+        self.release(holder)
+
     def test_external_vm_usage_counts_once_through_host_availability(self):
         # A live VM in system.slice is outside the caller's unlimited ancestors.
         # Its resident 8 GiB is already absent from MemAvailable.
@@ -603,7 +676,7 @@ sys.exit(23)
             ("memavailable-minimum", unit, 4 * unit, 3 * unit, 2 * unit, "host"),
             ("unlimited-ancestors-still-use-host", unit, None, 0, 0, "host"),
             ("root-ancestor-cap", 64 * unit, 4 * unit, 0, 0, "root"),
-            ("inactive-cache-cannot-make-usage-negative", 64 * unit, unit, unit, 2 * unit, "limit"),
+            ("inactive-cache-cannot-make-usage-negative", unit, 2 * unit, unit, 2 * unit, "host"),
         )
         for name, available, maximum, current, inactive, restore in scenarios:
             with self.subTest(headroom=name):
@@ -624,7 +697,8 @@ sys.exit(23)
                     (parent / "memory.stat").write_text(f"inactive_file {inactive}\n")
                     (parent / "leaf/memory.max").write_text(f"{16 * unit}\n")
                 if restore == "root":
-                    (root / "memory.max").write_text(f"{unit}\n")
+                    (root / "memory.max").write_text(f"{3 * unit}\n")
+                    (root / "memory.current").write_text(f"{2 * unit}\n")
                 notifications = self.watch_waiters()
                 head = self.start(
                     [sys.executable, "-c", CONTROLLED, str(self.home / "memory-head")],
@@ -661,9 +735,7 @@ sys.exit(23)
                 if restore == "cache":
                     restored, contents = parent / "memory.stat", f"inactive_file {2 * unit}\n"
                 elif restore == "root":
-                    restored, contents = root / "memory.max", f"{3 * unit}\n"
-                elif restore == "limit":
-                    restored, contents = parent / "memory.max", f"{3 * unit}\n"
+                    restored, contents = root / "memory.current", "0\n"
                 else:
                     restored, contents = meminfo, f"MemAvailable: {(3 * unit + DESKTOP_MARGIN) // 1024} kB\n"
                 replacement = restored.with_suffix(".next")

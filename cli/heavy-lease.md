@@ -82,7 +82,7 @@ mutex; releases never replenish that credit. Once spent, free slots remain
 reserved until the head admits or exits. Thus fitting work uses otherwise idle
 capacity without an unbounded stream delaying the wide head. This bounds bypass
 work, not runtime: a backfilled command may still run arbitrarily long.
-A memory-blocked head with enough free slots is never skipped.
+A head blocked by transient memory pressure with enough free slots is never skipped.
 A waiter blocked on an unavailable named resource does not block unrelated
 resources. Named-only VM work remains independent of the slot pool. Combined
 requests acquire all resources together; queued work holds no partial allocation.
@@ -101,6 +101,9 @@ Used memory and headroom are clamped to zero. Inactive file cache is reclaimable
 the tightest ancestor still applies. `memory.high` is not an admission limit.
 Swap never adds admission capacity. Every request needs both free resources
 and headroom for its estimate, even with an empty pool or zero slots.
+A finite caller-cgroup ancestor limit below the estimate fails immediately with
+exit 1 before waiter registration, naming the cgroup, limit and expected peak.
+Current usage does not cause this rejection.
 
 Host availability includes resident development outside T3, including Windows
 in `system.slice`. Do not reserve its full RAM again or subtract live holders'
@@ -116,8 +119,9 @@ Omarchy launch and direct Docker commands are separate paths.
 
 Waiters wake on resource release and queue events. Lock helpers inherit no lease
 descriptors and die with their parent. Memory-only blocking also uses a bounded
-timerfd reread because memory recovery has no reliable release event. There are
-no sleep-based polling loops.
+timerfd reread because memory recovery has no reliable release event. SIGTERM and SIGINT exit promptly and remove the waiter, even when the
+caller inherited blocked or ignored signals. There are no sleep-based polling
+loops.
 
 Locks live under `~/.local/state/heavy-lease`. Never unlink active resource lock
 files. `status --json` is a point-in-time, non-atomic snapshot with `pool_size`,
