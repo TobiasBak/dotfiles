@@ -9,7 +9,7 @@
   "autoCompactEnabled": true,
   "modelSettings": {
     "claude-opus-5-5": {
-      "autoCompactWindow": 200000
+      "autoCompactWindow": 433000
     }
   },
   "autoMemoryEnabled": false,
