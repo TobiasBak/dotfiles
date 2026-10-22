@@ -57,9 +57,9 @@ url_api = "https://api.github.com/repos/cli/cli/releases/assets/599854672"
 provenance = "github-attestations"
 
 [[tools."github:TobiasBak/verify-at-home"]]
-version = "path:~/.local/share/verify-at-home/installs/eeca84ad522d5ec287569636ef77d00f4e8a433f"
+version = "path:~/.local/share/verify-at-home/installs/3a068fcbc7e135cd09ef5e119f3bcc32d143922a"
 backend = "github:TobiasBak/verify-at-home"
-specifiers = ["path:~/.local/share/verify-at-home/installs/eeca84ad522d5ec287569636ef77d00f4e8a433f"]
+specifiers = ["path:~/.local/share/verify-at-home/installs/3a068fcbc7e135cd09ef5e119f3bcc32d143922a"]
 
 [[tools.gitleaks]]
 version = "8.30.1"
