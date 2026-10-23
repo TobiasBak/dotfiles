@@ -81,6 +81,44 @@ def status(directory, as_json):
     return 0
 
 
+def descriptor_holds_lock(pid, fd, lock):
+    if type(fd) is not int or fd < 0:
+        return False
+    process = Path(f"/proc/{pid}")
+    try:
+        if not os.path.samestat((process / f"fd/{fd}").stat(), lock.stat()):
+            return False
+        # Merely opening the same inode is not ownership. fdinfo lists a flock
+        # only on the open file description that actually holds it.
+        return any(line.split()[2:5] == ["FLOCK", "ADVISORY", "WRITE"]
+                   for line in (process / f"fdinfo/{fd}").read_text().splitlines()
+                   if line.startswith("lock:"))
+    except OSError:
+        return False
+
+
+def inherited_named_lock(lock):
+    try:
+        descriptors = json.loads(os.environ.get("HEAVY_LEASE_FDS", "{}"))
+        fd = descriptors.get(lock.stem)
+    except (ValueError, AttributeError):
+        return False
+    if type(fd) is not int or fd < 0:
+        return False
+    # Some nested subprocesses drop descriptors. They may borrow only while a
+    # live ancestor still holds this exact named lock, never by token equality.
+    pid = os.getpid()
+    while pid > 0:
+        if descriptor_holds_lock(pid, fd, lock):
+            return True
+        try:
+            lines = Path(f"/proc/{pid}/status").read_text().splitlines()
+            pid = next(int(line.split()[1]) for line in lines if line.startswith("PPid:"))
+        except (OSError, ValueError, StopIteration):
+            return False
+    return False
+
+
 def run(directory, command, try_only, exclusive):
     if not exclusive:
         # Orderready still uses TOKEN to bypass its old local capacity pool and
@@ -91,16 +129,12 @@ def run(directory, command, try_only, exclusive):
     name = f"exclusive-{exclusive}"
     lock = directory / f"{name}.lock"
     fd = high_descriptor(os.open(lock, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600))
-    holder = read_holder(lock.with_suffix(".json"))
-    # subprocess callers may drop descriptors but still borrow a live parent's
-    # named ownership. The matching token is valid only while its lock is held.
-    token = os.environ.get("HEAVY_LEASE_TOKEN")
-    if token and holder and holder.get("token") == token and probe_lock(lock):
+    if inherited_named_lock(lock):
         os.close(fd)
         os.execvp(command[0], command)
     holder = {"pid": os.getpid(), "command": command,
               "started_at": datetime.now(timezone.utc).isoformat(),
-              "token": token if token and token != PASSTHROUGH_TOKEN else secrets.token_hex(16),
+              "token": secrets.token_hex(16),
               "resources": [name]}
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)

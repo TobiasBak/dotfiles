@@ -147,6 +147,63 @@ class HeavyLeaseTests(unittest.TestCase):
         self.release(second)
         self.assertEqual(self.status(), {"exclusive": [], "holder": None, "waiters": []})
 
+    def test_siblings_sharing_non_marker_token_try(self):
+        self.check_siblings_sharing_non_marker_token("--try")
+
+    def test_siblings_sharing_non_marker_token_wait(self):
+        self.check_siblings_sharing_non_marker_token("--wait")
+
+    def check_siblings_sharing_non_marker_token(self, mode):
+        self.env["HEAVY_LEASE_TOKEN"] = "shared-old-admission-token"
+        critical = str(self.home / "critical")
+        first = self.start([sys.executable, "-c", CONTROLLED, critical],
+                           ("--exclusive", "device"))
+        self.event(first, b"entered\n")
+        self.assertNotEqual(self.status()["holder"]["token"], self.env["HEAVY_LEASE_TOKEN"])
+        if mode == "--try":
+            second = self.invoke("run", mode, "--exclusive", "device", "--", "/usr/bin/true")
+            self.assertEqual(second.returncode, 2, second.stderr)
+        else:
+            folder = self.state / "waiters"
+            folder.mkdir(exist_ok=True)
+            libc = ctypes.CDLL(None, use_errno=True)
+            watch = libc.inotify_init1(os.O_CLOEXEC | os.O_NONBLOCK)
+            self.assertGreaterEqual(watch, 0)
+            self.addCleanup(os.close, watch)
+            self.assertGreaterEqual(libc.inotify_add_watch(watch, os.fsencode(folder), 0x80), 0)
+            second = self.start([sys.executable, "-c", CONTROLLED, critical],
+                                (mode, "--exclusive", "device"))
+            self.assertEqual(self.ready([watch, second.stdout]), watch,
+                             "sibling entered or exited instead of waiting for the lock")
+            os.read(watch, 65536)
+            self.assertEqual([waiter["pid"] for waiter in self.status()["waiters"]], [second.pid])
+            self.assertIsNone(second.poll())
+        self.release(first)
+        if mode == "--wait":
+            self.event(second, b"entered\n")
+            self.release(second)
+
+    def test_token_and_unlocked_descriptor_do_not_grant_reentry(self):
+        first = self.start([sys.executable, "-c", CONTROLLED, str(self.home / "critical")],
+                           ("--exclusive", "device"))
+        self.event(first, b"entered\n")
+        environment = {**self.env, "HEAVY_LEASE_TOKEN": self.status()["holder"]["token"]}
+        for descriptor_path in (None, self.home / "unrelated", self.state / "exclusive-device.lock"):
+            with self.subTest(descriptor_path=descriptor_path):
+                program = '''
+import json, os, sys
+if sys.argv[2]:
+    fd = os.open(sys.argv[2], os.O_RDWR | os.O_CREAT, 0o600)
+    os.set_inheritable(fd, True)
+    os.environ["HEAVY_LEASE_FDS"] = json.dumps({"exclusive-device": fd})
+os.execv(sys.argv[1], [sys.argv[1], "run", "--try", "--exclusive", "device", "--", "/usr/bin/true"])
+'''
+                result = subprocess.run([sys.executable, "-c", program, str(CLI),
+                                         str(descriptor_path) if descriptor_path else ""],
+                                        env=environment, capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 2, result.stderr)
+        self.release(first)
+
     def test_old_flags_nested_named_lock_and_direct_handoff_adopt(self):
         result = self.invoke("run", "--weight", "2", "--class", "gate", "--memory", "0", "--",
                              sys.executable, "-c",
@@ -157,8 +214,8 @@ class HeavyLeaseTests(unittest.TestCase):
         nested = [str(CLI), "run", "--try", "--weight", "0", "--memory", "0",
                   "--class", "efficiency", "--exclusive", "device", "--",
                   sys.executable, "-c", "raise SystemExit(29)"]
-        # subprocess drops the descriptor; the live parent's token still borrows
-        # the same named lock, as win-vm's nested callers do.
+        # subprocess drops the descriptor; the live parent's held descriptor
+        # still proves ownership of the same lock, as win-vm's nested callers need.
         program = "import subprocess,sys; sys.exit(subprocess.run(sys.argv[1:]).returncode)"
         result = self.invoke("run", "--wait", "--exclusive", "device", "--",
                              sys.executable, "-c", program, *nested)
@@ -170,6 +227,13 @@ class HeavyLeaseTests(unittest.TestCase):
                              'exec "$1" adopt --socket "$HEAVY_LEASE_SOCKET" -- "$2" -c "raise SystemExit(33)"',
                              "fixture", str(CLI), sys.executable)
         self.assertEqual(result.returncode, 33, result.stderr)
+
+    def test_inherited_named_descriptor_survives_different_lock_token(self):
+        result = self.invoke("run", "--exclusive", "device", "--",
+                             str(CLI), "run", "--exclusive", "other", "--",
+                             str(CLI), "run", "--try", "--exclusive", "device", "--",
+                             sys.executable, "-c", "raise SystemExit(29)")
+        self.assertEqual(result.returncode, 29, result.stderr)
 
     def test_isolate_discards_lock_context_without_releasing_parent(self):
         manager_bin = self.home / "manager-bin"

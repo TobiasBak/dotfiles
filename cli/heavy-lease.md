@@ -23,7 +23,7 @@ remove their old admission wrappers independently in phase 2. Unrestricted
 runs export a fixed, resource-free `HEAVY_LEASE_TOKEN` marker because
 Orderready still uses its presence to bypass a local capacity pool and
 authorize private workers. No descriptor or lock represents that marker.
-Named-lock acquisition replaces it with a real ownership token. Phase 2
+Every new named-lock acquisition exports a fresh ownership token. Phase 2
 removes this compatibility dependency with the caller plumbing.
 
 `--exclusive NAME` holds a named kernel `flock` for the command's lifetime.
@@ -32,7 +32,10 @@ until the lock is free and is the default; `--try` returns 2 if it is held.
 Different names do not exclude each other. Nested calls for a name already
 held by their parent pass through without reacquiring it. Named ownership is
 exported through `HEAVY_LEASE_TOKEN`, `HEAVY_LEASE_FD` and `HEAVY_LEASE_FDS`.
-Token-only borrowers rely on their parent retaining the lock. Inherited
+Reentry requires the mapped descriptor to refer to that named lock and hold
+its exclusive flock, validated through Linux /proc. A nested subprocess that
+drops descriptors can borrow only while a live ancestor retains that mapped
+lock descriptor. A matching token alone never grants ownership. Inherited
 lock descriptors also keep ownership alive until they close.
 
 Locks live under `~/.local/state/heavy-lease/exclusive-NAME.lock`, with holder
