@@ -25,6 +25,7 @@ Talk like a sharp technical friend, not corporate support. Lead with the answer 
 - **Optimize the codebase, not the patch.** The repo is the handoff between agents; no human repairs local choices later. Understand the behavior, owner, invariants, and callers first. If a patch would duplicate knowledge, blur ownership, or preserve a lying abstraction, fix the boundary instead.
 - **Experiments and hill climbing run fast loops.** Chase many ideas and large effects, not 5–10% gains. Check from existing logs or runs that a change will take effect on the chosen case, then iterate on 1–2 runs per candidate and read the transcripts, not just the totals. Spend replication, harness hardening and review only on a candidate that clearly looks good.
 - **Tobias decides material choices.** Bring product and architecture choices to him with a recommendation and tradeoffs. Once decided, don't reopen without new evidence.
+- Before adding complexity for a speculative or vanishingly unlikely race or security edge case, explain the concrete failure mode, likelihood, and complexity cost to the user and get their buy-in. Do not silently expand scope for theoretical robustness.
 
 ## How to orchestrate
 
