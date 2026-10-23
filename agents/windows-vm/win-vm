@@ -54,10 +54,6 @@ ARTIFACTS = {
 
 
 READINESS_SECONDS = 60
-# Conservative admission estimate for QEMU, container services and host charges.
-# This is not a measured upper bound or a cgroup hard limit.
-STARTUP_OVERHEAD = 1024**3
-ADMISSION_CLASSES = ("gate", "interactive", "efficiency")
 
 
 class Failure(Exception):
@@ -543,46 +539,6 @@ def refuse_running(state):
     raise Failure(message)
 
 
-def startup_memory():
-    result = checked(["docker-compose", "-f", COMPOSE, "config", "--format", "json"],
-                     capture_output=True, text=True)
-    try:
-        size = json.loads(result.stdout)["services"]["windows"]["environment"]["RAM_SIZE"]
-        match = re.fullmatch(r"([1-9][0-9]*)([MG])(?:i?B)?", size, re.IGNORECASE)
-        if match is None:
-            raise ValueError("unsupported size")
-        return int(match[1]) * 1024**(2 if match[2].upper() == "M" else 3) + STARTUP_OVERHEAD
-    except (ValueError, KeyError, TypeError):
-        raise Failure("compose windows RAM_SIZE must be a positive integer in M or G units") from None
-
-
-def admit_startup_memory(admission_class):
-    # The enclosing run already owns win-vm. Explicit nested memory admission
-    # rechecks host/caller headroom even for old callers whose outer peak is 0.
-    while True:
-        memory = startup_memory()
-        checked(["heavy-lease", "run", "--wait", "--class", admission_class,
-                 "--weight", "0", "--exclusive", "win-vm", "--memory", str(memory),
-                 "--", sys.executable, "-c", "pass"])
-        if startup_memory() == memory:
-            return memory
-
-
-@contextmanager
-def admitted_lifecycle(admission_class, memory=None):
-    while True:
-        with lifecycle_lock() as locked:
-            if docker_state()["container"] == "running" or (
-                memory is not None and startup_memory() == memory
-            ):
-                yield locked
-                return
-        # Do not pin Omarchy's lifecycle lock while memory-blocked. Recheck the
-        # state under that lock afterwards, so a queued running-state sample
-        # can never authorize an unaccounted startup.
-        memory = admit_startup_memory(admission_class)
-
-
 def inherited_host_descriptors():
     descriptors = []
     for name, fd in json.loads(os.environ.get("HEAVY_LEASE_FDS", "{}")).items():
@@ -591,17 +547,16 @@ def inherited_host_descriptors():
             if os.path.samestat(os.fstat(fd), lock.stat()):
                 descriptors.append(fd)
         except OSError:
-            # Token-only callers intentionally borrow their parent's ownership.
+            # Token-only callers intentionally borrow their parent's named lock.
             continue
     return descriptors
 
 
-def ephemeral_run(command, timeout, fd, admission_class):
+def ephemeral_run(command, timeout, fd):
     state = docker_state()
     refuse_running(state)
     if not (BASELINE / "baseline.json").is_file():
         raise Failure("no pinned baseline; run win-vm baseline with the VM stopped")
-    memory = admit_startup_memory(admission_class)
     token = uuid.uuid4().hex
     holder = {"pid": os.getpid(), "guardian_pid": None, "command": command,
               "started_at": datetime.now(timezone.utc).isoformat(), "token": token}
@@ -645,7 +600,7 @@ def ephemeral_run(command, timeout, fd, admission_class):
                 {"type": "bind", "source": str(EPHEMERAL / "storage"), "target": "/storage"},
                 {"type": "bind", "source": str(EPHEMERAL / "shared"), "target": "/shared"}]}}}
             (EPHEMERAL / "compose.yml").write_text(json.dumps(override) + "\n")
-        with private_lock("ephemeral.lock") as clone_fd, admitted_lifecycle(admission_class, memory) as omarchy_fd:
+        with private_lock("ephemeral.lock") as clone_fd, lifecycle_lock() as omarchy_fd:
             check()
             refuse_running(docker_state())
             lifecycle_fds = (clone_fd, omarchy_fd) if omarchy_fd is not False else (clone_fd,)
@@ -737,11 +692,11 @@ def harden_mount_sources():
             raise Failure(f"cannot set {source} to 0700: {error}") from None
 
 
-def up(timeout, admission_class):
+def up(timeout):
     if os.environ.get("WIN_VM_LEASE"):
         return wait_ready(timeout, already=True, check=leased_state)
     # Preparation may wait for authorization, but cannot allocate a VM. Only
-    # after it returns do we admit memory and start under the final lifecycle lock.
+    # after it returns do we start under the final lifecycle lock.
     with private_lock("up.lock"):
         with lifecycle_lock() as locked:
             already = docker_state()["container"] == "running"
@@ -753,7 +708,7 @@ def up(timeout, admission_class):
                            if key not in ("GAH_WORKSPACE", "GAH_ROOT", "GAH_BIN", "GAH_LAUNCH_CONTEXT")}
             checked(["heavy-lease", "isolate", "--", "/usr/bin/omarchy-windows-vm", "prepare"],
                     env=environment, cwd="/", stdout=sys.stderr)
-        with admitted_lifecycle(admission_class) as locked:
+        with lifecycle_lock() as locked:
             already = docker_state()["container"] == "running"
             if not already:
                 if not locked or not mounts_ready():
@@ -1131,11 +1086,11 @@ def parser():
     sub.add_parser("baseline", help="pin reflinked files from the stopped persistent guest")
     q = sub.add_parser("run", help="lease a disposable baseline clone for a host command")
     q.add_argument("--ephemeral", action="store_true", required=True)
-    q.add_argument("--class", dest="admission_class", choices=ADMISSION_CLASSES, default="interactive", help="Host admission priority (default: interactive); startup estimates configured RAM plus 1 GiB overhead, not a hard limit.")
+    q.add_argument("--class", help="Accepted and ignored during host-admission removal.")
     q.add_argument("--timeout", type=float, default=READINESS_SECONDS, help=f"readiness timeout in seconds (default: {READINESS_SECONDS})")
     q.add_argument("args", nargs=argparse.REMAINDER)
     q = sub.add_parser("up", help="start headless and wait for guest SSH + active console or RDP")
-    q.add_argument("--class", dest="admission_class", choices=ADMISSION_CLASSES, default="interactive", help="Host admission priority (default: interactive); an already-running VM needs no additional RAM.")
+    q.add_argument("--class", help="Accepted and ignored during host-admission removal.")
     q.add_argument("--timeout", type=float, default=READINESS_SECONDS, help=f"readiness timeout in seconds (default: {READINESS_SECONDS})")
     q = sub.add_parser("down", help="stop only the container started by win-vm")
     q.add_argument("--force", action="store_true")
@@ -1164,10 +1119,8 @@ def main():
     # Internal: the ephemeral run's guardian, started through systemd-run.
     if sys.argv[1:2] == ["__guard"]:
         return guard(int(sys.argv[2]))
-    admitted = sys.argv[1:2] == ["__host_admitted"]
-    if admitted:
-        if not os.environ.get("HEAVY_LEASE_TOKEN"):
-            raise Failure("internal host admission requires a live heavy-lease context")
+    locked = sys.argv[1:2] == ["__host_locked"]
+    if locked:
         del sys.argv[1]
     p = parser()
     args = p.parse_args()
@@ -1191,26 +1144,22 @@ def main():
                 pass
         print(json.dumps(status()))
         return 0
-    if args.command in ("up", "run") and not admitted and not os.environ.get("WIN_VM_LEASE"):
-        # Read-only refusal before queuing; authoritative recovery and lifecycle
-        # checks happen after host admission. Taking the guest lease here would
-        # reject a concurrent ephemeral owner instead of queuing behind it.
+    if args.command in ("up", "run") and not locked and not os.environ.get("WIN_VM_LEASE"):
+        # Queue for the named device lock before taking the guest lease, so
+        # concurrent ephemeral runs wait instead of rejecting the current owner.
         if args.command == "run":
             state = docker_state()
             if state["mode"] == "persistent":
                 refuse_running(state)
                 if not EPHEMERAL.exists() and not (BASELINE / "baseline.json").is_file():
                     raise Failure("no pinned baseline; run win-vm baseline with the VM stopped")
-        # Named ownership is not a RAM allocation. The actual startup path
-        # separately admits config-derived growth under this same live lease.
-        os.execvp("heavy-lease", ["heavy-lease", "run", "--wait", "--class", args.admission_class,
-                                "--weight", "0", "--exclusive", "win-vm", "--memory", "0",
-                                "--", sys.executable, str(SOURCE / "win-vm"), "__host_admitted", *sys.argv[1:]])
+        os.execvp("heavy-lease", ["heavy-lease", "run", "--wait", "--exclusive", "win-vm",
+                                "--", sys.executable, str(SOURCE / "win-vm"), "__host_locked", *sys.argv[1:]])
     with command_lease(args.command) as fd:
         if args.command == "baseline":
             return baseline()
         if args.command == "run":
-            return ephemeral_run(args.args, args.timeout, fd, args.admission_class)
+            return ephemeral_run(args.args, args.timeout, fd)
         return dispatch(args)
 
 
@@ -1218,7 +1167,7 @@ def dispatch(args):
     if args.command == "bootstrap":
         return bootstrap(args.stage_only)
     if args.command == "up":
-        return up(args.timeout, args.admission_class)
+        return up(args.timeout)
     if args.command == "down":
         return down(args.force)
     state = docker_state()

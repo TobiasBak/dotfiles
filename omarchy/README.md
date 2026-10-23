@@ -144,9 +144,10 @@ already-loaded instructions need a new session to adopt them. Do not restart run
 T3's official service owns its unit and runtime. The repo owns its drop-in,
 parent memory slice, update service and Pi provider enablement. The parent has
 explicit unlimited high/max/swap settings so it does not conflict with T3's
-runtime agent-child safety backstops. Host-wide admission and the fixed 4 GiB
-OS/desktop margin belong to [heavy-lease](../cli/heavy-lease.md), including
-development outside T3. Unlimited parent swap is not admission capacity. The server
+runtime agent-child safety backstops. Host admission was removed by the
+2026-10-23 decision. CPU and memory belong to the kernel; repositories run
+commands directly. [heavy-lease](../cli/heavy-lease.md) temporarily retains
+only named locks and lifetime isolation. The server
 listens on loopback port 3773 and Tailscale Serve exposes it over Tailnet HTTPS.
 Dotfiles does not install or configure the desktop app.
 

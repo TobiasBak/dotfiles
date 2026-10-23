@@ -28,8 +28,8 @@ Deduplication is scoped per target, so the same report can reach a replacement C
 - `pr_url`, `head_sha`: required for `merge_ready`. The URL must be HTTP(S)
   without credentials; the SHA must contain exactly 40 hexadecimal digits.
 - Use `go_request` for design, scope and protected-surface approvals.
-  It requires no SHA or review. Heavy work needs no CoS grant; repository
-  entry points use kernel `heavy-lease` admission.
+  It requires no SHA or review. Heavy work needs no CoS grant or host
+  admission. Repository entry points run directly under kernel scheduling.
 
 These are quiet, outcome-only kinds, not routine progress updates. `finding`
 is the only non-terminal report: send it as soon as evidence changes a

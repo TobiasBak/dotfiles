@@ -2,8 +2,8 @@
 Description=T3 Code server and agents
 
 [Slice]
-# T3 owns the agent child's physical-memory safety backstop. Host-wide
-# admission (including development outside T3) belongs to heavy-lease.
+# T3 owns the agent child's physical-memory safety backstop.
+# CPU and memory are kernel-owned; there is no host admission.
 MemoryHigh=infinity
 MemoryMax=infinity
 MemorySwapMax=infinity

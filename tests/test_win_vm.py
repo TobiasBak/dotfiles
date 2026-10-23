@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 
-from test_heavy_lease import CLI as HEAVY_LEASE, fake_memory_environment
+from test_heavy_lease import CLI as HEAVY_LEASE
 
 
 CLI = Path(__file__).resolve().parents[1] / "agents/windows-vm/win-vm"
@@ -100,7 +100,6 @@ exit 99
             env = {**os.environ, "HOME": str(home), "PATH": str(bin_dir)}
             env.pop("WIN_VM_LEASE", None)
             env = {key: value for key, value in env.items() if not key.startswith("HEAVY_LEASE_")}
-            env.update(fake_memory_environment(home))
             state = home / ".local/state/win-vm"
             clone = state / "ephemeral"
             dead = subprocess.Popen(["/usr/bin/true"])

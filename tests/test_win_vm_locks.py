@@ -1,5 +1,4 @@
 import ctypes
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -10,28 +9,25 @@ import sys
 import tempfile
 import unittest
 
-from test_heavy_lease import CLI as HEAVY_LEASE, fake_memory_environment
+from test_heavy_lease import CLI as HEAVY_LEASE
 
 
 VM = Path(__file__).resolve().parents[1] / "agents/windows-vm/win-vm"
-GIB = 1024**3
 
 
-class WinVmAdmissionTests(unittest.TestCase):
+class WinVmLockTests(unittest.TestCase):
     def setUp(self):
         scratch = Path.home() / ".cache/agent-tmp"
         scratch.mkdir(parents=True, exist_ok=True)
-        temporary = tempfile.TemporaryDirectory(prefix="win-vm-admission-", dir=scratch)
+        temporary = tempfile.TemporaryDirectory(prefix="win-vm-lock-", dir=scratch)
         self.addCleanup(temporary.cleanup)
         self.home = Path(temporary.name)
         tools = self.home / "bin"
         tools.mkdir()
         self.env = {"HOME": str(self.home), "PATH": str(tools), "LC_ALL": "C"}
-        self.env.update(fake_memory_environment(self.home))
         self.env["REAL_HEAVY_LEASE"] = str(HEAVY_LEASE)
         self.calls = self.home / "calls.jsonl"
         self.calls.touch()
-        (self.home / "ram.json").write_text(json.dumps("8G"))
         (self.home / "omarchy-lock").mkdir()
         (self.home / "mounts-ready").touch()
         (self.home / ".keys").mkdir()
@@ -82,12 +78,7 @@ elif name == "docker":
     else:
         sys.exit(97)
 elif name == "docker-compose":
-    if "config" in args:
-        ram = json.loads((home / "ram.json").read_text())
-        print(json.dumps({"services": {"windows": {"environment": {"RAM_SIZE": ram}}}}), flush=True)
-        with (home / "calls.jsonl").open("a") as stream:
-            stream.write(json.dumps(["compose-config-replied", ram]) + "\\n")
-    elif "up" in args:
+    if "up" in args:
         with (home / "calls.jsonl").open("a") as stream:
             stream.write(json.dumps(["allocation-boundary", {"cwd": os.getcwd(),
                 "gah": {key: os.environ[key] for key in ("GAH_WORKSPACE", "GAH_ROOT", "GAH_BIN", "GAH_LAUNCH_CONTEXT") if key in os.environ}}]) + "\\n")
@@ -98,9 +89,6 @@ elif name == "omarchy-windows-vm":
     assert args == ["prepare"], args
     if (home / "prepare-fails").exists():
         sys.exit(42)
-    if (home / "prepare-release").exists():
-        with (home / "prepare-release").open() as stream:
-            stream.read()
     if not (home / "prepare-no-mounts").exists():
         (home / "mounts-ready").touch()
 elif name == "ssh":
@@ -141,136 +129,41 @@ elif name != "chattr":
     def history(self):
         return [json.loads(line) for line in self.calls.read_text().splitlines()]
 
-    def memory(self, available):
-        Path(self.env["HEAVY_LEASE_MEMINFO"]).write_text(f"MemAvailable: {available // 1024} kB\n")
-
-    def watch_calls(self):
-        libc = ctypes.CDLL(None, use_errno=True)
-        fd = libc.inotify_init1(os.O_CLOEXEC | os.O_NONBLOCK)
-        self.assertGreaterEqual(fd, 0)
-        self.addCleanup(os.close, fd)
-        self.assertGreaterEqual(libc.inotify_add_watch(fd, os.fsencode(self.calls), 0x2), 0)
-        return fd
-
-    def wait_for_call(self, fd, predicate):
-        with selectors.DefaultSelector() as selector:
-            selector.register(fd, selectors.EVENT_READ)
-            while not any(predicate(call) for call in self.history()):
-                self.assertTrue(selector.select(timeout=10), "timed out waiting for VM call")
-                os.read(fd, 65536)
-
     def baseline(self):
         baseline = self.home / ".local/state/win-vm/baseline"
         baseline.mkdir(parents=True)
         (baseline / "baseline.json").write_text('{}')
         (baseline / "data.img").write_bytes(b"synthetic guest disk")
 
-    def test_old_outer_zero_slot_wrapper_waits_for_config_derived_startup(self):
-        self.memory(4 * GIB)
-        calls = self.watch_calls()
-        process = subprocess.Popen(
-            [str(HEAVY_LEASE), "run", "--weight", "0", "--exclusive", "win-vm", "--",
-             str(self.runner), "up", "--class", "gate"],
-            env=self.env, cwd=self.home, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
-        self.processes.append(process)
-        self.wait_for_call(calls, lambda call: call[0] == "heavy-lease" and str(9 * GIB) in call)
-        self.assertIsNone(process.poll())
-        self.assertFalse(any(call[0] == "docker-compose" and "up" in call for call in self.history()))
-        # Read-only status/recovery remains available while startup is memory-blocked.
-        status = self.invoke("status")
-        self.assertEqual(status.returncode, 0, status.stderr)
-        self.assertEqual(json.loads(status.stdout)["container"], "exited")
-        down = self.invoke("down")
-        self.assertEqual(down.returncode, 0, down.stderr)
-        self.memory(13 * GIB)
-        output, error = process.communicate(timeout=10)
-        self.assertEqual(process.returncode, 0, error.decode())
-        self.assertIs(json.loads(output)["already_running"], False)
-        growth = next(call for call in self.history() if call[0] == "heavy-lease" and str(9 * GIB) in call)
-        self.assertEqual(growth[growth.index("--class") + 1], "gate")
-        self.assertEqual(sum(call[0] == "docker-compose" and "up" in call for call in self.history()), 1)
-
-    def test_config_growth_while_queued_requires_fresh_startup_admission(self):
-        self.memory(4 * GIB)
-        calls = self.watch_calls()
-        process = subprocess.Popen(
-            [str(self.runner), "up"], env=self.env, cwd=self.home,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
-        )
-        self.processes.append(process)
-        self.wait_for_call(calls, lambda call: call[0] == "heavy-lease" and str(9 * GIB) in call)
-        (self.home / "ram.json").write_text(json.dumps("16G"))
-        self.memory(13 * GIB)
-        self.wait_for_call(calls, lambda call: call[0] == "heavy-lease" and str(17 * GIB) in call)
-        self.assertIsNone(process.poll())
-        self.assertFalse(any(call[0] == "docker-compose" and "up" in call for call in self.history()))
-        self.memory(21 * GIB)
-        output, error = process.communicate(timeout=10)
-        self.assertEqual(process.returncode, 0, error.decode())
-        self.assertIs(json.loads(output)["already_running"], False)
-        self.assertEqual(sum(call[0] == "docker-compose" and "up" in call for call in self.history()), 1)
-
-    def test_config_growth_while_reacquiring_lifecycle_lock_rechecks_both_startup_paths(self):
+    def test_startup_has_no_memory_admission(self):
         self.baseline()
-        for arguments in (("up",), ("run", "--ephemeral", "--", "/usr/bin/true")):
+        for arguments in (("up", "--class", "gate"),
+                          ("run", "--class", "efficiency", "--ephemeral", "--", "/usr/bin/true")):
             with self.subTest(arguments=arguments):
                 self.calls.write_text("")
                 (self.home / "container").unlink(missing_ok=True)
-                (self.home / "ram.json").write_text(json.dumps("8G"))
-                self.memory(4 * GIB)
-                calls = self.watch_calls()
-                process = subprocess.Popen(
-                    [str(self.runner), *arguments], env=self.env, cwd=self.home,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
-                )
-                self.processes.append(process)
-                self.wait_for_call(calls, lambda call: call[0] == "heavy-lease" and str(9 * GIB) in call)
-                lock = os.open(self.home / "omarchy-lock", os.O_RDONLY | os.O_DIRECTORY)
-                try:
-                    fcntl.flock(lock, fcntl.LOCK_EX)
-                    self.memory(13 * GIB)
-                    self.wait_for_call(calls, lambda call: sum(
-                        entry[0] == "compose-config-replied" for entry in self.history()
-                    ) >= 2)
-                    (self.home / "ram.json").write_text(json.dumps("16G"))
-                finally:
-                    os.close(lock)
-                self.wait_for_call(calls, lambda call: call[0] == "heavy-lease" and str(17 * GIB) in call)
-                self.assertIsNone(process.poll())
-                self.assertFalse(any(call[0] == "docker-compose" and "up" in call
-                                     for call in self.history()))
-                self.memory(21 * GIB)
-                output, error = process.communicate(timeout=10)
-                self.assertEqual(process.returncode, 0, error.decode())
+                result = self.invoke(*arguments)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                locks = [call for call in self.history() if call[0] == "heavy-lease"]
+                self.assertEqual(len(locks), 1)
+                self.assertEqual(locks[0][1:6], ["run", "--wait", "--exclusive", "win-vm", "--"])
+                self.assertFalse(any(call[0] == "docker-compose" and "config" in call for call in self.history()))
+                self.assertEqual(sum(call[0] == "docker-compose" and "up" in call for call in self.history()), 1)
 
-    def test_prepare_wait_cannot_start_vm_and_new_config_is_admitted_after_return(self):
-        (self.home / "mounts-ready").unlink()
-        release = self.home / "prepare-release"
-        os.mkfifo(release)
-        self.memory(13 * GIB)
-        calls = self.watch_calls()
-        process = subprocess.Popen(
-            [str(self.runner), "up", "--class", "gate"], env=self.env, cwd=self.home,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
-        )
-        self.processes.append(process)
-        self.wait_for_call(calls, lambda call: call == ["omarchy-windows-vm", "prepare"])
+    def test_ephemeral_owner_keeps_named_lock_through_payload(self):
+        self.baseline()
+        command = [sys.executable, "-c", 'import subprocess,sys; sys.exit(subprocess.run([sys.argv[1], "run", "--try", "--exclusive", "win-vm", "--", "/usr/bin/true"], env={"HOME":sys.argv[2]}).returncode)', str(HEAVY_LEASE), str(self.home)]
+        result = self.invoke("run", "--ephemeral", "--", *command)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("busy: exclusive", result.stderr)
+        self.assertFalse((self.home / ".local/state/win-vm/ephemeral").exists())
         self.assertFalse((self.home / "container").exists())
-        self.assertFalse(any(call[0] == "heavy-lease" and "--memory" in call and call[call.index("--memory") + 1] != "0"
-                             for call in self.history()))
-        (self.home / "ram.json").write_text(json.dumps("16G"))
-        with release.open("w") as stream:
-            stream.write("prepared\n")
-        self.wait_for_call(calls, lambda call: call[0] == "heavy-lease" and str(17 * GIB) in call)
-        self.assertIsNone(process.poll())
+
+    def test_missing_lock_tool_never_starts_vm(self):
+        (self.home / "bin/heavy-lease").unlink()
+        result = self.invoke("up")
+        self.assertEqual(result.returncode, 1, result.stderr)
         self.assertFalse((self.home / "container").exists())
-        self.memory(21 * GIB)
-        output, error = process.communicate(timeout=10)
-        self.assertEqual(process.returncode, 0, error.decode())
-        self.assertIs(json.loads(output)["already_running"], False)
-        self.assertEqual(sum(call[0] == "docker-compose" and "up" in call for call in self.history()), 1)
 
     def test_only_host_global_prepare_leaves_the_workspace_context(self):
         (self.home / "mounts-ready").unlink()
@@ -305,30 +198,6 @@ elif name != "chattr":
         self.assertFalse((self.home / "container").exists())
         self.assertFalse(any(call[0] == "docker-compose" and "up" in call for call in self.history()))
 
-    def test_running_up_requests_zero_and_never_reserves_guest_ram_twice(self):
-        (self.home / "container").write_text("running|old|172.18.0.2|/persistent/storage")
-        self.memory(0)
-        result = self.invoke("up", "--class", "efficiency")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        admissions = [call for call in self.history() if call[0] == "heavy-lease"]
-        self.assertEqual(len(admissions), 1)
-        self.assertEqual(admissions[0][admissions[0].index("--memory") + 1], "0")
-        self.assertFalse(any(call[0] in ("omarchy-windows-vm", "docker-compose") for call in self.history()))
-
-    def test_ephemeral_owner_admits_startup_and_keeps_named_lease_through_payload(self):
-        self.baseline()
-        command = [sys.executable, "-c", 'import subprocess,sys; sys.exit(subprocess.run([sys.argv[1], "run", "--try", "--weight", "0", "--exclusive", "win-vm", "--", "/usr/bin/true"], env={"HOME":sys.argv[2]}).returncode)', str(HEAVY_LEASE), str(self.home)]
-        result = self.invoke("run", "--class", "gate", "--ephemeral", "--", *command)
-        # An independent contender cannot take the owner's named resource.
-        self.assertEqual(result.returncode, 2, result.stderr)
-        self.assertIn("busy: exclusive", result.stderr)
-        self.assertTrue(any(call[0] == "heavy-lease" and str(9 * GIB) in call for call in self.history()))
-        self.assertFalse((self.home / ".local/state/win-vm/ephemeral").exists())
-        self.assertFalse((self.home / "container").exists())
-        snapshot = subprocess.run([str(HEAVY_LEASE), "status", "--json"], env=self.env,
-                                  capture_output=True, text=True, timeout=10)
-        self.assertEqual(json.loads(snapshot.stdout)["exclusive"], [])
-
     def test_concurrent_ephemeral_owner_queues_before_taking_guest_lease(self):
         self.baseline()
         first = subprocess.Popen(
@@ -348,6 +217,7 @@ elif name != "chattr":
                 if line == b"payload-ready\n":
                     break
         waiter_folder = self.home / ".local/state/heavy-lease/waiters"
+        waiter_folder.mkdir(exist_ok=True)
         libc = ctypes.CDLL(None, use_errno=True)
         watch = libc.inotify_init1(os.O_CLOEXEC | os.O_NONBLOCK)
         self.assertGreaterEqual(watch, 0)
@@ -372,15 +242,3 @@ elif name != "chattr":
         self.assertEqual(second.returncode, 0, second_error.decode())
         self.assertEqual(sum(call[0] == "docker-compose" and "up" in call for call in self.history()), 2)
 
-    def test_bad_config_and_missing_scheduler_never_start_a_vm(self):
-        for size in ("0G", "-8G", "invalid", None):
-            with self.subTest(size=size):
-                (self.home / "ram.json").write_text(json.dumps(size))
-                result = self.invoke("up")
-                self.assertEqual(result.returncode, 1, result.stderr)
-                self.assertIn("RAM_SIZE", result.stderr)
-                self.assertFalse(any(call[0] == "docker-compose" and "up" in call for call in self.history()))
-        (self.home / "bin/heavy-lease").unlink()
-        result = self.invoke("up")
-        self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertFalse((self.home / "container").exists())

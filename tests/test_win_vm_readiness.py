@@ -7,7 +7,7 @@ import tempfile
 import time
 import unittest
 
-from test_heavy_lease import CLI as HEAVY_LEASE, fake_memory_environment
+from test_heavy_lease import CLI as HEAVY_LEASE
 
 
 CLI = Path(__file__).resolve().parents[1] / "agents/windows-vm/win-vm"
@@ -54,7 +54,6 @@ sys.exit(reply['code'])
         (keys / "windows-vm.env").write_text("WINDOWS_VM_USERNAME=tb\n")
         self.env = {**os.environ, "HOME": str(self.home), "PATH": str(tools)}
         self.env = {key: value for key, value in self.env.items() if not key.startswith("HEAVY_LEASE_")}
-        self.env.update(fake_memory_environment(self.home))
         self.env.pop("WIN_VM_LEASE", None)
         self.reply()
 
@@ -131,9 +130,11 @@ sys.exit(reply['code'])
         ]:
             with self.subTest(expected=expected):
                 self.reply(code=code, out=output, err=error)
-                result = self.cli("up", "--timeout", "0.15")
+                # This checks the last observation, not the deadline bound.
+                # Allow the fake Docker/SSH processes to produce that observation.
+                result = self.cli("up", "--timeout", "2")
                 self.assertEqual(result.returncode, 1, result.stderr)
-                self.assertIn("infrastructure readiness failed within 0.15s", result.stderr)
+                self.assertIn("infrastructure readiness failed within 2s", result.stderr)
                 self.assertIn(expected, result.stderr)
                 self.assertEqual(result.stdout, "")
 

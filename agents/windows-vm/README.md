@@ -4,33 +4,23 @@
 workstation's live command follows `~/.dotfiles/agents/windows-vm/win-vm`.
 It reads existing VM credentials by path; they never belong in evidence.
 
-## Host admission
+## Named device ownership
 
 ```sh
-win-vm up --class interactive
-win-vm run --class gate --ephemeral -- ./lane.sh
+win-vm up
+win-vm run --ephemeral -- ./lane.sh
 ```
 
-`up` and `run --ephemeral` own `heavy-lease` admission. `--class` accepts
-`gate`, `interactive` (default), or `efficiency`. Call them directly; do not
-add an outer host lease. Missing `heavy-lease` fails before startup.
+`up` and `run --ephemeral` take the `heavy-lease` named `win-vm` lock
+before the guest lease, so concurrent owners wait instead of rejecting each
+other. Call them directly; do not add an outer wrapper. Missing
+`heavy-lease` fails before startup. `--class` is accepted and ignored for
+old callers.
 
-The owner first takes the zero-slot `win-vm` named lock with a zero-memory
-request. Before allocating a guest, it explicitly admits additional memory:
-the resolved Compose `windows.environment.RAM_SIZE` plus 1 GiB for QEMU,
-container services and host overhead. RAM_SIZE accepts positive integer M/G
-units, optionally suffixed B or iB. The overhead is a conservative admission
-estimate, not a measured upper bound or cgroup hard limit. Existing-running
-`up` needs no additional guest allocation and does not reserve its RAM twice.
+Host admission was removed by the 2026-10-23 decision. There is no memory
+estimate, headroom check, slot request or admission wait. The kernel owns
+CPU and memory. Named device ownership and guest lifecycle exclusions stay.
 Ephemeral runs still refuse a running persistent VM.
-
-Startup checks use host `MemAvailable` minus the fixed 4 GiB desktop margin
-and the caller's finite ancestor hard limits. Resident Windows memory is
-already reflected in host availability. Swap does not add build capacity.
-Named/CPU locks remain descriptor-owned; memory is a phase admission check,
-not a held quota. Historical outer zero-slot wrappers remain supported:
-explicit nested startup admission waits for headroom while retaining that
-named ownership, without silently inheriting the outer zero estimate.
 
 When persistent bind mounts need restoration, `up` first calls the supported
 `omarchy-windows-vm prepare` operation. It may authorize privileged mount/config
@@ -40,23 +30,18 @@ context, with `/` as cwd and `GAH_WORKSPACE`, `GAH_ROOT`, `GAH_BIN` and
 `GAH_LAUNCH_CONTEXT` absent. It invokes absolute
 `/usr/bin/omarchy-windows-vm prepare`, so trusted root-owned helper validation
 uses host ownership rather than unmapped owners in a workspace namespace.
-The parent retains its VM named lease. Source, payload and actual Docker
+The parent retains its VM named lock. Source, payload and actual Docker
 allocation remain in the original caller context. After preparation returns,
-the owner rereads config, checks additional memory, then validates mounts and
-starts Docker under the final lifecycle lock. Config changes across admission
-or lifecycle-lock waits trigger fresh admission. Missing, failed or incomplete
-prepare support prevents startup; there is no fallback to privileged `up`.
-Install the Omarchy prepare-capable provider before enabling this restoration
-path. Already-running readiness and already-prepared direct startup do not
-invoke prepare.
+the owner validates mounts and starts Docker under the final lifecycle lock.
+Missing, failed or incomplete prepare support prevents startup; there is no
+fallback to privileged `up`. Install the Omarchy prepare-capable provider
+before enabling this restoration path. Already-running readiness and
+already-prepared direct startup do not invoke prepare.
 
-Memory waits do not hold Omarchy's lifecycle lock. `down`, `status` and
-recovery do not request memory; ephemeral guest exclusivity still applies.
-The guardian inherits available host lock descriptors through teardown;
+The guardian inherits available named-lock descriptors through teardown;
 token-only borrowers continue relying on their parent to retain ownership.
 No T3/VM restart, stock Omarchy desktop launcher, manual Docker start, or
-container restart policy is changed. Those other startup paths are not
-covered by this wrapper's admission policy.
+container restart policy is changed.
 
 ## Transport
 
