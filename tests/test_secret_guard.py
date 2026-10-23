@@ -378,6 +378,8 @@ class SecretGuardTests(unittest.TestCase):
             f'token = {self.token!r}\n'
             'args = sys.argv[1:]\n'
             'if args == ["version"]:\n'
+            f'    with Path({str(self.temp / "scanner-versions")!r}).open("a") as out:\n'
+            '        out.write("version\\n")\n'
             f'    print({SCANNER_VERSION!r})\n'
             '    raise SystemExit(0)\n'
             'with calls.open("a") as out:\n'
@@ -419,6 +421,73 @@ class SecretGuardTests(unittest.TestCase):
         )
         scanner.chmod(0o755)
         return control, calls
+
+    def test_scanner_version_cache_miss_then_hit_for_commit_and_push(self):
+        control, calls = self.install_fake_scanner()
+        control.write_text('green')
+        self.env['XDG_CACHE_HOME'] = str(self.home / 'custom-cache')
+        cache = Path(self.env['XDG_CACHE_HOME']) / 'secret-guard/scanner-version.json'
+        versions = self.temp / 'scanner-versions'
+        self.assertFalse(cache.exists())
+        self.seed()
+        self.assertTrue(cache.is_file(), 'Successful version check must populate the cache')
+        self.assertEqual(versions.read_text().splitlines(), ['version'])
+        self.put(self.repo, 'README', 'second clean snapshot\n')
+        self.commit('cached version still scans commits')
+        self.git(self.repo, 'push', 'origin', 'main')
+        self.assertEqual(versions.read_text().splitlines(), ['version'])
+        self.assertEqual(len(calls.read_text().splitlines()), 3, 'Cache hits must still scan')
+        self.assertIn(f'refs/heads/main {self.head()}\n', self.refs())
+
+    def test_changed_scanner_identity_requires_version_verification(self):
+        control, calls = self.install_fake_scanner()
+        control.write_text('green')
+        self.env.pop('XDG_CACHE_HOME')
+        self.seed()
+        cache = self.home / '.cache/secret-guard/scanner-version.json'
+        self.assertTrue(cache.is_file(), 'Unset XDG_CACHE_HOME must use the home cache')
+        versions = self.temp / 'scanner-versions'
+        replacement = self.scanner.with_name('replacement')
+        shutil.copy2(self.scanner, replacement)
+        os.replace(replacement, self.scanner)
+        self.put(self.repo, 'README', 'clean snapshot with replaced scanner\n')
+        self.commit('reverify replaced scanner')
+        self.assertEqual(versions.read_text().splitlines(), ['version', 'version'])
+        metadata = self.scanner.stat()
+        self.scanner.write_text(self.scanner.read_text().replace(SCANNER_VERSION, '0.0.0' + ' '))
+        os.utime(self.scanner, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+        self.assertEqual(self.scanner.stat().st_size, metadata.st_size)
+        self.assertEqual(self.scanner.stat().st_mtime_ns, metadata.st_mtime_ns)
+        self.assertNotEqual(self.scanner.stat().st_ctime_ns, metadata.st_ctime_ns)
+        scanner_before = calls.read_text()
+        self.put(self.repo, 'README', 'must not trust changed scanner\n')
+        self.git(self.repo, 'add', 'README')
+        self.blocked_commit()
+        self.assertEqual(versions.read_text().splitlines(), ['version'] * 3)
+        self.assertEqual(calls.read_text(), scanner_before, 'Wrong version must not scan')
+
+    def test_corrupt_scanner_version_cache_falls_back(self):
+        control, calls = self.install_fake_scanner()
+        control.write_text('green')
+        self.seed()
+        cache = Path(self.env['XDG_CACHE_HOME']) / 'secret-guard/scanner-version.json'
+        cache.write_text('{not json')
+        self.put(self.repo, 'README', 'clean snapshot after corrupt cache\n')
+        self.commit('reverify after corrupt cache')
+        self.assertEqual((self.temp / 'scanner-versions').read_text().splitlines(), ['version'] * 2)
+        json.loads(cache.read_text())
+        self.assertEqual(len(calls.read_text().splitlines()), 2)
+
+    def test_unavailable_scanner_version_cache_does_not_block_scans(self):
+        control, calls = self.install_fake_scanner()
+        control.write_text('green')
+        cache = Path(self.env['XDG_CACHE_HOME']) / 'secret-guard'
+        cache.parent.mkdir(parents=True)
+        cache.write_text('not a directory')
+        self.seed()
+        self.git(self.repo, 'push', 'origin', 'main')
+        self.assertEqual((self.temp / 'scanner-versions').read_text().splitlines(), ['version'] * 2)
+        self.assertEqual(len(calls.read_text().splitlines()), 2)
 
     def test_staged_diff_excludes_existing_secret_but_push_scans_new_history(self):
         self.env['XDG_DATA_HOME'] = str(self.home / 'custom-data')

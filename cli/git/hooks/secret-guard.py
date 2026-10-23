@@ -38,6 +38,31 @@ def run(args, *, env, cwd=None, input=None, discard=False, failure):
     return result.stdout
 
 
+def cached_scanner_version(cache, identity):
+    try:
+        return json.loads(cache.read_text(encoding="utf-8")) == identity
+    except (OSError, ValueError, UnicodeError, RecursionError):
+        return False
+
+
+def cache_scanner_version(cache, identity):
+    temporary = None
+    try:
+        cache.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=cache.parent, delete=False) as out:
+            temporary = Path(out.name)
+            json.dump(identity, out)
+        os.replace(temporary, cache)
+    except (OSError, ValueError, UnicodeError):
+        pass
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def resolve_scanner():
     root = TRUSTED.parents[2]
     with (root / "mise.toml").open("rb") as manifest:
@@ -54,21 +79,30 @@ def resolve_scanner():
         )
         version_dir = data_dir / "installs/gitleaks" / pin
         scanner = version_dir / "gitleaks"
+        metadata = scanner.lstat()
         if (
             not scanner.is_absolute()
             or version_dir.is_symlink()
             or not version_dir.is_dir()
-            or not stat.S_ISREG(scanner.lstat().st_mode)
+            or not stat.S_ISREG(metadata.st_mode)
             or not os.access(scanner, os.X_OK)
         ):
             raise GuardFailure(failure)
-        version = run(
-            [str(scanner), "version"],
-            env={"HOME": str(home), "PATH": "/usr/bin:/bin"},
-            cwd=root, input=b"", failure=failure,
-        )
-        if version not in (pin.encode("ascii"), pin.encode("ascii") + b"\n"):
-            raise GuardFailure(failure)
+        # ctime also invalidates edits that restore the original size and mtime.
+        identity = [
+            str(scanner.resolve()), pin, metadata.st_dev, metadata.st_ino,
+            metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns,
+        ]
+        cache = Path(os.environ.get("XDG_CACHE_HOME") or home / ".cache") / "secret-guard/scanner-version.json"
+        if not cached_scanner_version(cache, identity):
+            version = run(
+                [str(scanner), "version"],
+                env={"HOME": str(home), "PATH": "/usr/bin:/bin"},
+                cwd=root, input=b"", failure=failure,
+            )
+            if version not in (pin.encode("ascii"), pin.encode("ascii") + b"\n"):
+                raise GuardFailure(failure)
+            cache_scanner_version(cache, identity)
         return scanner
     except (OSError, ValueError, UnicodeError):
         raise GuardFailure(failure) from None
