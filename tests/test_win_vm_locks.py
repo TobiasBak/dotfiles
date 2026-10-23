@@ -241,4 +241,3 @@ elif name != "chattr":
         second_output, second_error = second.communicate(timeout=10)
         self.assertEqual(second.returncode, 0, second_error.decode())
         self.assertEqual(sum(call[0] == "docker-compose" and "up" in call for call in self.history()), 2)
-
