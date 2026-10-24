@@ -73,37 +73,17 @@ if name == "docker":
         sys.exit(97)
 elif name == "docker-compose":
     if "up" in args:
-        with (home / "calls.jsonl").open("a") as stream:
-            stream.write(json.dumps(["allocation-boundary", {"cwd": os.getcwd(),
-                "gah": {key: value for key, value in os.environ.items() if key.startswith("GAH_")}}]) + "\\n")
         start()
     else:
         sys.exit(98)
-elif name == "omarchy-windows-vm":
-    assert args == ["prepare"], args
-    with (home / "calls.jsonl").open("a") as stream:
-        stream.write(json.dumps(["prepare-boundary", {"cwd": os.getcwd(),
-            "gah": {key: value for key, value in os.environ.items() if key.startswith("GAH_")}}]) + "\\n")
-    if (home / "prepare-fails").exists():
-        sys.exit(42)
-    if not (home / "prepare-no-mounts").exists():
-        (home / "mounts-ready").touch()
 elif name == "ssh":
+    if (home / "hold-readiness").exists():
+        with (home / "readiness-release").open() as stream:
+            stream.read()
     print(" SESSIONNAME USERNAME ID STATE TYPE DEVICE\\n console tb 1 Active")
 elif name == "systemd-run":
+    assert "--scope" in args, args
     command = args[args.index("--") + 1:]
-    if "--scope" not in args:
-        assert command == ["/usr/bin/omarchy-windows-vm", "prepare"], command
-        # A service gets manager environment, not the launcher's. Model a manager
-        # with stale gah context, then apply systemd's UnsetEnvironment property.
-        os.environ["GAH_WORKSPACE"] = "stale-manager-workspace"
-        for arg in args:
-            if arg.startswith("--property=UnsetEnvironment="):
-                for key in arg.split("=", 2)[2].split():
-                    os.environ.pop(key, None)
-        assert "--working-directory=/" in args, args
-        os.chdir("/")
-        command[0] = str(home / "bin/omarchy-windows-vm")
     os.execv(command[0], command)
 elif name == "cp":
     shutil.copyfile(args[-2], args[-1])
@@ -161,10 +141,10 @@ elif name != "chattr":
         self.assertGreaterEqual(libc.inotify_add_watch(watch, os.fsencode(path), 0x20), 0)
         return watch
 
-    def wait_open(self, watch):
+    def wait_open(self, watch, message="second VM owner did not open device lock"):
         with selectors.DefaultSelector() as selector:
             selector.register(watch, selectors.EVENT_READ)
-            self.assertTrue(selector.select(timeout=10), "second VM owner did not open device lock")
+            self.assertTrue(selector.select(timeout=10), message)
             os.read(watch, 65536)
 
     def history(self):
@@ -195,6 +175,10 @@ elif name != "chattr":
                 self.assertFalse(any(call[0] == "docker-compose" and "config" in call for call in self.history()))
                 self.assertEqual(sum(call[0] == "docker-compose" and "up" in call for call in self.history()), 1)
                 self.assertEqual(self.device_lock.stat().st_mode & 0o777, 0o600)
+                if arguments[0] == "up":
+                    self.assertFalse(json.loads(result.stdout)["already_running"])
+                    self.assertFalse(any(call[0] in ("systemd-run", "omarchy-windows-vm")
+                                         for call in self.history()))
 
     def test_ephemeral_owner_keeps_device_lock_through_payload(self):
         self.baseline()
@@ -230,43 +214,52 @@ with open(sys.argv[1]) as lock:
         first.communicate(b"release\n", timeout=10)
         self.assertEqual(first.returncode, 0)
 
-    def test_only_host_global_prepare_leaves_the_workspace_context(self):
-        (self.home / "mounts-ready").unlink()
-        gah = {"GAH_WORKSPACE": "fixture-workspace", "GAH_ROOT": "/fixture/repo",
-               "GAH_BIN": "/fixture/gah", "GAH_LAUNCH_CONTEXT": "fixture-context", "GAH_EXTRA": "fixture-extra"}
-        self.env.update(gah)
-        result = self.invoke("up")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        boundary = next(call[1] for call in self.history() if call[0] == "prepare-boundary")
-        self.assertEqual(boundary, {"cwd": "/", "gah": {}})
-        manager = next(call for call in self.history() if call[0] == "systemd-run")
-        self.assertEqual(manager[1:], ["--user", "--wait", "--pipe", "--collect", "--quiet",
-                                     "--service-type=exec", "--working-directory=/",
-                                     "--property=UnsetEnvironment=GAH_WORKSPACE GAH_ROOT GAH_BIN GAH_LAUNCH_CONTEXT",
-                                     "--", "/usr/bin/omarchy-windows-vm", "prepare"])
-        allocation = next(call[1] for call in self.history() if call[0] == "allocation-boundary")
-        self.assertEqual(allocation, {"cwd": str(self.home), "gah": gah})
-        self.assertEqual(sum(call == ["omarchy-windows-vm", "prepare"] for call in self.history()), 1)
-
-    def test_missing_failed_or_incomplete_prepare_never_falls_back_to_startup(self):
-        (self.home / "mounts-ready").unlink()
-        for marker in ("prepare-fails", "prepare-no-mounts"):
-            with self.subTest(marker=marker):
-                (self.home / marker).touch()
+    def test_stopped_vm_with_missing_mounts_or_lock_refuses_startup(self):
+        sources = [self.home / ".windows", self.home / "Windows"]
+        for source, mode in zip(sources, (0o755, 0o2777)):
+            source.chmod(mode)
+        for missing in ("mounts-ready", "omarchy-lock"):
+            with self.subTest(missing=missing):
+                self.calls.write_text("")
+                path = self.home / missing
+                path.rmdir() if path.is_dir() else path.unlink()
                 try:
                     result = self.invoke("up")
                 finally:
-                    (self.home / marker).unlink()
+                    path.mkdir() if missing == "omarchy-lock" else path.touch()
                 self.assertEqual(result.returncode, 1, result.stderr)
-                diagnostic = "exit code 42" if marker == "prepare-fails" else "did not provide safe VM mounts"
-                self.assertIn(diagnostic, result.stderr)
+                self.assertEqual(result.stderr.strip(),
+                                 "win-vm: Persistent VM mounts or lifecycle lock are not ready. "
+                                 "Run `omarchy-windows-vm launch -k` once, then retry.")
                 self.assertFalse((self.home / "container").exists())
-        for tool in ("omarchy-windows-vm", "systemd-run"):
-            (self.home / "bin" / tool).unlink()
-            result = self.invoke("up")
-            self.assertEqual(result.returncode, 1, result.stderr)
-            self.assertFalse((self.home / "container").exists())
-        self.assertFalse(any(call[0] == "docker-compose" and "up" in call for call in self.history()))
+                self.assertFalse(any(call[0] == "docker-compose" and "up" in call for call in self.history()))
+                self.assertFalse(any(call[0] in ("systemd-run", "omarchy-windows-vm", "ssh")
+                                     for call in self.history()))
+                self.assertEqual([source.stat().st_mode & 0o7777 for source in sources], [0o755, 0o2777])
+
+    def test_running_vm_with_missing_mounts_and_lock_waits_for_readiness(self):
+        (self.home / "mounts-ready").unlink()
+        (self.home / "omarchy-lock").rmdir()
+        (self.home / "container").write_text("running|existing|172.18.0.2|/persistent/storage")
+        (self.home / "hold-readiness").touch()
+        os.mkfifo(self.home / "readiness-release")
+        release = os.open(self.home / "readiness-release", os.O_RDWR)
+        try:
+            watch = self.watch_open(self.home / "readiness-release")
+            process = self.spawn("up")
+            self.wait_open(watch, "running VM did not reach guest readiness")
+            self.assertIsNone(process.poll())
+            self.assertFalse(any(call[0] == "docker-compose" and "up" in call for call in self.history()))
+            self.assertFalse(any(call[0] in ("systemd-run", "omarchy-windows-vm") for call in self.history()))
+            os.write(release, b"ready\n")
+        finally:
+            os.close(release)
+        output, error = process.communicate(timeout=10)
+        self.assertEqual(process.returncode, 0, error.decode())
+        info = json.loads(output)
+        self.assertTrue(info["already_running"])
+        self.assertTrue(info["ssh"])
+        self.assertEqual(info["session"]["state"], "console")
 
     def test_concurrent_owners_queue_before_taking_guest_lease(self):
         for args in (("up",), ("run", "--ephemeral", "--", "/usr/bin/true")):

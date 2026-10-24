@@ -685,39 +685,16 @@ def mounts_ready():
     return True
 
 
-def harden_mount_sources():
-    # Omarchy's privileged preparation refuses sources not at exactly 0700, and its
-    # `chmod 0700` keeps the setgid bit dockurr's samba sets on an empty share (2777).
-    for source in (HOME / ".windows", HOME / "Windows"):
-        try:
-            os.chmod(source, 0o700)
-        except OSError as error:
-            raise Failure(f"cannot set {source} to 0700: {error}") from None
-
-
 def up(timeout):
     if os.environ.get("WIN_VM_LEASE"):
         return wait_ready(timeout, already=True, check=leased_state)
-    # Preparation may wait for authorization, but cannot allocate a VM. Only
-    # after it returns do we start under the final lifecycle lock.
     with private_lock("up.lock"):
-        with lifecycle_lock() as locked:
-            already = docker_state()["container"] == "running"
-            needs_prepare = not already and (not locked or not mounts_ready())
-        if needs_prepare:
-            print("Omarchy bind mounts need restoring; preparing without starting the VM.", file=sys.stderr, flush=True)
-            harden_mount_sources()
-            environment = {key: value for key, value in os.environ.items() if not key.startswith("GAH_")}
-            checked(["systemd-run", "--user", "--wait", "--pipe", "--collect", "--quiet",
-                     "--service-type=exec", "--working-directory=/",
-                     "--property=UnsetEnvironment=GAH_WORKSPACE GAH_ROOT GAH_BIN GAH_LAUNCH_CONTEXT",
-                     "--", "/usr/bin/omarchy-windows-vm", "prepare"],
-                    env=environment, cwd="/", stdout=sys.stderr)
         with lifecycle_lock() as locked:
             already = docker_state()["container"] == "running"
             if not already:
                 if not locked or not mounts_ready():
-                    raise Failure("Omarchy prepare did not provide safe VM mounts; refusing startup")
+                    raise Failure("Persistent VM mounts or lifecycle lock are not ready. "
+                                  "Run `omarchy-windows-vm launch -k` once, then retry.")
                 result = run(["docker-compose", "-f", COMPOSE, "up", "-d"], stdout=sys.stderr)
                 if result.returncode:
                     return result.returncode

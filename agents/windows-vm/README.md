@@ -23,24 +23,18 @@ estimate, headroom check, slot request or admission wait. The kernel owns
 CPU and memory. Named device ownership and guest lifecycle exclusions stay.
 Ephemeral runs still refuse a running persistent VM.
 
-When persistent bind mounts need restoration, `up` first calls the supported
-`omarchy-windows-vm prepare` operation. It may authorize privileged mount/config
-preparation, but must never start or recreate Windows. Only this fixed
-host-global operation runs through `systemd-run --user --wait --pipe
---collect --quiet --service-type=exec --working-directory=/` in the user-manager
-context. No caller environment is forwarded. The launcher drops all `GAH_*`
-variables, and `UnsetEnvironment` removes `GAH_WORKSPACE`, `GAH_ROOT`, `GAH_BIN`
-and `GAH_LAUNCH_CONTEXT` from the service even if the manager inherited them.
-It invokes absolute
-`/usr/bin/omarchy-windows-vm prepare`, so trusted root-owned helper validation
-uses host ownership rather than unmapped owners in a workspace namespace.
-The parent retains its VM named lock. Source, payload and actual Docker
-allocation remain in the original caller context. After preparation returns,
-the owner validates mounts and starts Docker under the final lifecycle lock.
-Missing, failed or incomplete prepare support prevents startup; there is no
-fallback to privileged `up`. Install the Omarchy prepare-capable provider
-before enabling this restoration path. Already-running readiness and
-already-prepared direct startup do not invoke prepare.
+Persistent `up` starts Docker directly under Omarchy's lifecycle lock when
+the lock directory and bind mounts are ready. If Windows is stopped and either
+is missing or not ready, `up` fails without starting anything and prints:
+"Run `omarchy-windows-vm launch -k` once, then retry." After reboot, this manual
+Omarchy launch can ask for polkit authorization to restore the protected mount
+anchors and lock directory. It also starts Windows. A subsequent `win-vm up`
+waits for guest readiness, as it does for any already-running VM.
+
+`win-vm` does not change the permissions of `~/.windows` or `~/Windows`.
+Omarchy 4.0.6's authorized launch makes its pinned sources private and clears
+setgid before mounting them. Ephemeral runs bind their own clone directories
+and do not require Omarchy's persistent anchors.
 
 The guardian explicitly inherits the device-lock descriptor and retains it
 through teardown if the owner crashes. Nested borrowers rely on their parent
