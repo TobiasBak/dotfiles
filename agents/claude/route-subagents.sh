@@ -11,7 +11,7 @@ case "$(jq -r '.tool_name' <<<"$input")" in
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        permissionDecisionReason: "Use T3 delegate_task with an explicit target, not the native Agent tool. Follow ~/.dotfiles/agents/AGENTS.md for leadership, model and task boundaries."
+        permissionDecisionReason: "Do this work yourself. Only a coordinator or large-project lead delegates, and only whole outcomes through T3 delegate_task with an explicit target; see How to orchestrate in ~/.dotfiles/agents/AGENTS.md."
       }
     }'
     ;;
