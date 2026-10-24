@@ -9,6 +9,7 @@
     ../../modules/kanban.nix
     ../../modules/server-base.nix
     ./hardware-configuration.nix
+    ./noise.nix
   ];
 
   networking.hostName = "tobias-serv01";
