@@ -146,8 +146,8 @@ parent memory slice, update service and Pi provider enablement. The parent has
 explicit unlimited high/max/swap settings so it does not conflict with T3's
 runtime agent-child safety backstops. Host admission was removed by the
 2026-10-23 decision. CPU and memory belong to the kernel; repositories run
-commands directly. [heavy-lease](../cli/heavy-lease.md) temporarily retains
-only named locks and lifetime isolation. The server
+commands directly. Device owners such as `win-vm` own their correctness
+locks. The server
 listens on loopback port 3773 and Tailscale Serve exposes it over Tailnet HTTPS.
 Dotfiles does not install or configure the desktop app.
 

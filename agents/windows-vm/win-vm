@@ -539,20 +539,23 @@ def refuse_running(state):
     raise Failure(message)
 
 
-def inherited_host_descriptors():
-    descriptors = []
-    for name, fd in json.loads(os.environ.get("HEAVY_LEASE_FDS", "{}")).items():
-        try:
-            lock = HOME / ".local/state/heavy-lease" / f"{name}.lock"
-            if os.path.samestat(os.fstat(fd), lock.stat()):
-                descriptors.append(fd)
-        except OSError:
-            # Token-only callers intentionally borrow their parent's named lock.
-            continue
-    return descriptors
+@contextmanager
+def device_lock(command):
+    if command not in ("up", "run") or os.environ.get("WIN_VM_LEASE"):
+        yield None
+        return
+    if command == "run":
+        state = docker_state()
+        if state["mode"] == "persistent":
+            refuse_running(state)
+            if not EPHEMERAL.exists() and not (BASELINE / "baseline.json").is_file():
+                raise Failure("no pinned baseline; run win-vm baseline with the VM stopped")
+    # Queue before taking the guest lease, which intentionally rejects conflicts.
+    with private_lock("device.lock") as fd:
+        yield fd
 
 
-def ephemeral_run(command, timeout, fd):
+def ephemeral_run(command, timeout, fd, device_fd):
     state = docker_state()
     refuse_running(state)
     if not (BASELINE / "baseline.json").is_file():
@@ -584,7 +587,7 @@ def ephemeral_run(command, timeout, fd):
         guardian = subprocess.Popen(["systemd-run", "--user", "--scope", "--quiet", "--collect",
                                      f"--unit=win-vm-ephemeral-{token[:12]}", "--", sys.executable,
                                      str(SOURCE / "win-vm"), "__guard", str(fd)],
-                                    stdin=read_fd, pass_fds=(fd, *inherited_host_descriptors()))
+                                    stdin=read_fd, pass_fds=(fd, device_fd))
         os.close(read_fd)
         read_fd = None
         holder["guardian_pid"] = guardian.pid
@@ -704,9 +707,11 @@ def up(timeout):
         if needs_prepare:
             print("Omarchy bind mounts need restoring; preparing without starting the VM.", file=sys.stderr, flush=True)
             harden_mount_sources()
-            environment = {key: value for key, value in os.environ.items()
-                           if key not in ("GAH_WORKSPACE", "GAH_ROOT", "GAH_BIN", "GAH_LAUNCH_CONTEXT")}
-            checked(["heavy-lease", "isolate", "--", "/usr/bin/omarchy-windows-vm", "prepare"],
+            environment = {key: value for key, value in os.environ.items() if not key.startswith("GAH_")}
+            checked(["systemd-run", "--user", "--wait", "--pipe", "--collect", "--quiet",
+                     "--service-type=exec", "--working-directory=/",
+                     "--property=UnsetEnvironment=GAH_WORKSPACE GAH_ROOT GAH_BIN GAH_LAUNCH_CONTEXT",
+                     "--", "/usr/bin/omarchy-windows-vm", "prepare"],
                     env=environment, cwd="/", stdout=sys.stderr)
         with lifecycle_lock() as locked:
             already = docker_state()["container"] == "running"
@@ -1119,9 +1124,6 @@ def main():
     # Internal: the ephemeral run's guardian, started through systemd-run.
     if sys.argv[1:2] == ["__guard"]:
         return guard(int(sys.argv[2]))
-    locked = sys.argv[1:2] == ["__host_locked"]
-    if locked:
-        del sys.argv[1]
     p = parser()
     args = p.parse_args()
     if hasattr(args, "timeout") and args.timeout <= 0:
@@ -1144,22 +1146,11 @@ def main():
                 pass
         print(json.dumps(status()))
         return 0
-    if args.command in ("up", "run") and not locked and not os.environ.get("WIN_VM_LEASE"):
-        # Queue for the named device lock before taking the guest lease, so
-        # concurrent ephemeral runs wait instead of rejecting the current owner.
-        if args.command == "run":
-            state = docker_state()
-            if state["mode"] == "persistent":
-                refuse_running(state)
-                if not EPHEMERAL.exists() and not (BASELINE / "baseline.json").is_file():
-                    raise Failure("no pinned baseline; run win-vm baseline with the VM stopped")
-        os.execvp("heavy-lease", ["heavy-lease", "run", "--wait", "--exclusive", "win-vm",
-                                "--", sys.executable, str(SOURCE / "win-vm"), "__host_locked", *sys.argv[1:]])
-    with command_lease(args.command) as fd:
+    with device_lock(args.command) as device_fd, command_lease(args.command) as fd:
         if args.command == "baseline":
             return baseline()
         if args.command == "run":
-            return ephemeral_run(args.args, args.timeout, fd)
+            return ephemeral_run(args.args, args.timeout, fd, device_fd)
         return dispatch(args)
 
 

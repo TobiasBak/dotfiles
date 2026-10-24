@@ -1,7 +1,6 @@
 [links]
 "~/.config/hunk/config.toml" = "cli/hunk/config.toml"
 "~/.gitconfig" = "cli/git/config"
-"~/.local/bin/heavy-lease" = "cli/heavy-lease.py"
 
 [[assert]]
 name = "Git config contains only current Omarchy defaults"

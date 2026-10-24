@@ -7,7 +7,6 @@ import tempfile
 import time
 import unittest
 
-from test_heavy_lease import CLI as HEAVY_LEASE
 
 
 CLI = Path(__file__).resolve().parents[1] / "agents/windows-vm/win-vm"
@@ -48,12 +47,10 @@ sys.exit(reply['code'])
         driver.chmod(0o755)
         for name in ("docker", "ssh", "scp"):
             (tools / name).symlink_to(driver)
-        (tools / "heavy-lease").symlink_to(HEAVY_LEASE)
         keys = self.home / ".keys"
         keys.mkdir()
         (keys / "windows-vm.env").write_text("WINDOWS_VM_USERNAME=tb\n")
         self.env = {**os.environ, "HOME": str(self.home), "PATH": str(tools)}
-        self.env = {key: value for key, value in self.env.items() if not key.startswith("HEAVY_LEASE_")}
         self.env.pop("WIN_VM_LEASE", None)
         self.reply()
 

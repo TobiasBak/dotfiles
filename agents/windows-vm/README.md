@@ -11,11 +11,12 @@ win-vm up
 win-vm run --ephemeral -- ./lane.sh
 ```
 
-`up` and `run --ephemeral` take the `heavy-lease` named `win-vm` lock
+`up` and `run --ephemeral` hold win-vm's kernel `flock` on
+`~/.cache/win-vm/device.lock` for the command's lifetime. They acquire it
 before the guest lease, so concurrent owners wait instead of rejecting each
-other. Call them directly; do not add an outer wrapper. Missing
-`heavy-lease` fails before startup. `--class` is accepted and ignored for
-old callers.
+other. Call them directly; do not add an outer wrapper. Nested commands
+with a valid `WIN_VM_LEASE` borrow the holder's ownership without reacquiring
+the device lock. `--class` remains accepted and ignored for old callers.
 
 Host admission was removed by the 2026-10-23 decision. There is no memory
 estimate, headroom check, slot request or admission wait. The kernel owns
@@ -25,9 +26,12 @@ Ephemeral runs still refuse a running persistent VM.
 When persistent bind mounts need restoration, `up` first calls the supported
 `omarchy-windows-vm prepare` operation. It may authorize privileged mount/config
 preparation, but must never start or recreate Windows. Only this fixed
-host-global operation runs through `heavy-lease isolate` in the user-manager
-context, with `/` as cwd and `GAH_WORKSPACE`, `GAH_ROOT`, `GAH_BIN` and
-`GAH_LAUNCH_CONTEXT` absent. It invokes absolute
+host-global operation runs through `systemd-run --user --wait --pipe
+--collect --quiet --service-type=exec --working-directory=/` in the user-manager
+context. No caller environment is forwarded. The launcher drops all `GAH_*`
+variables, and `UnsetEnvironment` removes `GAH_WORKSPACE`, `GAH_ROOT`, `GAH_BIN`
+and `GAH_LAUNCH_CONTEXT` from the service even if the manager inherited them.
+It invokes absolute
 `/usr/bin/omarchy-windows-vm prepare`, so trusted root-owned helper validation
 uses host ownership rather than unmapped owners in a workspace namespace.
 The parent retains its VM named lock. Source, payload and actual Docker
@@ -38,8 +42,9 @@ fallback to privileged `up`. Install the Omarchy prepare-capable provider
 before enabling this restoration path. Already-running readiness and
 already-prepared direct startup do not invoke prepare.
 
-The guardian inherits available named-lock descriptors through teardown;
-token-only borrowers continue relying on their parent to retain ownership.
+The guardian explicitly inherits the device-lock descriptor and retains it
+through teardown if the owner crashes. Nested borrowers rely on their parent
+to retain ownership.
 No T3/VM restart, stock Omarchy desktop launcher, manual Docker start, or
 container restart policy is changed.
 
