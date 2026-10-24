@@ -1,4 +1,4 @@
-# Agent setup: global instructions, Claude/Codex/Pi configs, skills, and the
+# Agent setup: global instructions, Claude/Codex/Pi/OpenCode configs, skills, and the
 # T3 Code background service with its drop-in, memory slice, disk-backed
 # TMPDIR, nightly updater and nightly restic backup to serv01, plus the
 # OpenCode free-model tracker.
@@ -8,6 +8,7 @@
 "~/.local/bin/opencode-free" = "agents/opencode-free/opencode-free"
 "~/.claude/CLAUDE.md" = "agents/AGENTS.md"
 "~/.codex/AGENTS.md" = "agents/AGENTS.md"
+"~/.config/opencode/AGENTS.md" = "agents/AGENTS.md"
 "~/.pi/agent/APPEND_SYSTEM.md" = "agents/AGENTS.md"
 "~/.pi/agent/extensions/report-to-cos.ts" = "agents/pi/report-to-cos.ts"
 "~/.codex/prompts/yeet.md" = "agents/codex/prompts/yeet.md"
