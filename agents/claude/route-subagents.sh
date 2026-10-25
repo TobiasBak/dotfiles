@@ -11,17 +11,17 @@ case "$(jq -r '.tool_name' <<<"$input")" in
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        permissionDecisionReason: "Do this work yourself. Only a coordinator or large-project lead delegates, and only whole outcomes through T3 delegate_task with an explicit target; see How to orchestrate in ~/.dotfiles/agents/AGENTS.md."
+        permissionDecisionReason: "Do this work yourself. Delegate only whole packages of a large task, or a review, through T3 delegate_task on Pi Sol; see How to orchestrate in ~/.dotfiles/agents/AGENTS.md."
       }
     }'
     ;;
   *delegate_task)
-    if jq -e '.tool_input.target.model // "" | test("haiku|space-bunny")' <<<"$input" >/dev/null; then
+    if jq -e '.tool_input.target.model // "" | test("haiku|opus|space-bunny")' <<<"$input" >/dev/null; then
       jq -n '{
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           permissionDecision: "deny",
-          permissionDecisionReason: "Haiku and Space Bunny are retired from delegation. Use Pi GPT-6.1 Sol at thinking high (Tobias, 2026-10-13)."
+          permissionDecisionReason: "Opus, Haiku and Space Bunny are not delegation targets; Opus has no quota for subagents. Use Pi GPT-6.1 Sol at thinking high (Tobias, 2026-10-25)."
         }
       }'
       exit 0

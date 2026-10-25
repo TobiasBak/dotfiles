@@ -65,6 +65,8 @@ class AgentRoutingTests(unittest.TestCase):
         xhigh = {**SOL, "options": {"thinking": "xhigh"}}
         haiku = {"providerInstanceId": "claudeAgent", "model": "claude-haiku-5-5",
                  "options": {"effort": "high"}}
+        opus = {"providerInstanceId": "claudeAgent", "model": "claude-opus-5-5",
+                "options": {"effort": "high"}}
         xhigh_array = {**SOL, "options": [{"id": "thinking", "value": "xhigh"}]}
         haiku_array = {**haiku, "options": [{"id": "effort", "value": "high"}]}
         for target in [xhigh, xhigh_array,
@@ -74,7 +76,7 @@ class AgentRoutingTests(unittest.TestCase):
                 actual = self.invoke("mcp__t3-code__delegate_task", payload)
                 self.assertEqual(actual["updatedInput"],
                                  {**payload, "runtimeMode": "full-access"})
-        for target in [haiku, haiku_array, RETIRED_WORKER,
+        for target in [haiku, haiku_array, opus, {"model": opus["model"]}, RETIRED_WORKER,
                        {"model": RETIRED_WORKER["model"]}]:
             with self.subTest(target=target):
                 actual = self.invoke("mcp__t3-code__delegate_task",
