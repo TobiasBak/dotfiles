@@ -6,13 +6,16 @@ codex = "latest"
 gcloud = "latest"
 gh = "latest"
 "github:TobiasBak/verify-at-home" = { version = "path:~/.local/share/verify-at-home/installs/3a068fcbc7e135cd09ef5e119f3bcc32d143922a", lazy = true, lazy_bins = ["vah"] }
+"github:mstange/samply" = "latest"
 gitleaks = "8.30.1"
 go = "latest"
+"http:muse" = { version = "latest", url = "https://api.meta.ai/muse-launcher.sh", bin = "muse", version_list_url = "https://api.meta.ai/muse-code/channels/muse-stable", version_json_path = ".version" }
 # Omarchy Node version, shared by mise-managed npm tools.
 node = "26.8.2"
 # OpenCode 2. pnpm skips its postinstall, which links the native binary, unless allowed.
 "npm:@opencode/cli" = { version = "latest", allow_builds = "@opencode/cli" }
 "npm:@playwright/cli" = "latest"
+"npm:playwright" = "latest"
 "npm:vite-plus" = "latest"
 pi = "latest"
 pnpm = "11"

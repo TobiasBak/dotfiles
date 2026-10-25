@@ -18,24 +18,24 @@ backend = "cargo:cargo-mutants"
 specifiers = ["27.1.0"]
 
 [[tools.claude]]
-version = "2.1.303"
+version = "2.1.310"
 backend = "aqua:anthropics/claude-code"
 specifiers = ["latest"]
 
 [tools.claude."platforms.linux-x64"]
-checksum = "sha256:9ef730488e8b75d47f23c156282a73c89db3342aaf756ed7ec0b78a88fb31f3e"
-url = "https://github.com/anthropics/claude-code/releases/download/v2.1.303/claude-linux-x64.tar.gz"
-url_api = "https://api.github.com/repos/anthropics/claude-code/releases/assets/654495696"
+checksum = "sha256:5bea9e13ac07ea6804c24e6263ec7e5b3d13f81d3f681c92f9784c534425fae1"
+url = "https://github.com/anthropics/claude-code/releases/download/v2.1.310/claude-linux-x64.tar.gz"
+url_api = "https://api.github.com/repos/anthropics/claude-code/releases/assets/670426847"
 
 [[tools.codex]]
-version = "0.163.0"
+version = "0.164.0"
 backend = "aqua:openai/codex"
 specifiers = ["latest"]
 
 [tools.codex."platforms.linux-x64"]
-checksum = "sha256:582646c6bf0561eb0de540f7fc85b9121b0091a826bc6e96830b7f1722122182"
-url = "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-package-x86_64-unknown-linux-musl.tar.gz"
-url_api = "https://api.github.com/repos/openai/codex/releases/assets/645227523"
+checksum = "sha256:3ec55053109608d5038f7e50750f7d25f768dfd740fef071aa710e2559b63aac"
+url = "https://github.com/openai/codex/releases/download/rust-v0.164.0/codex-package-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/openai/codex/releases/assets/667994796"
 
 [[tools.gcloud]]
 version = "589.0.0"
@@ -61,6 +61,16 @@ version = "path:~/.local/share/verify-at-home/installs/3a068fcbc7e135cd09ef5e119
 backend = "github:TobiasBak/verify-at-home"
 specifiers = ["path:~/.local/share/verify-at-home/installs/3a068fcbc7e135cd09ef5e119f3bcc32d143922a"]
 
+[[tools."github:mstange/samply"]]
+version = "samply-v0.13.1"
+backend = "github:mstange/samply"
+specifiers = ["latest"]
+
+[tools."github:mstange/samply"."platforms.linux-x64"]
+checksum = "sha256:61875daad67888798690dea3cb2748279df6ac299c5c6a857d67eed7642473d9"
+url = "https://github.com/mstange/samply/releases/download/samply-v0.13.1/samply-x86_64-unknown-linux-gnu.tar.xz"
+url_api = "https://api.github.com/repos/mstange/samply/releases/assets/225379074"
+
 [[tools.gitleaks]]
 version = "8.30.1"
 backend = "aqua:gitleaks/gitleaks"
@@ -80,6 +90,15 @@ specifiers = ["latest"]
 checksum = "sha256:ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5"
 url = "https://dl.google.com/go/go1.27.2.linux-amd64.tar.gz"
 
+[[tools."http:muse"]]
+version = "1.4.13-R6996.1"
+backend = "http:muse"
+specifiers = ["latest"]
+
+[tools."http:muse"."platforms.linux-x64"]
+checksum = "blake3:1b96b8590909862937c49e82d221d12726ea63bde2c148d5ed225d6fb209d04a"
+url = "https://api.meta.ai/muse-launcher.sh"
+
 [[tools.node]]
 version = "26.8.2"
 backend = "core:node"
@@ -90,7 +109,7 @@ checksum = "sha256:badb3fe6a61b85e1352ca6564dc56b8b7bd5ecd5c474c52acc21dd0cdd586
 url = "https://nodejs.org/dist/v26.8.2/node-v26.8.2-linux-x64.tar.gz"
 
 [[tools."npm:@opencode/cli"]]
-version = "2.0.32"
+version = "2.1.4"
 backend = "npm:@opencode/cli"
 specifiers = ["latest"]
 
@@ -102,20 +121,25 @@ version = "0.1.22"
 backend = "npm:@playwright/cli"
 specifiers = ["latest"]
 
+[[tools."npm:playwright"]]
+version = "1.64.1"
+backend = "npm:playwright"
+specifiers = ["latest"]
+
 [[tools."npm:vite-plus"]]
 version = "1.3.0"
 backend = "npm:vite-plus"
 specifiers = ["latest"]
 
 [[tools.pi]]
-version = "1.3.0"
+version = "1.4.0"
 backend = "aqua:earendil-works/pi"
 specifiers = ["latest"]
 
 [tools.pi."platforms.linux-x64"]
-checksum = "sha256:24f5be328b66d4da36876296989501974f43ab8434fbb57c35c523a3ea505ded"
-url = "https://github.com/earendil-works/pi/releases/download/v1.3.0/pi-linux-x64.tar.gz"
-url_api = "https://api.github.com/repos/earendil-works/pi/releases/assets/644855525"
+checksum = "sha256:f2e4e4329603223d03260cdb8bd5033dbdc1f73ba58ab8939db2e56546e115d2"
+url = "https://github.com/earendil-works/pi/releases/download/v1.4.0/pi-linux-x64.tar.gz"
+url_api = "https://api.github.com/repos/earendil-works/pi/releases/assets/663978808"
 
 [[tools.pnpm]]
 version = "11.28.6"
