@@ -57,9 +57,9 @@ url_api = "https://api.github.com/repos/cli/cli/releases/assets/599854672"
 provenance = "github-attestations"
 
 [[tools."github:TobiasBak/verify-at-home"]]
-version = "path:~/.local/share/verify-at-home/installs/3a068fcbc7e135cd09ef5e119f3bcc32d143922a"
+version = "path:~/.local/share/verify-at-home/installs/b45c37320513e0394d777c7633c8697d04c5b7c9"
 backend = "github:TobiasBak/verify-at-home"
-specifiers = ["path:~/.local/share/verify-at-home/installs/3a068fcbc7e135cd09ef5e119f3bcc32d143922a"]
+specifiers = ["path:~/.local/share/verify-at-home/installs/b45c37320513e0394d777c7633c8697d04c5b7c9"]
 
 [[tools."github:mstange/samply"]]
 version = "samply-v0.13.1"
