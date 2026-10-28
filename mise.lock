@@ -18,24 +18,24 @@ backend = "cargo:cargo-mutants"
 specifiers = ["27.1.0"]
 
 [[tools.claude]]
-version = "2.1.311"
+version = "2.1.312"
 backend = "aqua:anthropics/claude-code"
 specifiers = ["latest"]
 
 [tools.claude."platforms.linux-x64"]
-checksum = "sha256:1e506d1d4466d854f0a2ea662f04122c77475e8c71a680bbbdc1c99fefff3fa7"
-url = "https://github.com/anthropics/claude-code/releases/download/v2.1.311/claude-linux-x64.tar.gz"
-url_api = "https://api.github.com/repos/anthropics/claude-code/releases/assets/679248991"
+checksum = "sha256:d9324231c4e3dfe342e853f56c752348ae060f9f221cdf4b0f90ef1dc47ee907"
+url = "https://github.com/anthropics/claude-code/releases/download/v2.1.312/claude-linux-x64.tar.gz"
+url_api = "https://api.github.com/repos/anthropics/claude-code/releases/assets/682511222"
 
 [[tools.codex]]
-version = "0.164.0"
+version = "0.165.0"
 backend = "aqua:openai/codex"
 specifiers = ["latest"]
 
 [tools.codex."platforms.linux-x64"]
-checksum = "sha256:3ec55053109608d5038f7e50750f7d25f768dfd740fef071aa710e2559b63aac"
-url = "https://github.com/openai/codex/releases/download/rust-v0.164.0/codex-package-x86_64-unknown-linux-musl.tar.gz"
-url_api = "https://api.github.com/repos/openai/codex/releases/assets/667994796"
+checksum = "sha256:e97c4463d7f146692a955d7b0e1c8cf48f97cd4d616cd45c5dcab2e8d9743316"
+url = "https://github.com/openai/codex/releases/download/rust-v0.165.0/codex-package-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/openai/codex/releases/assets/682734800"
 
 [[tools.gcloud]]
 version = "589.0.0"
@@ -109,7 +109,7 @@ checksum = "sha256:badb3fe6a61b85e1352ca6564dc56b8b7bd5ecd5c474c52acc21dd0cdd586
 url = "https://nodejs.org/dist/v26.8.2/node-v26.8.2-linux-x64.tar.gz"
 
 [[tools."npm:@opencode/cli"]]
-version = "2.1.4"
+version = "2.2.0"
 backend = "npm:@opencode/cli"
 specifiers = ["latest"]
 
