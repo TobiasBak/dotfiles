@@ -7,7 +7,7 @@ import unittest
 
 
 HOOK = Path(__file__).resolve().parents[1] / "agents/claude/route-subagents.sh"
-SOL = {"providerInstanceId": "pi", "model": "openai-codex/gpt-6.1-sol",
+SOL = {"providerInstanceId": "pi", "model": "openai/gpt-6.1-sol",
        "options": {"thinking": "high"}}
 RETIRED_WORKER = {"providerInstanceId": "opencode", "model": "opencode/space-bunny-free"}
 

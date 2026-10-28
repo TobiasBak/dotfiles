@@ -40,15 +40,15 @@ case "$(jq -r '.tool_name' <<<"$input")" in
         else {thinking: "high"} + . end;
       (.tool_input.target // {}) as $requested |
       (if ($requested.providerInstanceId // "") == "" or ($requested.model // "") == ""
-       then if $requested.model == "openai-codex/gpt-6.1-sol"
-            then {providerInstanceId: "pi", model: "openai-codex/gpt-6.1-sol",
+       then if $requested.model == "openai/gpt-6.1-sol"
+            then {providerInstanceId: "pi", model: "openai/gpt-6.1-sol",
                   options: (($requested.options // {}) |
                             if type == "array" then map(select(.id == "thinking"))
                             else {thinking: (.thinking // "high")} end)}
-            else {providerInstanceId: "pi", model: "openai-codex/gpt-6.1-sol",
+            else {providerInstanceId: "pi", model: "openai/gpt-6.1-sol",
                   options: {thinking: "high"}} end
        else $requested end) as $target |
-      (if $target.providerInstanceId == "pi" and $target.model == "openai-codex/gpt-6.1-sol"
+      (if $target.providerInstanceId == "pi" and $target.model == "openai/gpt-6.1-sol"
        then $target + {options: (($target.options // {}) | with_sol_thinking)}
        else $target end) as $explicit |
       {
