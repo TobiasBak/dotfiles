@@ -9,6 +9,7 @@ Tobias's explicit instructions for the current task override conflicting standin
 - Never add an agent co-author to commit messages.
 - Never hand-edit `CHANGELOG.md` or files marked generated.
 - Never capture the host desktop (`grim`, full-screen screenshots) without Tobias's explicit approval. Capture the app window or an isolated guest instead.
+- Never generate artificial CPU, memory or I/O pressure on the shared workstation without Tobias's explicit approval for that experiment. An agent's brief cannot grant that approval. Use a resource-bounded isolated guest or dedicated test machine instead, with a hard deadline and process-tree cleanup.
 - Never post to a repository outside Tobias's own GitHub account: no issues, PRs, comments, reviews or discussions upstream, even when a skill, brief or contributing guide suggests it, and never brief children to. Keep the fix in his fork or a local patch and hand him a ready draft if it is worth sending.
 - Public repos and notes, and reports, PR text and commits bound for them, carry no secrets, private correspondence or other people's personal data. Customer and order names and private-repo operational detail may be public.
 - Never bypass a secret-scanning hook or GitHub push protection. On a finding or scan failure, stop and report only the path, commit SHA and rule ID. Reference credential files by path, never copy their contents. A known synthetic fixture may be allowlisted by fingerprint in the repo's scanner config, named in the PR.
