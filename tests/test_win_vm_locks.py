@@ -153,8 +153,56 @@ elif name != "chattr":
     def baseline(self):
         baseline = self.home / ".local/state/win-vm/baseline"
         baseline.mkdir(parents=True, exist_ok=True)
-        (baseline / "baseline.json").write_text('{}')
+        (baseline / "baseline.json").write_text(json.dumps({"captured_at": "synthetic", "files": {"data.img": "0" * 64}}))
         (baseline / "data.img").write_bytes(b"synthetic guest disk")
+        result = self.invoke("baseline", "--verify")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_baseline_identity_binds_lease_and_refuses_mutations(self):
+        self.baseline()
+        record = self.home / ".local/state/win-vm/baseline-identity.json"
+        identity = json.loads(record.read_text())
+        self.assertEqual(len(identity["fingerprint"]), 64)
+        result = self.invoke("status")
+        self.assertEqual(json.loads(result.stdout)["baseline"]["fingerprint"], identity["fingerprint"])
+        command = [sys.executable, "-c", "import json,os;print(json.dumps([os.environ['WIN_VM_BASELINE'],os.environ['WIN_VM_BASELINE_RECORD']]))"]
+        result = self.invoke("run", "--ephemeral", "--", *command)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        readiness, payload = result.stdout.splitlines()
+        self.assertTrue(json.loads(readiness)["ssh"])
+        self.assertEqual(json.loads(payload), [identity["fingerprint"], str(record)])
+        image = self.home / ".local/state/win-vm/baseline/data.img"
+        original = image.read_bytes()
+        image.write_bytes(b"changed guest disk!!")
+        result = self.invoke("run", "--ephemeral", "--", "/usr/bin/true")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("baseline identity missing or changed", result.stderr)
+        image.write_bytes(original)
+        result = self.invoke("run", "--ephemeral", "--", "/usr/bin/true")
+        self.assertNotEqual(result.returncode, 0)
+        result = self.invoke("baseline", "--verify")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        image.write_bytes(b"different bytes")
+        result = self.invoke("baseline", "--verify")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("baseline bytes differ", result.stderr)
+
+    def test_baseline_verify_replaces_abandoned_readonly_temporary(self):
+        self.baseline()
+        temporary = self.home / ".local/state/win-vm/baseline-identity.new"
+        temporary.write_text("incomplete")
+        temporary.chmod(0o444)
+        result = self.invoke("baseline", "--verify")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(temporary.exists())
+
+    def test_baseline_verify_refuses_running_persistent_guest(self):
+        self.baseline()
+        (self.home / "container").write_text("running|existing|172.18.0.2|/persistent/storage")
+        result = self.invoke("baseline", "--verify")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("VM is running", result.stderr)
+        self.assertFalse(any(call[0] == "docker-compose" and "down" in call for call in self.history()))
 
     def held_run(self):
         self.baseline()

@@ -303,11 +303,13 @@ def status(state=None, timeout=30):
         ssh, sess, error = False, None, str(failure)
     baseline = read_json(BASELINE / "baseline.json")
     holder = live_lease()
+    identity = read_json(BASELINE.parent / "baseline-identity.json")
     return {**({"ssh_error": error} if error else {}), "container": state["container"], "ip": state["ip"], "ssh": ssh,
             "session": sess, "started_by_win_vm": owned(state), "mode": state["mode"],
             "lease": {key: holder.get(key) for key in ("pid", "command", "started_at")} if holder is not None else None,
             "baseline": {"captured_at": baseline["captured_at"],
-                         "data.img": baseline["files"]["data.img"][:12]} if baseline else None}
+                         "data.img": baseline["files"]["data.img"][:12],
+                         "fingerprint": identity.get("fingerprint") if identity else None} if baseline else None}
 
 
 @contextmanager
@@ -439,7 +441,59 @@ def reflink_files(source, target):
         dest.chmod(0o644)
 
 
-def baseline():
+def baseline_stamps():
+    result = {}
+    for path in sorted(BASELINE.iterdir()):
+        if path.is_symlink() or not path.is_file():
+            raise Failure(f"invalid baseline member: {path.name}")
+        value = path.stat()
+        result[path.name] = [value.st_dev, value.st_ino, value.st_size,
+                             value.st_mtime_ns, value.st_ctime_ns]
+    if "data.img" not in result:
+        raise Failure("baseline has no data.img")
+    return result
+
+
+def baseline_identity(verify=False):
+    record_path = BASELINE.parent / "baseline-identity.json"
+    stamps = baseline_stamps()
+    if not verify:
+        record = read_json(record_path)
+        if not record or record.get("stamps") != stamps:
+            raise Failure("baseline identity missing or changed; use baseline --verify while stopped")
+        return record
+    files = {}
+    for name in stamps:
+        digest = hashlib.sha256()
+        with (BASELINE / name).open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        files[name] = digest.hexdigest()
+    if stamps != baseline_stamps():
+        raise Failure("baseline changed during verification")
+    fingerprint = hashlib.sha256(json.dumps(files, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    old = read_json(record_path)
+    if old and old.get("fingerprint") != fingerprint:
+        raise Failure("baseline bytes differ from recorded fingerprint")
+    record = {"fingerprint": fingerprint, "files": files, "stamps": stamps}
+    temporary = record_path.with_suffix(".new")
+    temporary.unlink(missing_ok=True)
+    with temporary.open("w") as stream:
+        json.dump(record, stream, sort_keys=True)
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.chmod(0o444)
+    temporary.replace(record_path)
+    return record
+
+
+def baseline(verify=False):
+    if verify:
+        with lifecycle_lock():
+            if docker_state()["container"] == "running":
+                raise Failure("VM is running; verification requires the stopped baseline")
+            print(json.dumps(baseline_identity(verify=True)), flush=True)
+        return 0
     new = STATE / "baseline.new"
     old = STATE / "baseline.old"
     with lifecycle_lock():
@@ -461,6 +515,8 @@ def baseline():
         BASELINE.rename(old)
     new.rename(BASELINE)
     shutil.rmtree(old, ignore_errors=True)
+    (BASELINE.parent / "baseline-identity.json").unlink(missing_ok=True)
+    identity["fingerprint"] = baseline_identity(verify=True)["fingerprint"]
     print(json.dumps(identity), flush=True)
     return 0
 
@@ -597,7 +653,10 @@ def ephemeral_run(command, timeout, fd, device_fd):
             state = docker_state()
             refuse_running(state)
             shutil.rmtree(EPHEMERAL, ignore_errors=True)
+            identity = baseline_identity()
             reflink_files(BASELINE, EPHEMERAL / "storage")
+            if baseline_stamps() != identity["stamps"]:
+                raise Failure("baseline changed during clone")
             (EPHEMERAL / "shared").mkdir()
             override = {"services": {"windows": {"volumes": [
                 {"type": "bind", "source": str(EPHEMERAL / "storage"), "target": "/storage"},
@@ -612,7 +671,9 @@ def ephemeral_run(command, timeout, fd, device_fd):
         os.environ["WIN_VM_LEASE"] = token
         wait_ready(timeout, check=check)
         check()
-        process = subprocess.Popen(command, env={**os.environ, "WIN_VM_LEASE": token})
+        process = subprocess.Popen(command, env={**os.environ, "WIN_VM_LEASE": token,
+                                                   "WIN_VM_BASELINE": identity["fingerprint"],
+                                                   "WIN_VM_BASELINE_RECORD": str(BASELINE.parent / "baseline-identity.json")})
         if received is not None:
             process.send_signal(received)
         code = process.wait()
@@ -1065,7 +1126,8 @@ def bootstrap(stage_only):
 def parser():
     p = argparse.ArgumentParser(description=__doc__, epilog="Guest commands require one elevated bootstrap.bat run. Pin the stopped guest with baseline; run --ephemeral -- cmd uses a disposable clone and exclusive lease. up waits for SSH + active console or RDP; down stops only a container started by win-vm (use --force to override). No RDP lifecycle coupling.")
     sub = p.add_subparsers(dest="command", required=True)
-    sub.add_parser("baseline", help="pin reflinked files from the stopped persistent guest")
+    q = sub.add_parser("baseline", help="pin reflinked files from the stopped persistent guest")
+    q.add_argument("--verify", action="store_true", help="verify the stopped baseline without recapturing it")
     q = sub.add_parser("run", help="lease a disposable baseline clone for a host command")
     q.add_argument("--ephemeral", action="store_true", required=True)
     q.add_argument("--class", help="Accepted and ignored during host-admission removal.")
@@ -1125,7 +1187,7 @@ def main():
         return 0
     with device_lock(args.command) as device_fd, command_lease(args.command) as fd:
         if args.command == "baseline":
-            return baseline()
+            return baseline(args.verify)
         if args.command == "run":
             return ephemeral_run(args.args, args.timeout, fd, device_fd)
         return dispatch(args)

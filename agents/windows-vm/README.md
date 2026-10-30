@@ -42,6 +42,19 @@ to retain ownership.
 No T3/VM restart, stock Omarchy desktop launcher, manual Docker start, or
 container restart policy is changed.
 
+## Baseline identity
+
+`baseline` seals a full SHA-256 fingerprint over every captured file, with
+its device, inode, size, mtime and ctime in `baseline-identity.json` beside
+the baseline directory. `status` exposes the full fingerprint. Each ephemeral
+run checks the complete stamp inventory before and after cloning, without
+rehashing the image, and exports `WIN_VM_BASELINE` and
+`WIN_VM_BASELINE_RECORD` to the leased command. Changed or missing identity
+refuses execution. `baseline --verify` rehashes a stopped baseline explicitly;
+it initializes an older baseline's identity without recapturing or changing
+guest files, and rejects changed bytes when an identity already exists.
+A running persistent guest is never stopped for verification.
+
 ## Transport
 
 SSH and SFTP ignore ambient user and system SSH configuration (`-F none`).
