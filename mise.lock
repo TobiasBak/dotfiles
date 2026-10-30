@@ -18,24 +18,30 @@ backend = "cargo:cargo-mutants"
 specifiers = ["27.1.0"]
 
 [[tools.claude]]
-version = "2.1.312"
+version = "2.1.314"
 backend = "aqua:anthropics/claude-code"
-specifiers = ["latest"]
+specifiers = [
+    "2.1.314",
+    "latest",
+]
 
 [tools.claude."platforms.linux-x64"]
-checksum = "sha256:d9324231c4e3dfe342e853f56c752348ae060f9f221cdf4b0f90ef1dc47ee907"
-url = "https://github.com/anthropics/claude-code/releases/download/v2.1.312/claude-linux-x64.tar.gz"
-url_api = "https://api.github.com/repos/anthropics/claude-code/releases/assets/682511222"
+checksum = "sha256:348a302629f3734a2a7318a97eb6a05d4c30e772f9c8366cb78a55977eca46da"
+url = "https://github.com/anthropics/claude-code/releases/download/v2.1.314/claude-linux-x64.tar.gz"
+url_api = "https://api.github.com/repos/anthropics/claude-code/releases/assets/690337852"
 
 [[tools.codex]]
-version = "0.165.0"
+version = "0.166.0"
 backend = "aqua:openai/codex"
-specifiers = ["latest"]
+specifiers = [
+    "0.166.0",
+    "latest",
+]
 
 [tools.codex."platforms.linux-x64"]
-checksum = "sha256:e97c4463d7f146692a955d7b0e1c8cf48f97cd4d616cd45c5dcab2e8d9743316"
-url = "https://github.com/openai/codex/releases/download/rust-v0.165.0/codex-package-x86_64-unknown-linux-musl.tar.gz"
-url_api = "https://api.github.com/repos/openai/codex/releases/assets/682734800"
+checksum = "sha256:1d44b28bc4ac9937d7d3532264baa68a507ce364956a0d4ebb856f331cdee254"
+url = "https://github.com/openai/codex/releases/download/rust-v0.166.0/codex-package-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/openai/codex/releases/assets/689712510"
 
 [[tools.gcloud]]
 version = "589.0.0"
@@ -109,9 +115,12 @@ checksum = "sha256:badb3fe6a61b85e1352ca6564dc56b8b7bd5ecd5c474c52acc21dd0cdd586
 url = "https://nodejs.org/dist/v26.8.2/node-v26.8.2-linux-x64.tar.gz"
 
 [[tools."npm:@opencode/cli"]]
-version = "2.2.0"
+version = "2.2.4"
 backend = "npm:@opencode/cli"
-specifiers = ["latest"]
+specifiers = [
+    "2.2.4",
+    "latest",
+]
 
 [tools."npm:@opencode/cli".options]
 allow_builds = '["@opencode/cli"]'
