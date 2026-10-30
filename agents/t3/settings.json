@@ -17,6 +17,13 @@
     "opencode": {
       "driver": "opencode",
       "enabled": true
+    },
+    "codex": {
+      "driver": "codex",
+      "enabled": true,
+      "config": {
+        "binaryPath": "/home/tb/.local/bin/gah-codex"
+      }
     }
   }
 }
