@@ -62,11 +62,6 @@ url = "https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_linux_am
 url_api = "https://api.github.com/repos/cli/cli/releases/assets/599854672"
 provenance = "github-attestations"
 
-[[tools."github:TobiasBak/verify-at-home"]]
-version = "path:~/.local/share/verify-at-home/installs/cbb7ea46baa3bea1360fb93feec6075a5719cde3-opt2"
-backend = "github:TobiasBak/verify-at-home"
-specifiers = ["path:~/.local/share/verify-at-home/installs/cbb7ea46baa3bea1360fb93feec6075a5719cde3-opt2"]
-
 [[tools."github:mstange/samply"]]
 version = "samply-v0.13.1"
 backend = "github:mstange/samply"
