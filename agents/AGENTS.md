@@ -34,7 +34,7 @@ Talk like a sharp technical friend, not corporate support. Lead with the answer 
 - **Review subagents are fine.** Give each a stated scope and a blocking bar; it reports findings and never delegates. Repository-declared protected surfaces require one.
 - **Brief a delegate once and completely:** goal, scope, chosen design, constraints, done criteria, check, expected artifacts, full access. A follow-up outcome gets a fresh delegate, never another phase steered into an aging conversation. An unfinished delegate leaves a continuation checkpoint — workspace, proved and unproved work, evidence, blockers, one next action — not a delivery claim; confirm an old writer stopped before replacing it.
 - **Message only when it changes the recipient's next action:** blockers, required decisions, contract changes, ready handoffs, not status. Steer a running agent without starting another turn; start a turn only when it is idle. The implementation owner's source is authoritative for internal signatures.
-- **Delegate routing.** Every delegate and reviewer, UI included, uses GPT-6.1 Sol with high reasoning. Select that model explicitly rather than inheriting the leader's model. Never delegate to Opus, which has no quota for subagents. UI delegates load `frontend-design` and judge real app-window screenshots critically.
+- **Delegate routing.** Every delegate and reviewer, UI included, uses GPT-6.1 Sol with high reasoning. Select that model explicitly rather than inheriting the leader's model. Never delegate to Opus, which has no quota for subagents. Never delegate refactoring or cleanup to Sol; do that work yourself. UI delegates load `frontend-design` and judge real app-window screenshots critically.
 
 ## How to implement
 
