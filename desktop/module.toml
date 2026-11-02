@@ -57,3 +57,8 @@ fix = 'install the NAS system units and enable only mnt-nas.automount with Tobia
 name = "NAS Samba credentials restored"
 check = 'python3 "{repo}/desktop/nas/check.py" credentials'
 fix = 'restore ~/.config/samba/nas.credentials, owned by tb with mode 0600 (omarchy/README.md: Manual restore)'
+
+[[assert]]
+name = "motherboard fan control installed and running"
+check = 'cmp -s "{repo}/desktop/fans/nct6775.conf" /etc/modules-load.d/nct6775.conf && cmp -s "{repo}/desktop/fans/fan-control" /usr/local/sbin/fan-control && cmp -s "{repo}/desktop/fans/fan-control.service" /etc/systemd/system/fan-control.service && systemctl is-enabled --quiet fan-control.service && systemctl is-active --quiet fan-control.service'
+fix = 'install the fan files and enable fan-control.service with Tobias approval (omarchy/README.md: Fan control)'

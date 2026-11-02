@@ -1,0 +1,11 @@
+[Unit]
+Description=Drive the motherboard fans from CPU and GPU temperature
+After=systemd-modules-load.service
+
+[Service]
+ExecStart=/usr/local/sbin/fan-control
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

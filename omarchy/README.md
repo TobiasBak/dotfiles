@@ -258,6 +258,39 @@ without forcing it, then disable/stop `mnt-nas.automount` and remove only
 the two managed unit files before reloading systemd. Keep the credential
 file private; remove it separately if no longer needed.
 
+## Fan control
+
+`desktop/fans/fan-control` is a root daemon that drives the three
+motherboard fans in manual PWM mode. pwm2 drives the CPU cooler and follows
+k10temp Tctl; pwm1 and pwm3 drive the case fans and follow the hotter of the
+CPU and GPU curves. The script owns the curves, smoothing and spin-down rate.
+The GPU controls its own fans.
+
+The board's NCT6799 SmartFan IV curves are not usable from Linux. On
+2026-11-02 their outputs froze after the driver reprogrammed them, and
+stop-output registers changed behind the driver. The driver also cannot
+restore the firmware's zero step times. Manual mode responded at once in every
+probe. The cost is that a hung daemon leaves the fans at their last speed.
+On exit the daemon returns the fans to the firmware curve, and systemd
+restarts it two seconds later. A reboot restores the firmware's registers.
+
+`./dot apply` does not install system files. With Tobias's approval, from
+the stable checkout:
+
+```sh
+cd ~/code/dotfiles
+sudo install -o root -g root -m 0644 desktop/fans/nct6775.conf /etc/modules-load.d/
+sudo install -o root -g root -m 0755 desktop/fans/fan-control /usr/local/sbin/
+sudo install -o root -g root -m 0644 desktop/fans/fan-control.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now fan-control.service
+./dot check desktop --json
+```
+
+After changing the curves, reinstall `fan-control` and restart the service.
+To return to the firmware curves, disable the service and remove the three
+files.
+
 ## Manual restore
 
 Restore `~/.config/samba/nas.credentials` by hand from secure storage, owned

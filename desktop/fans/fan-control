@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""Drive the motherboard fans from CPU and GPU temperature.
+
+The NCT6799's own SmartFan IV curves stopped tracking temperature once Linux
+reprogrammed them (2026-11-02), so this daemon runs the fans in manual mode.
+On exit it hands the fans back to the firmware curve; systemd restarts it.
+"""
+
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import threading
+import time
+
+TICK_S = 1.0
+# Temperature smoothing time constant. Tctl on the 7800X3D jumps 5-10 °C for a
+# second or two whenever a core wakes; sustained load still reaches the curve
+# within ~10 s.
+SMOOTHING_S = 4.0
+# Spin down slowly so short pauses in a load do not make the fans hunt.
+FALL_PER_S = 3
+
+# (°C, pwm 0-255), linear between points, flat outside them. Tctl throttles
+# at 89 °C. Probed 2026-11-02: case fans stall below pwm ~45; the CPU cooler
+# fan holds ~580 rpm at any pwm below ~55.
+CPU_FAN = [(60, 40), (70, 80), (80, 160), (88, 255)]
+CASE_FAN_CPU = [(60, 65), (70, 90), (80, 160), (88, 255)]
+CASE_FAN_GPU = [(60, 65), (75, 120), (85, 200)]
+CPU_CHANNEL, CASE_CHANNELS = 2, (1, 3)
+MANUAL, FIRMWARE = 1, 5
+GPU_STALE_S = 10
+
+
+def hwmon(name):
+    for path in Path("/sys/class/hwmon").glob("hwmon*/name"):
+        if path.read_text().strip() == name:
+            return path.parent
+    sys.exit(f"hwmon {name} missing")
+
+
+def duty(curve, temp):
+    if temp <= curve[0][0]:
+        return curve[0][1]
+    for (t0, p0), (t1, p1) in zip(curve, curve[1:]):
+        if temp <= t1:
+            return round(p0 + (p1 - p0) * (temp - t0) / (t1 - t0))
+    return curve[-1][1]
+
+
+class Gpu:
+    """One long-lived nvidia-smi stream instead of a process per sample."""
+
+    def __init__(self):
+        self.temp, self.at = None, 0.0
+        self.proc = subprocess.Popen(
+            ["nvidia-smi", "--query-gpu=temperature.gpu",
+             "--format=csv,noheader,nounits", "-lms", "2000"],
+            stdout=subprocess.PIPE, text=True)
+        threading.Thread(target=self.read, daemon=True).start()
+
+    def read(self):
+        for line in self.proc.stdout:
+            self.temp, self.at = float(line), time.monotonic()
+
+    def celsius(self):
+        if self.temp is None or time.monotonic() - self.at > GPU_STALE_S:
+            sys.exit("GPU temperature stale")
+        return self.temp
+
+
+def main():
+    chip, cpu = hwmon("nct6799"), hwmon("k10temp")
+    tctl = next(p.with_name(p.name.replace("label", "input"))
+                for p in cpu.glob("temp*_label") if p.read_text().strip() == "Tctl")
+    channels = (CPU_CHANNEL, *CASE_CHANNELS)
+
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    gpu = Gpu()
+    time.sleep(3)  # first GPU sample
+    cpu_temp = int(tctl.read_text()) / 1000
+    output = {ch: int((chip / f"pwm{ch}").read_text()) for ch in channels}
+    alpha = TICK_S / (SMOOTHING_S + TICK_S)
+    try:
+        while True:
+            cpu_temp += alpha * (int(tctl.read_text()) / 1000 - cpu_temp)
+            gpu_temp = gpu.celsius()
+            target = {CPU_CHANNEL: duty(CPU_FAN, cpu_temp)}
+            case = max(duty(CASE_FAN_CPU, cpu_temp), duty(CASE_FAN_GPU, gpu_temp))
+            target |= {ch: case for ch in CASE_CHANNELS}
+            for ch, want in target.items():
+                output[ch] = max(want, round(output[ch] - FALL_PER_S * TICK_S))
+                # Rewrite every tick: resume hands the fans back to firmware.
+                # Reading sysfs instead makes the driver refresh every chip
+                # register over port I/O, ~2.5% of a core at 1 Hz.
+                (chip / f"pwm{ch}_enable").write_text(f"{MANUAL}\n")
+                (chip / f"pwm{ch}").write_text(f"{output[ch]}\n")
+            time.sleep(TICK_S)
+    finally:
+        for ch in channels:
+            (chip / f"pwm{ch}_enable").write_text(f"{FIRMWARE}\n")
+
+
+main()
