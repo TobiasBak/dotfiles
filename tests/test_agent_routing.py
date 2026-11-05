@@ -7,8 +7,10 @@ import unittest
 
 
 HOOK = Path(__file__).resolve().parents[1] / "agents/claude/route-subagents.sh"
-SOL = {"providerInstanceId": "pi", "model": "openai/gpt-6.1-sol",
-       "options": {"thinking": "high"}}
+SOL = {"providerInstanceId": "codex", "model": "gpt-6.1-sol",
+       "options": {"reasoningEffort": "high"}}
+PI_SOL = {"providerInstanceId": "pi", "model": "openai/gpt-6.1-sol",
+          "options": {"thinking": "high"}}
 RETIRED_WORKER = {"providerInstanceId": "opencode", "model": "opencode/space-bunny-free"}
 
 
@@ -53,23 +55,31 @@ class AgentRoutingTests(unittest.TestCase):
             ({"model": SOL["model"]}, SOL),
             ({"providerInstanceId": "", "model": SOL["model"]}, SOL),
             ({"providerInstanceId": "pi", "model": SOL["model"]}, SOL),
+            ({"providerInstanceId": "codex", "model": SOL["model"]}, SOL),
             ({**SOL, "options": [{"id": "other", "value": "keep"}]},
              {**SOL, "options": [{"id": "other", "value": "keep"},
-                                 {"id": "thinking", "value": "high"}]}),
+                                 {"id": "reasoningEffort", "value": "high"}]}),
+            ({"model": PI_SOL["model"]}, PI_SOL),
+            ({"providerInstanceId": "", "model": PI_SOL["model"]}, PI_SOL),
+            ({"providerInstanceId": "pi", "model": PI_SOL["model"]}, PI_SOL),
+            ({**PI_SOL, "options": [{"id": "other", "value": "keep"}]},
+             {**PI_SOL, "options": [{"id": "other", "value": "keep"},
+                                    {"id": "thinking", "value": "high"}]}),
         ]:
             with self.subTest(target=target):
                 payload = {"task": "Review", "target": target}
                 actual = self.invoke("mcp__t3-code__delegate_task", payload)
                 self.assertEqual(actual["updatedInput"],
                                  {**payload, "runtimeMode": "full-access", "target": expected})
-        xhigh = {**SOL, "options": {"thinking": "xhigh"}}
+        xhigh = {**SOL, "options": {"reasoningEffort": "xhigh"}}
+        pi_xhigh = {**PI_SOL, "options": {"thinking": "xhigh"}}
         haiku = {"providerInstanceId": "claudeAgent", "model": "claude-haiku-5-5",
                  "options": {"effort": "high"}}
         opus = {"providerInstanceId": "claudeAgent", "model": "claude-opus-5-5",
                 "options": {"effort": "high"}}
-        xhigh_array = {**SOL, "options": [{"id": "thinking", "value": "xhigh"}]}
+        xhigh_array = {**SOL, "options": [{"id": "reasoningEffort", "value": "xhigh"}]}
         haiku_array = {**haiku, "options": [{"id": "effort", "value": "high"}]}
-        for target in [xhigh, xhigh_array,
+        for target in [xhigh, xhigh_array, pi_xhigh,
                        {"providerInstanceId": "other", "model": "other-model"}]:
             with self.subTest(target=target):
                 payload = {"task": "Read-only check", "target": target}
@@ -82,7 +92,7 @@ class AgentRoutingTests(unittest.TestCase):
                 actual = self.invoke("mcp__t3-code__delegate_task",
                                      {"task": "Read-only check", "target": target})
                 self.assertEqual(actual["permissionDecision"], "deny")
-        for expected in [xhigh, xhigh_array]:
+        for expected in [xhigh, xhigh_array, pi_xhigh]:
             with self.subTest(partial=expected):
                 partial = {"model": expected["model"], "options": expected["options"]}
                 actual = self.invoke("mcp__t3-code__delegate_task",

@@ -11,7 +11,7 @@ case "$(jq -r '.tool_name' <<<"$input")" in
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        permissionDecisionReason: "Do this work yourself. Delegate only whole packages of a large task, or a review, through T3 delegate_task on Pi Sol. Size the task after reading its targets: it is large when the change it needs is large, not when its files are."
+        permissionDecisionReason: "Do this work yourself. Delegate only whole packages of a large task, or a review, through T3 delegate_task without a target; this hook routes it. Size the task after reading its targets: it is large when the change it needs is large, not when its files are."
       }
     }'
     ;;
@@ -21,7 +21,7 @@ case "$(jq -r '.tool_name' <<<"$input")" in
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           permissionDecision: "deny",
-          permissionDecisionReason: "Opus, Haiku and Space Bunny are not delegation targets; Opus has no quota for subagents. Use Pi GPT-6.1 Sol at thinking high (Tobias, 2026-10-25)."
+          permissionDecisionReason: "Opus, Haiku and Space Bunny are not delegation targets; Opus has no quota for subagents (Tobias, 2026-10-25). Omit the target and this hook routes to Sol."
         }
       }'
       exit 0
@@ -34,22 +34,25 @@ case "$(jq -r '.tool_name' <<<"$input")" in
     fi
     # Tobias's agents never wait on approvals; limits like read-only belong in the task text.
     jq '
-      def with_sol_thinking:
+      def sol: {"gpt-6.1-sol": {provider: "codex", effort: "reasoningEffort"},
+                "openai/gpt-6.1-sol": {provider: "pi", effort: "thinking"}};
+      def with_effort($key):
         if type == "array" then
-          if any(.[]; .id == "thinking") then . else . + [{id: "thinking", value: "high"}] end
-        else {thinking: "high"} + . end;
+          if any(.[]; .id == $key) then . else . + [{id: $key, value: "high"}] end
+        else {($key): "high"} + . end;
+      def only_effort($key):
+        if type == "array" then map(select(.id == $key)) else {($key): .[$key]} | with_entries(select(.value != null)) end;
       (.tool_input.target // {}) as $requested |
-      (if ($requested.providerInstanceId // "") == "" or ($requested.model // "") == ""
-       then if $requested.model == "openai/gpt-6.1-sol"
-            then {providerInstanceId: "pi", model: "openai/gpt-6.1-sol",
-                  options: (($requested.options // {}) |
-                            if type == "array" then map(select(.id == "thinking"))
-                            else {thinking: (.thinking // "high")} end)}
-            else {providerInstanceId: "pi", model: "openai/gpt-6.1-sol",
-                  options: {thinking: "high"}} end
-       else $requested end) as $target |
-      (if $target.providerInstanceId == "pi" and $target.model == "openai/gpt-6.1-sol"
-       then $target + {options: (($target.options // {}) | with_sol_thinking)}
+      (if sol[$requested.model // ""] != null and $requested.providerInstanceId != sol[$requested.model].provider
+       then sol[$requested.model] as $s |
+            {providerInstanceId: $s.provider, model: $requested.model,
+             options: (($requested.options // {}) | only_effort($s.effort))}
+       elif ($requested.providerInstanceId // "") != "" and ($requested.model // "") != ""
+       then $requested
+       else {providerInstanceId: "codex", model: "gpt-6.1-sol", options: {}} end) as $target |
+      (sol[$target.model] as $s |
+       if $s != null and $target.providerInstanceId == $s.provider
+       then $target + {options: (($target.options // {}) | with_effort($s.effort))}
        else $target end) as $explicit |
       {
         hookSpecificOutput: {
