@@ -3,7 +3,6 @@ import argparse
 from datetime import datetime, timedelta, timezone
 import fcntl
 import json
-import math
 import os
 from pathlib import Path
 import re
@@ -15,21 +14,19 @@ from urllib.request import Request, urlopen
 
 
 REPO = "TobiasBak/dotfiles"
-ROSTER = ("claude-opus-5-5", "gpt-6.1-sol", "claude-haiku-5-5")
 SOURCES = {
     "zen": ("https://opencode.ai/zen/v1/models", "zen.json"),
     "go": ("https://opencode.ai/zen/go/v1/models", "go.json"),
     "models.dev": ("https://models.dev/api.json", "models.dev.json"),
 }
-AA_URL = "https://artificialanalysis.ai/api/v2/data/llms/models"
 
 
 def error_status(error):
     return f"HTTP {error.code}" if isinstance(error, HTTPError) else type(error).__name__
 
 
-def fetch_json(url, headers=None):
-    request = Request(url, headers={"User-Agent": "opencode-free (dotfiles)", **(headers or {})})
+def fetch_json(url):
+    request = Request(url, headers={"User-Agent": "opencode-free (dotfiles)"})
     with urlopen(request, timeout=30) as response:
         return json.load(response)
 
@@ -64,69 +61,7 @@ def fetch_sources(fixture):
     return sources
 
 
-def fetch_aa(fixture):
-    try:
-        if fixture:
-            path = fixture / "aa.json"
-            if not path.exists():
-                return None, "missing in fixture"
-            data = json.loads(path.read_text())
-        else:
-            path = Path(os.environ.get("OPENCODE_FREE_AA_KEY_FILE", "~/.keys/artificial-analysis")).expanduser()
-            if not path.exists():
-                return None, f"missing key at {path}"
-            key = path.read_text().strip()
-            if not key:
-                return None, f"missing key at {path}"
-            data = fetch_json(AA_URL, {"x-api-key": key})
-        if not isinstance(data, dict) or not isinstance(data.get("data"), list):
-            raise ValueError()
-        if any(not isinstance(row, dict) for row in data["data"]):
-            raise ValueError()
-        return data["data"], None
-    except Exception as error:
-        return None, error_status(error)
-
-
-def normalize(value):
-    value = re.sub(r"(?:-free| free)$", "", (value or "").lower())
-    return re.sub(r"[^a-z0-9]+", "-", value).strip("-")
-
-
-def number(value):
-    return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else None
-
-
-def aa_index(rows):
-    index = {}
-    for row in rows or []:
-        evaluations = row.get("evaluations") or {}
-        pricing = row.get("pricing") or {}
-        scores = {
-            "slug": row.get("slug"),
-            "intelligence": number(evaluations.get("artificial_analysis_intelligence_index")),
-            "coding": number(evaluations.get("artificial_analysis_coding_index")),
-            "speed": number(row.get("median_output_tokens_per_second")),
-            "price": number(pricing.get("price_1m_blended_3_to_1")),
-        }
-        rank = scores["intelligence"] if scores["intelligence"] is not None else -math.inf
-        name = row.get("name") or ""
-        for value in (row.get("slug"), name, re.sub(r"\([^)]*\)", "", name)):
-            key = normalize(value)
-            if not key:
-                continue
-            previous = index.get(key)
-            old_rank = previous["intelligence"] if previous and previous["intelligence"] is not None else -math.inf
-            if previous is None or rank > old_rank:
-                index[key] = scores
-    return index
-
-
-def aa_match(index, model_id, name):
-    return index.get(normalize(model_id)) or index.get(normalize(name))
-
-
-def build_snapshot(sources, index, aa_status):
+def build_snapshot(sources):
     catalog = sources["models.dev"]
     catalogs = {"zen": catalog["opencode"]["models"], "go": catalog["opencode-go"]["models"]}
     live = {plan: {row["id"] for row in sources[plan]["data"]} for plan in catalogs}
@@ -141,16 +76,10 @@ def build_snapshot(sources, index, aa_status):
             cost = entry.get("cost") or {}
             if entry.get("status") != "deprecated" and cost.get("input") == 0 and cost.get("output") == 0:
                 free_on.append(plan)
-        models[model_id] = {"name": name, "plans": plans, "free_on": free_on, "aa": aa_match(index, model_id, name)}
-    roster = {}
-    for model_id in ROSTER:
-        name = catalogs["zen"].get(model_id, {}).get("name") or model_id
-        roster[model_id] = {"name": name, "aa": aa_match(index, model_id, name)}
+        models[model_id] = {"name": name, "plans": plans, "free_on": free_on}
     return {
         "taken_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "aa_status": aa_status,
         "models": models,
-        "roster": roster,
     }
 
 
@@ -178,11 +107,6 @@ def diff_events(previous, snapshot):
             emit("newly_free", model_id, name)
         if was_free and not is_free:
             emit("no_longer_free", model_id, name)
-        if old and new and old["aa"] and new["aa"]:
-            changes = [f"{field}: {old['aa'][field]}→{new['aa'][field]}"
-                       for field in ("intelligence", "coding", "price") if old["aa"][field] != new["aa"][field]]
-            if changes:
-                emit("score_changed", model_id, "; ".join(changes))
     return events
 
 
@@ -214,43 +138,19 @@ def markdown_row(values):
     return "| " + " | ".join(cell(value) for value in values) + " |"
 
 
-def format_number(value, digits):
-    return "—" if value is None else f"{value:.{digits}f}"
-
-
 def render_table(snapshot, history):
     taken_at = datetime.fromisoformat(snapshot["taken_at"])
-    lines = [f"OpenCode free models, snapshot {taken_at:%Y-%m-%d %H:%M} UTC. "
-             "Scores: [Artificial Analysis](https://artificialanalysis.ai/)."]
-    if snapshot["aa_status"]:
-        lines.append(f"AA scores missing: {snapshot['aa_status']}.")
-    lines.extend(["", "| Model | ID | Plans | Free since | AA intel | AA coding | tok/s | $/1M blended | Closest of ours |",
-                  "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"])
+    lines = [f"OpenCode free models, snapshot {taken_at:%Y-%m-%d %H:%M} UTC.",
+             "", "| Model | ID | Plans | Free since |", "| --- | --- | --- | --- |"]
     windows = free_windows(history)
     opened = {window["id"]: window for window in windows if window["end"] is None}
-    roster = [model for model in snapshot["roster"].values()
-              if model["aa"] and model["aa"]["intelligence"] is not None]
-
-    def sort_key(item):
-        score = item[1]["aa"]
-        intelligence = score["intelligence"] if score else None
-        return (-(intelligence if intelligence is not None else -math.inf), item[0])
-
-    for model_id, model in sorted(snapshot["models"].items(), key=sort_key):
+    for model_id, model in sorted(snapshot["models"].items(), key=lambda item: (item[1]["name"], item[0])):
         if not model["free_on"]:
             continue
-        scores = model["aa"] or {}
-        intelligence = scores.get("intelligence")
-        closest = "—"
-        if intelligence is not None and roster:
-            ours = min(roster, key=lambda candidate: abs(intelligence - candidate["aa"]["intelligence"]))
-            closest = f"{ours['name']} ({ours['aa']['intelligence']:.1f})"
         lines.append(markdown_row([
             model["name"], model_id,
             ", ".join(plan + (" (free)" if plan in model["free_on"] else "") for plan in model["plans"]),
             start_date(opened[model_id]) if model_id in opened else "—",
-            format_number(intelligence, 1), format_number(scores.get("coding"), 1),
-            format_number(scores.get("speed"), 0), format_number(scores.get("price"), 2), closest,
         ]))
     lines.extend(["", 'OpenCode publishes no end dates; free models are "limited time".'])
     ended = [window for window in windows if window["end"]
@@ -338,12 +238,7 @@ def run(state, fixture, no_publish):
         fcntl.flock(lock, fcntl.LOCK_EX)
         data = read_json(state / "state.json", {"snapshot": None, "history": [], "pending": []})
         sources = fetch_sources(fixture)
-        rows, aa_status = fetch_aa(fixture)
-        try:
-            index = aa_index(rows)
-        except (AttributeError, TypeError, ValueError) as error:
-            index, aa_status = {}, error_status(error)
-        snapshot = build_snapshot(sources, index, aa_status)
+        snapshot = build_snapshot(sources)
         events = diff_events(data["snapshot"], snapshot)
         history = data["history"] + events
         pending = data["pending"] + [event for event in events
@@ -364,12 +259,12 @@ def run(state, fixture, no_publish):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Track live OpenCode free models and their Artificial Analysis scores.")
+    parser = argparse.ArgumentParser(description="Track live OpenCode free models.")
     commands = parser.add_subparsers(dest="command")
     commands.add_parser("table", help="Print the latest saved table without network access")
     commands.add_parser("history", help="Print free windows, newest first")
     runner = commands.add_parser("run", help="Fetch a snapshot, record changes and publish the tracker issue")
-    runner.add_argument("--fixture", type=Path, metavar="DIR", help="Read zen.json, go.json, models.dev.json and optional aa.json")
+    runner.add_argument("--fixture", type=Path, metavar="DIR", help="Read zen.json, go.json and models.dev.json")
     runner.add_argument("--no-publish", action="store_true", help="Save locally without GitHub or desktop notifications")
     args = parser.parse_args()
     state = Path(os.environ.get("OPENCODE_FREE_STATE", str(Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "opencode-free"))).expanduser()

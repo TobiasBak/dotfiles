@@ -1,4 +1,3 @@
-import copy
 from datetime import datetime, timedelta, timezone
 import fcntl
 import json
@@ -55,7 +54,6 @@ class OpenCodeFreeTests(unittest.TestCase):
         self.log = self.root / "calls.jsonl"
         self.env = {**os.environ, "HOME": str(self.root), "PATH": f"{bin_dir}:{os.environ['PATH']}",
                     "OPENCODE_FREE_STATE": str(self.state),
-                    "OPENCODE_FREE_AA_KEY_FILE": str(self.root / "missing-key"),
                     "FAKE_LOG": str(self.log), "FAKE_ISSUE": str(self.root / "issue")}
         self.env.pop("FAKE_FAIL", None)
         self.catalog = {
@@ -65,9 +63,6 @@ class OpenCodeFreeTests(unittest.TestCase):
                 "shared": {"name": "Example Reasoner", "cost": {"input": 0, "output": 0}},
                 "paid": {"name": "Next Model", "cost": {"input": 1, "output": 1}},
                 "stale": {"name": "Stale Model", "cost": {"input": 0, "output": 0}},
-                "claude-opus-5-5": {"name": "Claude Opus 5.5"},
-                "gpt-6.1-sol": {"name": "GPT 6.1 Sol"},
-                "claude-haiku-5-5": {"name": "Claude Haiku 5.5"},
             }},
             "opencode-go": {"models": {
                 "shared": {"name": "Wrong Go Name", "cost": {"input": 3, "output": 3}},
@@ -76,27 +71,11 @@ class OpenCodeFreeTests(unittest.TestCase):
         }
         self.zen = {"data": [{"id": model_id} for model_id in ("step-5-preview-free", "shared", "paid", "mystery-free", "deprecated-free")]}
         self.go = {"data": [{"id": "shared"}, {"id": "paid"}]}
-        self.aa = {"data": [
-            {"slug": "step-5-preview", "name": "Step 5 Preview", "evaluations": {
-                "artificial_analysis_intelligence_index": 45, "artificial_analysis_coding_index": 40.24},
-             "pricing": {"price_1m_blended_3_to_1": 0.3}, "median_output_tokens_per_second": 99.6},
-            {"slug": "different-slug", "name": "Example Reasoner (medium effort)", "evaluations": {
-                "artificial_analysis_intelligence_index": 41, "artificial_analysis_coding_index": 39},
-             "pricing": {"price_1m_blended_3_to_1": 0.12}, "median_output_tokens_per_second": 80},
-            {"slug": "another-slug", "name": "Example Reasoner (low effort)", "evaluations": {
-                "artificial_analysis_intelligence_index": 10}},
-            {"slug": "opus", "name": "Claude Opus 5.5", "evaluations": {
-                "artificial_analysis_intelligence_index": 50}},
-            {"slug": "gpt-6.1-sol", "name": "GPT 6.1 Sol", "evaluations": {
-                "artificial_analysis_intelligence_index": 46}},
-            {"slug": "claude-haiku-5-5", "name": "Claude Haiku 5.5", "evaluations": {
-                "artificial_analysis_intelligence_index": 20}},
-        ]}
         self.write_fixture()
 
     def write_fixture(self):
         for name, value in (("zen.json", self.zen), ("go.json", self.go),
-                            ("models.dev.json", self.catalog), ("aa.json", self.aa)):
+                            ("models.dev.json", self.catalog)):
             (self.fixture / name).write_text(json.dumps(value))
 
     def cli(self, *args, code=0):
@@ -137,15 +116,12 @@ class OpenCodeFreeTests(unittest.TestCase):
         self.assertEqual([event["event"] for event in self.events()], ["first_seen_free"] * 2)
         table = self.cli("table").stdout
         self.assertEqual(self.cli().stdout, table)
-        self.assertIn("[Artificial Analysis](https://artificialanalysis.ai/)", table)
         self.assertIn("| Step 5 Preview Free | step-5-preview-free | zen (free) | ≤ ", table)
-        self.assertIn("| 45.0 | 40.2 | 100 | 0.30 | GPT 6.1 Sol (46.0) |", table)
         self.assertIn("| Example Reasoner | shared | go, zen (free) | ≤ ", table)
-        self.assertIn("| 41.0 | 39.0 | 80 | 0.12 | GPT 6.1 Sol (46.0) |", table)
         self.assertNotIn("mystery-free", table)
         self.assertNotIn("Deprecated Free", table)
         self.assertNotIn("Next Model", table)
-        self.assertLess(table.index("step-5-preview-free"), table.index("| shared |"))
+        self.assertLess(table.index("| shared |"), table.index("step-5-preview-free"))
         self.assertEqual([call["action"] for call in self.calls()], ["list", "create"])
         self.assertEqual(self.calls()[1]["body"], table)
         self.assertEqual((self.state / "published.md").read_text(), table)
@@ -257,30 +233,8 @@ class OpenCodeFreeTests(unittest.TestCase):
         self.assertEqual(self.run_fixture("--no-publish").stdout, "no changes\n")
         self.assertEqual(len(self.saved_state()["pending"]), 2)
 
-    def test_scores_outages_and_removed_free_windows(self):
+    def test_removed_and_added_free_windows(self):
         self.run_fixture("--no-publish")
-        self.aa["data"][0]["median_output_tokens_per_second"] = 123
-        self.write_fixture()
-        self.assertEqual(self.run_fixture("--no-publish").stdout, "no changes\n")
-        self.aa["data"][0]["evaluations"]["artificial_analysis_intelligence_index"] = 47
-        self.aa["data"][0]["evaluations"]["artificial_analysis_coding_index"] = 44
-        self.aa["data"][0]["pricing"]["price_1m_blended_3_to_1"] = 0.5
-        self.write_fixture()
-        self.run_fixture("--no-publish")
-        score = self.events()[-1]
-        self.assertEqual(score["event"], "score_changed")
-        self.assertEqual(score["detail"], "intelligence: 45→47; coding: 40.24→44; price: 0.3→0.5")
-        before = copy.deepcopy(self.events())
-        (self.fixture / "aa.json").unlink()
-        self.assertEqual(self.run_fixture("--no-publish").stdout, "no changes\n")
-        self.assertEqual(self.events(), before)
-        table = self.cli("table").stdout
-        self.assertIn("AA scores missing: missing in fixture.", table)
-        self.assertIn("| — | — | — | — | — |", table)
-        snapshot = self.saved_state()["snapshot"]
-        self.assertTrue(all(model["aa"] is None for model in snapshot["models"].values()))
-        self.write_fixture()
-        self.assertEqual(self.run_fixture("--no-publish").stdout, "no changes\n")
         self.zen["data"] = [row for row in self.zen["data"] if row["id"] != "step-5-preview-free"]
         self.go["data"].append({"id": "new-free"})
         self.catalog["opencode-go"]["models"]["new-free"] = {"name": "New Free", "cost": {"input": 0, "output": 0}}

@@ -38,11 +38,6 @@
 enable = ["t3-backup.timer", "opencode-free.timer", "gah-gc.timer", "systemd-tmpfiles-clean.timer"]
 
 [[assert]]
-name = "Artificial Analysis API key stored"
-check = "test -s {home}/.keys/artificial-analysis"
-fix = "store the Artificial Analysis API key at ~/.keys/artificial-analysis, mode 0600 (dotfiles#14)"
-
-[[assert]]
 name = "agent TMPDIR exists"
 check = "test -d {home}/.cache/agent-tmp"
 apply = "systemd-tmpfiles --user --create agent-tmp.conf"

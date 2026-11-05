@@ -1,5 +1,5 @@
 [Unit]
-Description=Track OpenCode free models and Artificial Analysis scores
+Description=Track OpenCode free models
 
 [Service]
 Type=oneshot
