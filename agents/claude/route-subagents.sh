@@ -11,7 +11,7 @@ case "$(jq -r '.tool_name' <<<"$input")" in
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        permissionDecisionReason: "Do this work yourself. Delegate only whole packages of a large task, or a review, through T3 delegate_task on Pi Sol."
+        permissionDecisionReason: "Do this work yourself. Delegate only whole packages of a large task, or a review, through T3 delegate_task on Pi Sol. Size the task after reading its targets: it is large when the change it needs is large, not when its files are."
       }
     }'
     ;;
