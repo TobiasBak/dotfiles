@@ -16,12 +16,12 @@ case "$(jq -r '.tool_name' <<<"$input")" in
     }'
     ;;
   *delegate_task)
-    if jq -e '.tool_input.target.model // "" | test("haiku|opus|space-bunny")' <<<"$input" >/dev/null; then
+    if jq -e '.tool_input.target.model // "" | test("haiku|space-bunny")' <<<"$input" >/dev/null; then
       jq -n '{
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           permissionDecision: "deny",
-          permissionDecisionReason: "Opus, Haiku and Space Bunny are not delegation targets; Opus has no quota for subagents (Tobias, 2026-10-25). Omit the target and this hook routes to Sol."
+          permissionDecisionReason: "Haiku and Space Bunny are not delegation targets. Name Opus only when Tobias asks for it (Tobias, 2026-11-07); otherwise omit the target and this hook routes to Sol."
         }
       }'
       exit 0
@@ -49,6 +49,8 @@ case "$(jq -r '.tool_name' <<<"$input")" in
              options: (($requested.options // {}) | only_effort($s.effort))}
        elif ($requested.providerInstanceId // "") != "" and ($requested.model // "") != ""
        then $requested
+       elif ($requested.model // "") | test("^claude-opus")
+       then {providerInstanceId: "claudeAgent"} + $requested
        else {providerInstanceId: "codex", model: "gpt-6.1-sol", options: {}} end) as $target |
       (sol[$target.model] as $s |
        if $s != null and $target.providerInstanceId == $s.provider
