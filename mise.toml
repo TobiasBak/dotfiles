@@ -22,6 +22,9 @@ rclone = "latest"
 terraform = "latest"
 uv = "latest"
 
+[settings]
+minimum_release_age = "0"
+
 [settings.npm]
 package_manager = "pnpm"
 
