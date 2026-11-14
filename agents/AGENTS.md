@@ -4,6 +4,8 @@ Tobias develops entirely through agents.
 
 Tobias's explicit instructions for the current task override conflicting standing guidance in this file, repository `AGENTS.md` files, skills and saved preferences. They are defaults, not grounds to refuse his request or ask him to repeat it.
 
+Tobias's decisions and measurements about working with agents live in `~/code/vault-public`: delegation, verification speed, testing, model choice, harness and T3 Code behavior, and the Omarchy workstation. Before you decide something in one of those areas, read its `index.md` and open the note that covers it.
+
 ## Rules
 
 - Never add an agent co-author to commit messages.
